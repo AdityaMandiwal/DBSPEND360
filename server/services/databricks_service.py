@@ -325,7 +325,8 @@ class DatabricksService:
             j.total_ec2_cost,
             j.total_databricks_cost,
             j.run_count,
-            lj.name
+            lj.name,
+            COUNT(*) OVER() AS total_matching
         FROM job_level j
         LEFT JOIN (
             SELECT DISTINCT job_id, name
@@ -337,47 +338,25 @@ class DatabricksService:
         LIMIT {limit} OFFSET {offset}
         """
 
-        if escaped_search:
-            count_query = f"""
-            {base_cte}
-            SELECT COUNT(*)
-            FROM job_level j
-            LEFT JOIN (
-                SELECT DISTINCT job_id, name
-                FROM system.lakeflow.jobs
-            ) lj
-            ON j.job_id = lj.job_id
-            {search_clause}
-            """
-        else:
-            count_query = f"""
-            SELECT COUNT(DISTINCT job_id) as total_count
-            FROM {self.table_name}
-            WHERE usage_date >= '{start_date.isoformat()}' AND usage_date <= '{end_date.isoformat()}'
-            """
-
-        count_response = self.client.statement_execution.execute_statement(
-            warehouse_id=self.warehouse_id,
-            statement=count_query
-        )
-        total_count = 0
-        if count_response.result and count_response.result.data_array:
-            total_count = int(count_response.result.data_array[0][0])
-
         data_response = self.client.statement_execution.execute_statement(
             warehouse_id=self.warehouse_id,
             statement=data_query
         )
 
+        total_count = 0
+        if data_response.result and data_response.result.data_array:
+            total_count = int(data_response.result.data_array[0][5])
+
         grouped_jobs = []
         if data_response.result and data_response.result.data_array:
+            job_ids = [row[0] for row in data_response.result.data_array]
+            runs_by_job = await self._get_batch_job_runs(job_ids, start_date, end_date, runs_per_job=10)
+
             for row in data_response.result.data_array:
                 job_id = row[0]
                 total_ec2_cost = float(row[1])
                 total_databricks_cost = float(row[2])
                 run_count = int(row[3])
-
-                runs = await self.get_job_runs(job_id, start_date, end_date, limit=10)
 
                 grouped_job = GroupedJob(
                     job_id=job_id,
@@ -385,7 +364,7 @@ class DatabricksService:
                     run_count=run_count,
                     total_ec2_cost=total_ec2_cost,
                     total_databricks_cost=total_databricks_cost,
-                    runs=runs
+                    runs=runs_by_job.get(job_id, [])
                 )
                 grouped_jobs.append(grouped_job)
 
@@ -401,6 +380,69 @@ class DatabricksService:
             has_next=current_page < total_pages,
             has_previous=current_page > 1
         )
+
+    async def _get_batch_job_runs(
+        self,
+        job_ids: List[str],
+        start_date: date,
+        end_date: date,
+        runs_per_job: int = 10
+    ) -> dict[str, List[JobRun]]:
+        """Fetch runs for multiple jobs in a single SQL query, returning at most runs_per_job per job."""
+
+        if not job_ids:
+            return {}
+
+        escaped_ids = [jid.replace("'", "''") for jid in job_ids]
+        in_clause = ", ".join(f"'{jid}'" for jid in escaped_ids)
+
+        query = f"""
+        WITH ranked_runs AS (
+            SELECT
+                job_id,
+                run_id,
+                cluster_id,
+                MIN(usage_date) as start_date,
+                MAX(usage_date) as end_date,
+                SUM(cloud_cost) as total_ec2_cost,
+                SUM(databricks_cost) as total_databricks_cost,
+                ROW_NUMBER() OVER (
+                    PARTITION BY job_id
+                    ORDER BY MAX(usage_date) DESC, run_id DESC
+                ) as rn
+            FROM {self.table_name}
+            WHERE job_id IN ({in_clause})
+            AND usage_date >= '{start_date.isoformat()}'
+            AND usage_date <= '{end_date.isoformat()}'
+            GROUP BY job_id, run_id, cluster_id
+        )
+        SELECT job_id, run_id, cluster_id, start_date, end_date,
+               total_ec2_cost, total_databricks_cost
+        FROM ranked_runs
+        WHERE rn <= {runs_per_job}
+        ORDER BY job_id, end_date DESC, run_id DESC
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query
+        )
+
+        runs_by_job: dict[str, List[JobRun]] = {}
+        if response.result and response.result.data_array:
+            for row in response.result.data_array:
+                job_id = row[0]
+                run = JobRun(
+                    run_id=row[1],
+                    cluster_id=row[2],
+                    start_date=date.fromisoformat(row[3]),
+                    end_date=date.fromisoformat(row[4]),
+                    ec2_cost=float(row[5]),
+                    databricks_cost=float(row[6])
+                )
+                runs_by_job.setdefault(job_id, []).append(run)
+
+        return runs_by_job
 
     async def get_job_runs(self, job_id: str, start_date: date, end_date: date, limit: int = 10) -> List[JobRun]:
         """Get recent runs for a specific job within date range, aggregated by run_id."""

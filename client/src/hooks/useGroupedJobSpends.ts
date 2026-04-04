@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import type { PaginatedGroupedJobs, JobSpendFilter } from '@/types/job-spend';
 import { API_BASE_URL } from '@/lib/api-config';
 
@@ -29,7 +29,8 @@ export const useGroupedJobSpends = (params: JobSpendFilter) => {
 
       return response.json();
     },
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    placeholderData: keepPreviousData,
+    staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
 };
