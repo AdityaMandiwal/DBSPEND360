@@ -75,6 +75,13 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
     }
   };
 
+  const formatRunDates = (startDate: string, endDate: string) => {
+    if (startDate === endDate) {
+      return formatDate(startDate);
+    }
+    return `${formatDate(startDate)} — ${formatDate(endDate)}`;
+  };
+
   const toggleRowExpansion = (jobId: string) => {
     const newExpandedRows = new Set(expandedRows);
     if (newExpandedRows.has(jobId)) {
@@ -299,7 +306,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
                       Run: {run.run_id}
                     </div>
                     <div className="text-sm text-muted-foreground">
-                      {formatDate(run.usage_date)}
+                      {formatRunDates(run.start_date, run.end_date)}
                     </div>
                     <div className="text-sm text-muted-foreground max-w-[150px] truncate">
                       {run.cluster_id}

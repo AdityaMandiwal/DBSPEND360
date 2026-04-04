@@ -40,7 +40,8 @@ export interface CostBreakdown {
 export interface JobRun {
   run_id: string;
   cluster_id: string;
-  usage_date: string; // ISO date string
+  start_date: string; // ISO date string
+  end_date: string; // ISO date string
   ec2_cost: number;
   databricks_cost: number;
   total_cost: number;

@@ -88,7 +88,8 @@ class JobRun(BaseModel):
 
     run_id: str
     cluster_id: str
-    usage_date: date
+    start_date: date
+    end_date: date
     ec2_cost: float
     databricks_cost: float
 
