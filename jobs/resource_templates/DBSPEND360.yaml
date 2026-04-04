@@ -5,7 +5,7 @@ resources:
       tasks:
         - task_key: cloud_cost_explorer
           notebook_task:
-            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/DBSpend360-app-v2/cloud_cost_explorer_app
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/DBSpend360-app-v2/aws_cloud_cost_explorer_app
             source: WORKSPACE
         - task_key: Dbspend360dbu_costs
           depends_on:
@@ -27,11 +27,7 @@ resources:
         - name: overlap_days
           default: "10"
         - name: schema
-          default: test1
-        - name: scope
-          default: azure-key-vault
-        - name: subscription_id
-          default: 3f2e4d32-8e8d-46d6-82bc-5bb8d962328b
+          default: 03apr
         - name: workspace_ids
           default: ""
       performance_target: PERFORMANCE_OPTIMIZED

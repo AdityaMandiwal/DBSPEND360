@@ -8,7 +8,8 @@
 export type JobRun = {
     run_id: string;
     cluster_id: string;
-    usage_date: string;
+    start_date: string;
+    end_date: string;
     ec2_cost: number;
     databricks_cost: number;
     /**

@@ -100,12 +100,12 @@ export const FilterControls = ({
 
       {/* Job Filter Controls */}
       <div className="space-y-4">
-        <Label className="text-sm font-semibold">Job Filters</Label>
+        <Label className="text-sm font-semibold">Search Jobs</Label>
 
         <div className="relative">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Filter by job name..."
+            placeholder="Search by job name or ID..."
             value={jobFilter}
             onChange={(e) => onJobFilterChange(e.target.value)}
             className="pl-10"
@@ -119,7 +119,7 @@ export const FilterControls = ({
           </div>
           {jobFilter && (
             <div>
-              <strong>Job Filter:</strong> "{jobFilter}"
+              <strong>Search:</strong> "{jobFilter}"
             </div>
           )}
         </div>
