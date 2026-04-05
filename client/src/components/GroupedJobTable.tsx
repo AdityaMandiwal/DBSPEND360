@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ColumnDef,
   flexRender,
@@ -43,6 +43,10 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
     pageSize: 50,
   });
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+  }, [jobFilter, dateRange.start_date, dateRange.end_date]);
 
   const { data, isLoading, error } = useGroupedJobSpends({
     start_date: dateRange.start_date,

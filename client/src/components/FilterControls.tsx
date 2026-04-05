@@ -1,3 +1,4 @@
+import { useState, useEffect, useRef } from 'react';
 import { Search } from 'lucide-react';
 import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
@@ -21,6 +22,22 @@ export const FilterControls = ({
   onJobFilterChange,
 }: FilterControlsProps) => {
   const { data: presets } = useDatePresets();
+  const [localFilter, setLocalFilter] = useState(jobFilter);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    setLocalFilter(jobFilter);
+  }, [jobFilter]);
+
+  const handleFilterChange = (value: string) => {
+    setLocalFilter(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => onJobFilterChange(value), 300);
+  };
+
+  useEffect(() => {
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, []);
 
   const handlePresetClick = (preset: { start_date: string; end_date: string }) => {
     onDateRangeChange({
@@ -106,8 +123,8 @@ export const FilterControls = ({
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             placeholder="Search by job name or ID..."
-            value={jobFilter}
-            onChange={(e) => onJobFilterChange(e.target.value)}
+            value={localFilter}
+            onChange={(e) => handleFilterChange(e.target.value)}
             className="pl-10"
           />
         </div>
