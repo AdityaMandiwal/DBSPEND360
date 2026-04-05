@@ -1,8 +1,12 @@
+import asyncio
+import logging
 from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from server.models.job_spend import JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends, PaginatedGroupedJobs, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformInfo
 from server.services.databricks_service import DatabricksService
@@ -427,44 +431,58 @@ async def debug_table_data():
 @router.get("/job/{job_id}/analyze", response_model=CostAnalysis)
 async def analyze_job_costs(
     job_id: str,
-    run_id: str = Query(..., description="Run ID for the specific job execution")
+    run_id: str = Query(..., description="Run ID for the specific job execution"),
 ):
     """
     Get LLM-powered cost analysis for a specific job run.
 
-    Returns AI-generated insights about EC2 vs Databricks cost breakdown,
-    optimization recommendations, and cost efficiency assessment.
+    Fetches cost breakdown, historical stats, and job name in parallel,
+    then passes all context to the LLM for grounded analysis.
     """
     try:
-        # First get the cost breakdown data
-        databricks_service = get_databricks_service()
-        breakdown = await databricks_service.get_job_cost_breakdown(
-            job_id=job_id,
-            run_id=run_id
+        service = get_databricks_service()
+
+        breakdown, historical_stats, job_name = await asyncio.gather(
+            service.get_job_cost_breakdown(job_id=job_id, run_id=run_id),
+            service.get_job_historical_stats(
+                job_id=job_id, current_run_id=run_id
+            ),
+            service.get_job_name(job_id=job_id),
+            return_exceptions=True,
         )
 
-        if not breakdown:
+        if isinstance(breakdown, Exception):
+            logger.error("Failed to fetch cost breakdown for job %s run %s: %s", job_id, run_id, breakdown)
+            breakdown = None
+        if breakdown is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"No cost breakdown found for job_id: {job_id}, run_id: {run_id}"
+                detail=f"No cost breakdown found for job_id: {job_id}, run_id: {run_id}",
             )
+        if isinstance(historical_stats, Exception):
+            logger.error("Failed to fetch historical stats for job %s: %s", job_id, historical_stats)
+            historical_stats = None
+        if isinstance(job_name, Exception):
+            logger.error("Failed to fetch job name for job %s: %s", job_id, job_name)
+            job_name = None
 
-        # Get LLM analysis
-        llm_service = get_llm_service()
-        analysis = await llm_service.analyze_job_costs(
+        llm = get_llm_service()
+        analysis = await llm.analyze_job_costs(
             job_id=job_id,
             run_id=run_id,
             ec2_cost=breakdown.ec2_cost,
             databricks_cost=breakdown.databricks_cost,
             total_cost=breakdown.total_cost,
             cluster_id=breakdown.cluster_id,
-            usage_date=breakdown.usage_date.isoformat()
+            usage_date=breakdown.usage_date.isoformat(),
+            job_name=job_name,
+            historical_stats=historical_stats,
         )
 
         return CostAnalysis(
             job_id=job_id,
             run_id=run_id,
-            analysis=analysis
+            analysis=analysis,
         )
 
     except HTTPException:
@@ -472,7 +490,7 @@ async def analyze_job_costs(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating cost analysis: {str(e)}"
+            detail=f"Error generating cost analysis: {str(e)}",
         )
 
 
@@ -511,42 +529,39 @@ async def analyze_cluster_configuration(cluster_id: str):
     """
     Get LLM-powered cluster configuration analysis.
 
-    Returns AI-generated insights about cluster optimization, cost reduction opportunities,
-    performance improvements, and best practices recommendations.
+    Fetches cluster details and cost summary in parallel, then passes
+    all context to the LLM for grounded configuration analysis.
     """
     try:
-        # First get the cluster details
-        databricks_service = get_databricks_service()
-        cluster_details = await databricks_service.get_cluster_details(cluster_id)
+        service = get_databricks_service()
 
-        if not cluster_details:
+        cluster_details, cost_summary = await asyncio.gather(
+            service.get_cluster_details(cluster_id),
+            service.get_cluster_cost_summary(cluster_id),
+            return_exceptions=True,
+        )
+
+        if isinstance(cluster_details, Exception):
+            logger.error("Failed to fetch cluster details for %s: %s", cluster_id, cluster_details)
+            cluster_details = None
+        if cluster_details is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"Cluster details not found for cluster_id: {cluster_id}"
+                detail=f"Cluster details not found for cluster_id: {cluster_id}",
             )
+        if isinstance(cost_summary, Exception):
+            logger.error("Failed to fetch cluster cost summary for %s: %s", cluster_id, cost_summary)
+            cost_summary = None
 
-        # Get LLM analysis
-        llm_service = get_llm_service()
-        analysis = await llm_service.analyze_cluster_configuration(
-            cluster_id=cluster_details.cluster_id,
-            owned_by=cluster_details.owned_by,
-            create_time=cluster_details.create_time,
-            driver_node_type=cluster_details.driver_node_type,
-            worker_node_type=cluster_details.worker_node_type,
-            worker_count=cluster_details.worker_count,
-            min_autoscale_workers=cluster_details.min_autoscale_workers,
-            max_autoscale_workers=cluster_details.max_autoscale_workers,
-            auto_termination_minutes=cluster_details.auto_termination_minutes,
-            enable_elastic_disk=cluster_details.enable_elastic_disk,
-            tags=cluster_details.tags,
-            aws_attributes=cluster_details.aws_attributes,
-            dbr_version=cluster_details.dbr_version,
-            data_security_mode=cluster_details.data_security_mode
+        llm = get_llm_service()
+        analysis = await llm.analyze_cluster_configuration(
+            cluster_details=cluster_details,
+            cost_summary=cost_summary,
         )
 
         return ClusterAnalysis(
             cluster_id=cluster_id,
-            analysis=analysis
+            analysis=analysis,
         )
 
     except HTTPException:
@@ -554,7 +569,7 @@ async def analyze_cluster_configuration(cluster_id: str):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating cluster analysis: {str(e)}"
+            detail=f"Error generating cluster analysis: {str(e)}",
         )
 
 
