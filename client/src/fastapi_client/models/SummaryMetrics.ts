@@ -13,6 +13,13 @@ export type SummaryMetrics = {
     min_cost: number;
     total_ec2_cost: number;
     total_databricks_cost: number;
+    total_compute_cost?: (number | null);
+    total_storage_cost?: (number | null);
+    total_network_cost?: (number | null);
+    total_other_cost?: (number | null);
+    classification_coverage_pct?: (number | null);
+    coverage_status?: (string | null);
+    coverage_warning?: (string | null);
     date_range_days: number;
 };
 

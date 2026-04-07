@@ -14,6 +14,10 @@ class JobSpend(BaseModel):
     run_id: str
     usage_date: date
     databricks_cost: float
+    compute_cost: Optional[float] = None
+    storage_cost: Optional[float] = None
+    network_cost: Optional[float] = None
+    other_cost: Optional[float] = None
 
     @computed_field
     @property
@@ -58,6 +62,13 @@ class SummaryMetrics(BaseModel):
     min_cost: float
     total_ec2_cost: float
     total_databricks_cost: float
+    total_compute_cost: Optional[float] = None
+    total_storage_cost: Optional[float] = None
+    total_network_cost: Optional[float] = None
+    total_other_cost: Optional[float] = None
+    classification_coverage_pct: Optional[float] = None
+    coverage_status: Optional[str] = None
+    coverage_warning: Optional[str] = None
     date_range_days: int
 
 
@@ -68,19 +79,41 @@ class CostBreakdown(BaseModel):
     run_id: str
     cluster_id: str
     usage_date: date
+    end_date: Optional[date] = None
     ec2_cost: float
     databricks_cost: float
     total_cost: float
+    compute_cost: Optional[float] = None
+    storage_cost: Optional[float] = None
+    network_cost: Optional[float] = None
+    other_cost: Optional[float] = None
     cost_split: list[dict[str, Any]] = Field(default_factory=list)
 
     def __init__(self, **data):
         super().__init__(**data)
-        # Generate cost split data for pie chart with dynamic cloud platform labels
         labels = cloud_config.get_cost_breakdown_labels()
-        self.cost_split = [
-            {"name": labels["compute_cost"], "value": self.ec2_cost, "color": "#3b82f6"},
-            {"name": labels["databricks_cost"], "value": float(data.get('databricks_cost', 0)), "color": "#ef4444"}
-        ]
+        compute = data.get("compute_cost")
+        storage = data.get("storage_cost")
+        network = data.get("network_cost")
+        other = data.get("other_cost")
+        has_segmented = compute is not None
+
+        if has_segmented:
+            split = [
+                {"name": "Compute", "value": float(compute or 0), "color": "#3b82f6"},
+                {"name": "Storage", "value": float(storage or 0), "color": "#22c55e"},
+                {"name": "Network", "value": float(network or 0), "color": "#f59e0b"},
+            ]
+            other_val = float(other or 0)
+            if other_val > 0:
+                split.append({"name": "Other", "value": other_val, "color": "#6b7280"})
+            split.append({"name": "Databricks (DBU)", "value": float(data.get("databricks_cost", 0)), "color": "#ef4444"})
+            self.cost_split = split
+        else:
+            self.cost_split = [
+                {"name": labels["compute_cost"], "value": self.ec2_cost, "color": "#3b82f6"},
+                {"name": labels["databricks_cost"], "value": float(data.get("databricks_cost", 0)), "color": "#ef4444"},
+            ]
 
 
 class JobRun(BaseModel):
@@ -92,6 +125,10 @@ class JobRun(BaseModel):
     end_date: date
     ec2_cost: float
     databricks_cost: float
+    compute_cost: Optional[float] = None
+    storage_cost: Optional[float] = None
+    network_cost: Optional[float] = None
+    other_cost: Optional[float] = None
 
     @computed_field
     @property
@@ -124,6 +161,10 @@ class GroupedJob(BaseModel):
     run_count: int
     total_ec2_cost: float
     total_databricks_cost: float
+    total_compute_cost: Optional[float] = None
+    total_storage_cost: Optional[float] = None
+    total_network_cost: Optional[float] = None
+    total_other_cost: Optional[float] = None
     runs: list[JobRun]
 
     @computed_field
@@ -216,3 +257,34 @@ class CloudPlatformInfo(BaseModel):
     compute_service: str
     compute_display_name: str
     platform_display_name: str
+
+
+class OtherCostBreakdownItem(BaseModel):
+    """Single service contributing to other_cost."""
+
+    service_name: str
+    cost: float
+    percentage: float
+    source_system: str
+
+
+class OtherCostBreakdownResponse(BaseModel):
+    """Response for other cost breakdown drilldown."""
+
+    items: list[OtherCostBreakdownItem]
+    total_other_cost: float
+    start_date: date
+    end_date: date
+
+
+class CoverageTrendPoint(BaseModel):
+    """Single data point for classification coverage over time."""
+
+    report_date: date
+    coverage_pct: float
+
+
+class CoverageTrendResponse(BaseModel):
+    """Response for classification coverage trend."""
+
+    data: list[CoverageTrendPoint]

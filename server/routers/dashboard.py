@@ -8,7 +8,11 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-from server.models.job_spend import JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends, PaginatedGroupedJobs, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformInfo
+from server.models.job_spend import (
+    JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends,
+    PaginatedGroupedJobs, CostAnalysis, ClusterDetails, ClusterAnalysis,
+    CloudPlatformInfo, OtherCostBreakdownResponse, CoverageTrendResponse,
+)
 from server.services.databricks_service import DatabricksService
 from server.services.llm_service import LLMService
 from server.config.cloud_platform import cloud_config
@@ -467,6 +471,9 @@ async def analyze_job_costs(
             job_name = None
 
         llm = get_llm_service()
+        usage_date_str = breakdown.usage_date.isoformat()
+        if breakdown.end_date:
+            usage_date_str = f"{breakdown.usage_date.isoformat()} to {breakdown.end_date.isoformat()}"
         analysis = await llm.analyze_job_costs(
             job_id=job_id,
             run_id=run_id,
@@ -474,7 +481,7 @@ async def analyze_job_costs(
             databricks_cost=breakdown.databricks_cost,
             total_cost=breakdown.total_cost,
             cluster_id=breakdown.cluster_id,
-            usage_date=breakdown.usage_date.isoformat(),
+            usage_date=usage_date_str,
             job_name=job_name,
             historical_stats=historical_stats,
         )
@@ -570,6 +577,62 @@ async def analyze_cluster_configuration(cluster_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Error generating cluster analysis: {str(e)}",
+        )
+
+
+@router.get("/other-cost-breakdown", response_model=OtherCostBreakdownResponse)
+async def get_other_cost_breakdown(
+    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    cluster_id: Optional[str] = Query(None, description="Optional cluster ID filter"),
+):
+    """
+    Get breakdown of 'other' (unclassified) costs by service name.
+
+    Returns top contributing services with cost and percentage.
+    Useful for investigating what drives unclassified costs.
+    """
+    try:
+        if start_date > end_date:
+            raise HTTPException(
+                status_code=400,
+                detail="Start date must be before or equal to end date"
+            )
+
+        service = get_databricks_service()
+        return await service.get_other_cost_breakdown(
+            start_date=start_date,
+            end_date=end_date,
+            cluster_id=cluster_id,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving other cost breakdown: {str(e)}"
+        )
+
+
+@router.get("/classification-coverage-trend", response_model=CoverageTrendResponse)
+async def get_classification_coverage_trend(
+    limit: int = Query(30, ge=1, le=100, description="Max data points to return"),
+):
+    """
+    Get classification coverage percentage over time.
+
+    Parsed from pipeline audit log entries. Shows how well cloud costs
+    are being classified into compute/storage/network categories.
+    """
+    try:
+        service = get_databricks_service()
+        return await service.get_classification_coverage_trend(limit=limit)
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving coverage trend: {str(e)}"
         )
 
 

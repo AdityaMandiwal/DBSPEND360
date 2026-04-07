@@ -13,6 +13,10 @@ export type JobSpend = {
     run_id: string;
     usage_date: string;
     databricks_cost: number;
+    compute_cost?: (number | null);
+    storage_cost?: (number | null);
+    network_cost?: (number | null);
+    other_cost?: (number | null);
     /**
      * Calculate total cost as sum of EC2 and Databricks costs.
      */

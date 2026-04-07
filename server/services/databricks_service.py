@@ -5,7 +5,12 @@ from typing import Dict, List, Optional, Tuple
 
 from databricks.sdk import WorkspaceClient
 
-from server.models.job_spend import JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends, GroupedJob, JobRun, PaginatedGroupedJobs, ClusterDetails
+from server.models.job_spend import (
+    JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends,
+    GroupedJob, JobRun, PaginatedGroupedJobs, ClusterDetails,
+    OtherCostBreakdownItem, OtherCostBreakdownResponse,
+    CoverageTrendPoint, CoverageTrendResponse,
+)
 from server.config.config_loader import app_config
 
 logger = logging.getLogger(__name__)
@@ -92,7 +97,11 @@ class DatabricksService:
             a.run_id,
             a.usage_date,
             a.databricks_cost,
-            jobs.name as job_name
+            jobs.name as job_name,
+            a.compute_cost,
+            a.storage_cost,
+            a.network_cost,
+            a.other_cost
         FROM {self.table_name} a LEFT OUTER JOIN system.lakeflow.jobs jobs ON a.job_id = jobs.job_id
         {where_clause}
         ORDER BY (a.cloud_cost + a.databricks_cost) DESC
@@ -119,7 +128,6 @@ class DatabricksService:
         if data_response.result and data_response.result.data_array:
             for row in data_response.result.data_array:
                 job_id = row[2]
-                ###job_name = await self.get_job_name(job_id)
 
                 job_spend = JobSpend(
                     cluster_id=row[0],
@@ -128,7 +136,11 @@ class DatabricksService:
                     job_name=row[6],
                     run_id=row[3],
                     usage_date=date.fromisoformat(row[4]),
-                    databricks_cost=float(row[5])
+                    databricks_cost=float(row[5]),
+                    compute_cost=float(row[7]) if row[7] is not None else None,
+                    storage_cost=float(row[8]) if row[8] is not None else None,
+                    network_cost=float(row[9]) if row[9] is not None else None,
+                    other_cost=float(row[10]) if row[10] is not None else None,
                 )
                 job_spends.append(job_spend)
 
@@ -157,7 +169,11 @@ class DatabricksService:
             MAX(cloud_cost + databricks_cost) as max_cost,
             MIN(cloud_cost + databricks_cost) as min_cost,
             SUM(cloud_cost) as total_ec2_cost,
-            SUM(databricks_cost) as total_databricks_cost
+            SUM(databricks_cost) as total_databricks_cost,
+            SUM(compute_cost) as total_compute_cost,
+            SUM(storage_cost) as total_storage_cost,
+            SUM(network_cost) as total_network_cost,
+            SUM(other_cost) as total_other_cost
         FROM {self.table_name}
         WHERE usage_date >= '{start_date.isoformat()}' AND usage_date <= '{end_date.isoformat()}'
         """
@@ -171,18 +187,53 @@ class DatabricksService:
             row = response.result.data_array[0]
             date_range_days = (end_date - start_date).days + 1
 
+            total_compute = float(row[7]) if row[7] is not None else None
+            total_storage = float(row[8]) if row[8] is not None else None
+            total_network = float(row[9]) if row[9] is not None else None
+            total_other = float(row[10]) if row[10] is not None else None
+
+            total_ec2 = float(row[5]) if row[5] else 0.0
+            coverage_pct = None
+            if total_compute is not None and total_ec2 > 0:
+                classified = (total_compute or 0) + (total_storage or 0) + (total_network or 0)
+                coverage_pct = (classified / total_ec2) * 100
+
+            coverage_status = None
+            coverage_warning = None
+            if coverage_pct is not None:
+                if coverage_pct >= 95:
+                    coverage_status = "ok"
+                elif coverage_pct >= 80:
+                    coverage_status = "warning"
+                    coverage_warning = (
+                        "Moderate unclassified cost detected. "
+                        "Review the 'Other' category for potential classification improvements."
+                    )
+                else:
+                    coverage_status = "critical"
+                    coverage_warning = (
+                        "High unclassified cost detected. "
+                        "Investigate 'Other' category immediately."
+                    )
+
             return SummaryMetrics(
                 total_jobs=int(row[0]) if row[0] else 0,
                 total_spend=float(row[1]) if row[1] else 0.0,
                 average_cost=float(row[2]) if row[2] else 0.0,
                 max_cost=float(row[3]) if row[3] else 0.0,
                 min_cost=float(row[4]) if row[4] else 0.0,
-                total_ec2_cost=float(row[5]) if row[5] else 0.0,
+                total_ec2_cost=total_ec2,
                 total_databricks_cost=float(row[6]) if row[6] else 0.0,
+                total_compute_cost=total_compute,
+                total_storage_cost=total_storage,
+                total_network_cost=total_network,
+                total_other_cost=total_other,
+                classification_coverage_pct=coverage_pct,
+                coverage_status=coverage_status,
+                coverage_warning=coverage_warning,
                 date_range_days=date_range_days
             )
 
-        # Return empty metrics if no data
         return SummaryMetrics(
             total_jobs=0,
             total_spend=0.0,
@@ -195,9 +246,8 @@ class DatabricksService:
         )
 
     async def get_job_cost_breakdown(self, job_id: str, run_id: str) -> Optional[CostBreakdown]:
-        """Get detailed cost breakdown for a specific job run, aggregated by run_id."""
+        """Get detailed cost breakdown for a specific job run, aggregated across all days."""
 
-        # Escape single quotes to prevent SQL injection
         escaped_job_id = job_id.replace("'", "''")
         escaped_run_id = run_id.replace("'", "''")
 
@@ -205,13 +255,18 @@ class DatabricksService:
         SELECT
             job_id,
             run_id,
-            cluster_id,
-            usage_date,
+            MIN(cluster_id) as cluster_id,
+            MIN(usage_date) as start_date,
+            MAX(usage_date) as end_date,
             SUM(cloud_cost) as total_ec2_cost,
-            SUM(databricks_cost) as total_databricks_cost
+            SUM(databricks_cost) as total_databricks_cost,
+            SUM(compute_cost) as total_compute_cost,
+            SUM(storage_cost) as total_storage_cost,
+            SUM(network_cost) as total_network_cost,
+            SUM(other_cost) as total_other_cost
         FROM {self.table_name}
         WHERE job_id = '{escaped_job_id}' AND run_id = '{escaped_run_id}'
-        GROUP BY job_id, run_id, cluster_id, usage_date
+        GROUP BY job_id, run_id
         """
 
         response = self.client.statement_execution.execute_statement(
@@ -221,17 +276,24 @@ class DatabricksService:
 
         if response.result and response.result.data_array:
             row = response.result.data_array[0]
-            ec2_cost = float(row[4])
-            databricks_cost = float(row[5])
+            ec2_cost = float(row[5])
+            databricks_cost = float(row[6])
+            start_date = date.fromisoformat(row[3])
+            end_date = date.fromisoformat(row[4])
 
             return CostBreakdown(
                 job_id=row[0],
                 run_id=row[1],
                 cluster_id=row[2],
-                usage_date=date.fromisoformat(row[3]),
+                usage_date=start_date,
+                end_date=end_date if end_date != start_date else None,
                 ec2_cost=ec2_cost,
                 databricks_cost=databricks_cost,
-                total_cost=ec2_cost + databricks_cost
+                total_cost=ec2_cost + databricks_cost,
+                compute_cost=float(row[7]) if row[7] is not None else None,
+                storage_cost=float(row[8]) if row[8] is not None else None,
+                network_cost=float(row[9]) if row[9] is not None else None,
+                other_cost=float(row[10]) if row[10] is not None else None,
             )
 
         return None
@@ -247,7 +309,11 @@ class DatabricksService:
             a.run_id,
             a.usage_date,
             a.databricks_cost, 
-            jobs.name
+            jobs.name,
+            a.compute_cost,
+            a.storage_cost,
+            a.network_cost,
+            a.other_cost
         FROM {self.table_name} a LEFT OUTER JOIN system.lakeflow.jobs jobs ON a.job_id = jobs.job_id
         WHERE a.usage_date >= '{start_date.isoformat()}' AND a.usage_date <= '{end_date.isoformat()}'
         ORDER BY (a.cloud_cost + a.databricks_cost) DESC
@@ -263,7 +329,6 @@ class DatabricksService:
         if response.result and response.result.data_array:
             for row in response.result.data_array:
                 job_id = row[2]
-                #job_name = await self.get_job_name(job_id)
 
                 job_spend = JobSpend(
                     cluster_id=row[0],
@@ -272,7 +337,11 @@ class DatabricksService:
                     job_name=row[6],
                     run_id=row[3],
                     usage_date=date.fromisoformat(row[4]),
-                    databricks_cost=float(row[5])
+                    databricks_cost=float(row[5]),
+                    compute_cost=float(row[7]) if row[7] is not None else None,
+                    storage_cost=float(row[8]) if row[8] is not None else None,
+                    network_cost=float(row[9]) if row[9] is not None else None,
+                    other_cost=float(row[10]) if row[10] is not None else None,
                 )
                 jobs.append(job_spend)
 
@@ -309,7 +378,11 @@ class DatabricksService:
                 job_id,
                 run_id,
                 SUM(cloud_cost) AS cloud_cost,
-                SUM(databricks_cost) AS databricks_cost
+                SUM(databricks_cost) AS databricks_cost,
+                SUM(compute_cost) AS compute_cost,
+                SUM(storage_cost) AS storage_cost,
+                SUM(network_cost) AS network_cost,
+                SUM(other_cost) AS other_cost
             FROM filtered
             GROUP BY job_id, run_id
         ),
@@ -318,6 +391,10 @@ class DatabricksService:
                 job_id,
                 SUM(cloud_cost) AS total_ec2_cost,
                 SUM(databricks_cost) AS total_databricks_cost,
+                SUM(compute_cost) AS total_compute_cost,
+                SUM(storage_cost) AS total_storage_cost,
+                SUM(network_cost) AS total_network_cost,
+                SUM(other_cost) AS total_other_cost,
                 COUNT(*) AS run_count
             FROM run_level
             GROUP BY job_id
@@ -331,7 +408,11 @@ class DatabricksService:
             j.total_databricks_cost,
             j.run_count,
             lj.name,
-            COUNT(*) OVER() AS total_matching
+            COUNT(*) OVER() AS total_matching,
+            j.total_compute_cost,
+            j.total_storage_cost,
+            j.total_network_cost,
+            j.total_other_cost
         FROM job_level j
         LEFT JOIN (
             SELECT DISTINCT job_id, name
@@ -369,6 +450,10 @@ class DatabricksService:
                     run_count=run_count,
                     total_ec2_cost=total_ec2_cost,
                     total_databricks_cost=total_databricks_cost,
+                    total_compute_cost=float(row[6]) if row[6] is not None else None,
+                    total_storage_cost=float(row[7]) if row[7] is not None else None,
+                    total_network_cost=float(row[8]) if row[8] is not None else None,
+                    total_other_cost=float(row[9]) if row[9] is not None else None,
                     runs=runs_by_job.get(job_id, [])
                 )
                 grouped_jobs.append(grouped_job)
@@ -411,6 +496,10 @@ class DatabricksService:
                 MAX(usage_date) as end_date,
                 SUM(cloud_cost) as total_ec2_cost,
                 SUM(databricks_cost) as total_databricks_cost,
+                SUM(compute_cost) as total_compute_cost,
+                SUM(storage_cost) as total_storage_cost,
+                SUM(network_cost) as total_network_cost,
+                SUM(other_cost) as total_other_cost,
                 ROW_NUMBER() OVER (
                     PARTITION BY job_id
                     ORDER BY MAX(usage_date) DESC, run_id DESC
@@ -422,7 +511,9 @@ class DatabricksService:
             GROUP BY job_id, run_id, cluster_id
         )
         SELECT job_id, run_id, cluster_id, start_date, end_date,
-               total_ec2_cost, total_databricks_cost
+               total_ec2_cost, total_databricks_cost,
+               total_compute_cost, total_storage_cost, total_network_cost,
+               total_other_cost
         FROM ranked_runs
         WHERE rn <= {runs_per_job}
         ORDER BY job_id, end_date DESC, run_id DESC
@@ -443,7 +534,11 @@ class DatabricksService:
                     start_date=date.fromisoformat(row[3]),
                     end_date=date.fromisoformat(row[4]),
                     ec2_cost=float(row[5]),
-                    databricks_cost=float(row[6])
+                    databricks_cost=float(row[6]),
+                    compute_cost=float(row[7]) if row[7] is not None else None,
+                    storage_cost=float(row[8]) if row[8] is not None else None,
+                    network_cost=float(row[9]) if row[9] is not None else None,
+                    other_cost=float(row[10]) if row[10] is not None else None,
                 )
                 runs_by_job.setdefault(job_id, []).append(run)
 
@@ -462,7 +557,11 @@ class DatabricksService:
             MIN(usage_date) as start_date,
             MAX(usage_date) as end_date,
             SUM(cloud_cost) as total_ec2_cost,
-            SUM(databricks_cost) as total_databricks_cost
+            SUM(databricks_cost) as total_databricks_cost,
+            SUM(compute_cost) as total_compute_cost,
+            SUM(storage_cost) as total_storage_cost,
+            SUM(network_cost) as total_network_cost,
+            SUM(other_cost) as total_other_cost
         FROM {self.table_name}
         WHERE job_id = '{escaped_job_id}'
         AND usage_date >= '{start_date.isoformat()}'
@@ -486,7 +585,11 @@ class DatabricksService:
                     start_date=date.fromisoformat(row[2]),
                     end_date=date.fromisoformat(row[3]),
                     ec2_cost=float(row[4]),
-                    databricks_cost=float(row[5])
+                    databricks_cost=float(row[5]),
+                    compute_cost=float(row[6]) if row[6] is not None else None,
+                    storage_cost=float(row[7]) if row[7] is not None else None,
+                    network_cost=float(row[8]) if row[8] is not None else None,
+                    other_cost=float(row[9]) if row[9] is not None else None,
                 )
                 runs.append(run)
 
@@ -847,3 +950,153 @@ class DatabricksService:
                 cluster_id, str(e),
             )
             return None
+
+    async def get_other_cost_breakdown(
+        self,
+        start_date: date,
+        end_date: date,
+        cluster_id: Optional[str] = None,
+        limit: int = 15,
+    ) -> OtherCostBreakdownResponse:
+        """Get breakdown of other_cost by service_name for the given date range."""
+        schema_name = app_config.schema_name
+        if not schema_name:
+            return OtherCostBreakdownResponse(
+                items=[], total_other_cost=0.0,
+                start_date=start_date, end_date=end_date,
+            )
+
+        breakdown_table = f"{schema_name}.dbspend360_other_cost_breakdown"
+
+        where_parts = [
+            f"cost_incurred_date >= '{start_date.isoformat()}'",
+            f"cost_incurred_date <= '{end_date.isoformat()}'",
+        ]
+        if cluster_id:
+            escaped = cluster_id.replace("'", "''")
+            where_parts.append(f"cluster_id = '{escaped}'")
+
+        where_clause = " AND ".join(where_parts)
+
+        query = f"""
+        WITH ranked AS (
+            SELECT
+                service_name,
+                source_system,
+                SUM(cost) AS total_cost,
+                ROW_NUMBER() OVER (ORDER BY SUM(cost) DESC) AS rn
+            FROM {breakdown_table}
+            WHERE {where_clause}
+            GROUP BY service_name, source_system
+        ),
+        top_n AS (
+            SELECT service_name, source_system, total_cost
+            FROM ranked WHERE rn <= {limit}
+        ),
+        others AS (
+            SELECT 'Other Services' AS service_name,
+                   'MIXED' AS source_system,
+                   SUM(total_cost) AS total_cost
+            FROM ranked WHERE rn > {limit}
+        ),
+        combined AS (
+            SELECT * FROM top_n
+            UNION ALL
+            SELECT * FROM others WHERE total_cost > 0
+        ),
+        grand_total AS (
+            SELECT COALESCE(SUM(total_cost), 0) AS grand_total FROM ranked
+        )
+        SELECT c.service_name, c.source_system, c.total_cost,
+               g.grand_total
+        FROM combined c CROSS JOIN grand_total g
+        ORDER BY c.total_cost DESC
+        """
+
+        try:
+            response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=query
+            )
+
+            items: List[OtherCostBreakdownItem] = []
+            total_other_cost = 0.0
+
+            if response.result and response.result.data_array:
+                total_other_cost = float(response.result.data_array[0][3]) if response.result.data_array[0][3] else 0.0
+
+                for row in response.result.data_array:
+                    cost = float(row[2]) if row[2] else 0.0
+                    pct = (cost / total_other_cost * 100) if total_other_cost > 0 else 0.0
+                    items.append(OtherCostBreakdownItem(
+                        service_name=row[0] or "Unknown",
+                        source_system=row[1] or "Unknown",
+                        cost=cost,
+                        percentage=round(pct, 1),
+                    ))
+
+            return OtherCostBreakdownResponse(
+                items=items,
+                total_other_cost=total_other_cost,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+        except Exception as e:
+            logger.error("Error fetching other cost breakdown: %s", str(e))
+            return OtherCostBreakdownResponse(
+                items=[], total_other_cost=0.0,
+                start_date=start_date, end_date=end_date,
+            )
+
+    async def get_classification_coverage_trend(
+        self,
+        limit: int = 30,
+    ) -> CoverageTrendResponse:
+        """Get classification coverage trend from the audit log.
+
+        Parses `classification_coverage=XX.X%` from the message column
+        of successful cloud cost explorer runs.
+        """
+        schema_name = app_config.schema_name
+        if not schema_name:
+            return CoverageTrendResponse(data=[])
+
+        audit_table = f"{schema_name}.dbspend360_audit_log"
+
+        query = f"""
+        SELECT
+            end_date AS report_date,
+            CAST(
+                regexp_extract(message, 'classification_coverage=([0-9.]+)%', 1)
+                AS DOUBLE
+            ) AS coverage_pct
+        FROM {audit_table}
+        WHERE table_name = 'dbspend360_cloud_cost_explorer'
+          AND status = 'SUCCESS'
+          AND message LIKE '%classification_coverage=%'
+        ORDER BY end_date DESC
+        LIMIT {limit}
+        """
+
+        try:
+            response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=query
+            )
+
+            data: List[CoverageTrendPoint] = []
+            if response.result and response.result.data_array:
+                for row in response.result.data_array:
+                    if row[0] and row[1] is not None:
+                        data.append(CoverageTrendPoint(
+                            report_date=date.fromisoformat(row[0]),
+                            coverage_pct=float(row[1]),
+                        ))
+
+            data.reverse()
+            return CoverageTrendResponse(data=data)
+
+        except Exception as e:
+            logger.error("Error fetching coverage trend: %s", str(e))
+            return CoverageTrendResponse(data=[])

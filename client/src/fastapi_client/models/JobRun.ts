@@ -12,6 +12,10 @@ export type JobRun = {
     end_date: string;
     ec2_cost: number;
     databricks_cost: number;
+    compute_cost?: (number | null);
+    storage_cost?: (number | null);
+    network_cost?: (number | null);
+    other_cost?: (number | null);
     /**
      * Calculate total cost as sum of EC2 and Databricks costs.
      */

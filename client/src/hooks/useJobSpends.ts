@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
-import { JobSpendFilter, DateRange } from '@/types/job-spend';
+import { JobSpendFilter, DateRange, OtherCostBreakdownResponse, CoverageTrendResponse } from '@/types/job-spend';
 
 export const useJobSpends = (filter: JobSpendFilter) => {
   return useQuery({
@@ -70,5 +70,26 @@ export const useDatePresets = () => {
     queryKey: ['date-presets'],
     queryFn: () => apiClient.getDatePresets(),
     staleTime: 60 * 60 * 1000, // 1 hour - presets don't change often
+  });
+};
+
+export const useOtherCostBreakdown = (
+  dateRange: DateRange,
+  clusterId?: string,
+  enabled: boolean = true,
+) => {
+  return useQuery<OtherCostBreakdownResponse>({
+    queryKey: ['other-cost-breakdown', dateRange, clusterId],
+    queryFn: () => apiClient.getOtherCostBreakdown(dateRange, clusterId),
+    staleTime: 5 * 60 * 1000,
+    enabled: enabled && !!(dateRange.start_date && dateRange.end_date),
+  });
+};
+
+export const useCoverageTrend = (limit: number = 30) => {
+  return useQuery<CoverageTrendResponse>({
+    queryKey: ['coverage-trend', limit],
+    queryFn: () => apiClient.getCoverageTrend(limit),
+    staleTime: 10 * 60 * 1000,
   });
 };

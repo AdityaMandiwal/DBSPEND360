@@ -12,6 +12,10 @@ export type GroupedJob = {
     run_count: number;
     total_ec2_cost: number;
     total_databricks_cost: number;
+    total_compute_cost?: (number | null);
+    total_storage_cost?: (number | null);
+    total_network_cost?: (number | null);
+    total_other_cost?: (number | null);
     runs: Array<JobRun>;
     /**
      * Calculate total cost across all runs.
