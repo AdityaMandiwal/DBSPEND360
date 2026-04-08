@@ -1,4 +1,4 @@
-import { JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends, DateRange, JobSpendFilter, DatePreset, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformConfig } from '@/types/job-spend';
+import { JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends, DateRange, JobSpendFilter, DatePreset, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformConfig, OtherCostBreakdownResponse, CoverageTrendResponse } from '@/types/job-spend';
 import { API_BASE_URL } from '@/lib/api-config';
 
 class ApiClient {
@@ -77,6 +77,25 @@ class ApiClient {
 
   async getCloudPlatformConfig(): Promise<CloudPlatformConfig> {
     return this.fetchApi<CloudPlatformConfig>('/cloud-platform');
+  }
+
+  async getOtherCostBreakdown(
+    dateRange: DateRange,
+    clusterId?: string,
+  ): Promise<OtherCostBreakdownResponse> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+    });
+    if (clusterId) {
+      params.append('cluster_id', clusterId);
+    }
+    return this.fetchApi<OtherCostBreakdownResponse>(`/other-cost-breakdown?${params}`);
+  }
+
+  async getCoverageTrend(limit: number = 30): Promise<CoverageTrendResponse> {
+    const params = new URLSearchParams({ limit: limit.toString() });
+    return this.fetchApi<CoverageTrendResponse>(`/classification-coverage-trend?${params}`);
   }
 
   async healthCheck(): Promise<{ status: string; service: string }> {

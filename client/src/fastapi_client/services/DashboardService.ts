@@ -7,7 +7,9 @@ import type { ClusterAnalysis } from '../models/ClusterAnalysis';
 import type { ClusterDetails } from '../models/ClusterDetails';
 import type { CostAnalysis } from '../models/CostAnalysis';
 import type { CostBreakdown } from '../models/CostBreakdown';
+import type { CoverageTrendResponse } from '../models/CoverageTrendResponse';
 import type { JobSpend } from '../models/JobSpend';
+import type { OtherCostBreakdownResponse } from '../models/OtherCostBreakdownResponse';
 import type { PaginatedGroupedJobs } from '../models/PaginatedGroupedJobs';
 import type { PaginatedJobSpends } from '../models/PaginatedJobSpends';
 import type { SummaryMetrics } from '../models/SummaryMetrics';
@@ -237,8 +239,8 @@ export class DashboardService {
      * Analyze Job Costs
      * Get LLM-powered cost analysis for a specific job run.
      *
-     * Returns AI-generated insights about EC2 vs Databricks cost breakdown,
-     * optimization recommendations, and cost efficiency assessment.
+     * Fetches cost breakdown, historical stats, and job name in parallel,
+     * then passes all context to the LLM for grounded analysis.
      * @param jobId
      * @param runId Run ID for the specific job execution
      * @returns CostAnalysis Successful Response
@@ -290,8 +292,8 @@ export class DashboardService {
      * Analyze Cluster Configuration
      * Get LLM-powered cluster configuration analysis.
      *
-     * Returns AI-generated insights about cluster optimization, cost reduction opportunities,
-     * performance improvements, and best practices recommendations.
+     * Fetches cluster details and cost summary in parallel, then passes
+     * all context to the LLM for grounded configuration analysis.
      * @param clusterId
      * @returns ClusterAnalysis Successful Response
      * @throws ApiError
@@ -304,6 +306,60 @@ export class DashboardService {
             url: '/api/cluster/{cluster_id}/analyze',
             path: {
                 'cluster_id': clusterId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Other Cost Breakdown
+     * Get breakdown of 'other' (unclassified) costs by service name.
+     *
+     * Returns top contributing services with cost and percentage.
+     * Useful for investigating what drives unclassified costs.
+     * @param startDate Start date (YYYY-MM-DD)
+     * @param endDate End date (YYYY-MM-DD)
+     * @param clusterId Optional cluster ID filter
+     * @returns OtherCostBreakdownResponse Successful Response
+     * @throws ApiError
+     */
+    public static getOtherCostBreakdownApiOtherCostBreakdownGet(
+        startDate: string,
+        endDate: string,
+        clusterId?: (string | null),
+    ): CancelablePromise<OtherCostBreakdownResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/other-cost-breakdown',
+            query: {
+                'start_date': startDate,
+                'end_date': endDate,
+                'cluster_id': clusterId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Classification Coverage Trend
+     * Get classification coverage percentage over time.
+     *
+     * Parsed from pipeline audit log entries. Shows how well cloud costs
+     * are being classified into compute/storage/network categories.
+     * @param limit Max data points to return
+     * @returns CoverageTrendResponse Successful Response
+     * @throws ApiError
+     */
+    public static getClassificationCoverageTrendApiClassificationCoverageTrendGet(
+        limit: number = 30,
+    ): CancelablePromise<CoverageTrendResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/classification-coverage-trend',
+            query: {
+                'limit': limit,
             },
             errors: {
                 422: `Validation Error`,

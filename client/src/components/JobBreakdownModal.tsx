@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
-import { X, Calendar, Server, DollarSign, Brain, Lightbulb, Info } from 'lucide-react';
+import { Calendar, Server, DollarSign, Brain, Lightbulb, Info, Search } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useJobBreakdown, useJobCostAnalysis, useClusterDetails, useClusterAnalysis } from '@/hooks/useJobSpends';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 
 interface JobBreakdownModalProps {
   jobId: string;
@@ -32,6 +33,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
   const { data: breakdown, isLoading, error } = useJobBreakdown(jobId, runId);
   const { data: analysis, isLoading: analysisLoading, error: analysisError } = useJobCostAnalysis(jobId, runId);
   const [isClusterDetailsOpen, setIsClusterDetailsOpen] = useState(false);
+  const [isOtherBreakdownOpen, setIsOtherBreakdownOpen] = useState(false);
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -120,7 +122,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                       cx="50%"
                       cy="50%"
                       labelLine={false}
-                      label={({ name, percent }) => `${name} (${(percent * 100).toFixed(1)}%)`}
+                      label={({ name, percent }: { name?: string; percent?: number }) => `${name ?? ''} (${((percent ?? 0) * 100).toFixed(1)}%)`}
                       outerRadius={80}
                       fill="#8884d8"
                       dataKey="value"
@@ -203,10 +205,14 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                   </div>
 
                   <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-muted-foreground">Usage Date</span>
+                    <span className="text-sm font-medium text-muted-foreground">
+                      {breakdown.end_date ? 'Usage Period' : 'Usage Date'}
+                    </span>
                     <div className="flex items-center text-sm">
                       <Calendar className="mr-1 h-4 w-4" />
-                      {formatDate(breakdown.usage_date)}
+                      {breakdown.end_date
+                        ? `${formatDate(breakdown.usage_date)} — ${formatDate(breakdown.end_date)}`
+                        : formatDate(breakdown.usage_date)}
                     </div>
                   </div>
                 </div>
@@ -215,20 +221,65 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                 <div className="p-4 border rounded-lg space-y-3">
                   <h4 className="font-semibold">Cost Analysis</h4>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="text-center p-3 bg-blue-50 rounded">
-                      <div className="text-2xl font-bold text-blue-600">
-                        {((breakdown.ec2_cost / breakdown.total_cost) * 100).toFixed(1)}%
+                  {breakdown.compute_cost != null ? (
+                    <>
+                      <div className={`grid gap-3 ${(breakdown.other_cost ?? 0) > 0 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                        <div className="text-center p-3 bg-blue-50 rounded">
+                          <div className="text-xl font-bold text-blue-600">
+                            {breakdown.total_cost > 0 ? ((breakdown.compute_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                          </div>
+                          <div className="text-xs text-blue-600">Compute</div>
+                        </div>
+                        <div className="text-center p-3 bg-green-50 rounded">
+                          <div className="text-xl font-bold text-green-600">
+                            {breakdown.total_cost > 0 ? (((breakdown.storage_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                          </div>
+                          <div className="text-xs text-green-600">Storage</div>
+                        </div>
+                        <div className="text-center p-3 bg-amber-50 rounded">
+                          <div className="text-xl font-bold text-amber-600">
+                            {breakdown.total_cost > 0 ? (((breakdown.network_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                          </div>
+                          <div className="text-xs text-amber-600">Network</div>
+                        </div>
+                        {(breakdown.other_cost ?? 0) > 0 && (
+                          <div
+                            className="text-center p-3 bg-gray-50 rounded cursor-pointer hover:bg-gray-100 transition-colors"
+                            onClick={() => setIsOtherBreakdownOpen(true)}
+                            title="Click to view breakdown of unclassified costs"
+                          >
+                            <div className="text-xl font-bold text-gray-500">
+                              {breakdown.total_cost > 0 ? (((breakdown.other_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                            </div>
+                            <div className="text-xs text-gray-500 flex items-center justify-center gap-1">
+                              Other <Search className="h-2.5 w-2.5" />
+                            </div>
+                          </div>
+                        )}
+                        <div className="text-center p-3 bg-red-50 rounded">
+                          <div className="text-xl font-bold text-red-600">
+                            {breakdown.total_cost > 0 ? ((breakdown.databricks_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                          </div>
+                          <div className="text-xs text-red-600">DBU</div>
+                        </div>
                       </div>
-                      <div className="text-sm text-blue-600">{cloudConfig?.compute_service || 'EC2'} Share</div>
-                    </div>
-                    <div className="text-center p-3 bg-red-50 rounded">
-                      <div className="text-2xl font-bold text-red-600">
-                        {((breakdown.databricks_cost / breakdown.total_cost) * 100).toFixed(1)}%
+                    </>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="text-center p-3 bg-blue-50 rounded">
+                        <div className="text-2xl font-bold text-blue-600">
+                          {breakdown.total_cost > 0 ? ((breakdown.ec2_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                        </div>
+                        <div className="text-sm text-blue-600">{cloudConfig?.compute_service || 'Cloud'} Share</div>
                       </div>
-                      <div className="text-sm text-red-600">Databricks Share</div>
+                      <div className="text-center p-3 bg-red-50 rounded">
+                        <div className="text-2xl font-bold text-red-600">
+                          {breakdown.total_cost > 0 ? ((breakdown.databricks_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                        </div>
+                        <div className="text-sm text-red-600">Databricks Share</div>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   {/* Cost Indicators */}
                   <div className="space-y-2">
@@ -239,7 +290,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                     )}
                     {breakdown.ec2_cost > breakdown.databricks_cost ? (
                       <Badge variant="secondary" className="w-full justify-center">
-{cloudConfig?.compute_service || 'EC2'}-Heavy Workload
+                        Cloud-Heavy Workload
                       </Badge>
                     ) : (
                       <Badge variant="secondary" className="w-full justify-center">
@@ -326,11 +377,22 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
 
         {/* Cluster Details Modal */}
         {breakdown && (
-          <ClusterDetailsModal
-            clusterId={breakdown.cluster_id}
-            isOpen={isClusterDetailsOpen}
-            onClose={() => setIsClusterDetailsOpen(false)}
-          />
+          <>
+            <ClusterDetailsModal
+              clusterId={breakdown.cluster_id}
+              isOpen={isClusterDetailsOpen}
+              onClose={() => setIsClusterDetailsOpen(false)}
+            />
+            <OtherCostBreakdownModal
+              dateRange={{
+                start_date: breakdown.usage_date,
+                end_date: breakdown.end_date || breakdown.usage_date,
+              }}
+              clusterId={breakdown.cluster_id}
+              isOpen={isOtherBreakdownOpen}
+              onClose={() => setIsOtherBreakdownOpen(false)}
+            />
+          </>
         )}
       </DialogContent>
     </Dialog>

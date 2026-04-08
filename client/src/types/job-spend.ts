@@ -9,6 +9,10 @@ export interface JobSpend {
   total_cost: number;
   ec2_percentage: number;
   databricks_percentage: number;
+  compute_cost?: number | null;
+  storage_cost?: number | null;
+  network_cost?: number | null;
+  other_cost?: number | null;
 }
 
 export interface SummaryMetrics {
@@ -19,6 +23,13 @@ export interface SummaryMetrics {
   min_cost: number;
   total_ec2_cost: number;
   total_databricks_cost: number;
+  total_compute_cost?: number | null;
+  total_storage_cost?: number | null;
+  total_network_cost?: number | null;
+  total_other_cost?: number | null;
+  classification_coverage_pct?: number | null;
+  coverage_status?: string | null;
+  coverage_warning?: string | null;
   date_range_days: number;
 }
 
@@ -27,9 +38,14 @@ export interface CostBreakdown {
   run_id: string;
   cluster_id: string;
   usage_date: string;
+  end_date?: string | null;
   ec2_cost: number;
   databricks_cost: number;
   total_cost: number;
+  compute_cost?: number | null;
+  storage_cost?: number | null;
+  network_cost?: number | null;
+  other_cost?: number | null;
   cost_split: Array<{
     name: string;
     value: number;
@@ -47,6 +63,10 @@ export interface JobRun {
   total_cost: number;
   ec2_percentage: number;
   databricks_percentage: number;
+  compute_cost?: number | null;
+  storage_cost?: number | null;
+  network_cost?: number | null;
+  other_cost?: number | null;
 }
 
 export interface GroupedJob {
@@ -55,6 +75,10 @@ export interface GroupedJob {
   run_count: number;
   total_ec2_cost: number;
   total_databricks_cost: number;
+  total_compute_cost?: number | null;
+  total_storage_cost?: number | null;
+  total_network_cost?: number | null;
+  total_other_cost?: number | null;
   runs: JobRun[];
   total_cost: number;
   ec2_percentage: number;
@@ -135,6 +159,29 @@ export interface CloudPlatformConfig {
   compute_service: string;
   compute_display_name: string;
   platform_display_name: string;
+}
+
+export interface OtherCostBreakdownItem {
+  service_name: string;
+  cost: number;
+  percentage: number;
+  source_system: string;
+}
+
+export interface OtherCostBreakdownResponse {
+  items: OtherCostBreakdownItem[];
+  total_other_cost: number;
+  start_date: string;
+  end_date: string;
+}
+
+export interface CoverageTrendPoint {
+  report_date: string;
+  coverage_pct: number;
+}
+
+export interface CoverageTrendResponse {
+  data: CoverageTrendPoint[];
 }
 
 export interface ApiResponse<T> {

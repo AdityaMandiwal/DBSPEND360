@@ -1,9 +1,13 @@
+import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { TrendingUp, TrendingDown, DollarSign, Activity, BarChart3, AlertTriangle } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { TrendingUp, TrendingDown, DollarSign, Activity, BarChart3, AlertTriangle, Search } from 'lucide-react';
 import { useSummaryMetrics, useTopJobs } from '@/hooks/useJobSpends';
 import { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
+import { CoverageTrendChart } from './CoverageTrendChart';
 
 interface SummaryCardsProps {
   dateRange: DateRange;
@@ -13,6 +17,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
   const { config: cloudConfig } = useCloudPlatform();
   const { data: metrics, isLoading: isMetricsLoading } = useSummaryMetrics(dateRange);
   const { data: topJobs, isLoading: isTopJobsLoading } = useTopJobs(dateRange, 5);
+  const [showOtherBreakdown, setShowOtherBreakdown] = useState(false);
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -63,6 +68,17 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
   const dailyAverageSpend = metrics.total_spend / Math.max(metrics.date_range_days, 1);
   const ec2Percentage = metrics.total_spend > 0 ? (metrics.total_ec2_cost / metrics.total_spend) * 100 : 0;
   const databricksPercentage = metrics.total_spend > 0 ? (metrics.total_databricks_cost / metrics.total_spend) * 100 : 0;
+
+  const hasSegmented = metrics.total_compute_cost != null;
+  const computePct = hasSegmented && metrics.total_ec2_cost > 0
+    ? ((metrics.total_compute_cost ?? 0) / metrics.total_ec2_cost) * 100 : 0;
+  const storagePct = hasSegmented && metrics.total_ec2_cost > 0
+    ? ((metrics.total_storage_cost ?? 0) / metrics.total_ec2_cost) * 100 : 0;
+  const networkPct = hasSegmented && metrics.total_ec2_cost > 0
+    ? ((metrics.total_network_cost ?? 0) / metrics.total_ec2_cost) * 100 : 0;
+  const otherPct = hasSegmented && metrics.total_ec2_cost > 0
+    ? ((metrics.total_other_cost ?? 0) / metrics.total_ec2_cost) * 100 : 0;
+  const coveragePct = metrics.classification_coverage_pct;
 
   return (
     <div className="space-y-6">
@@ -135,48 +151,148 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
 
       {/* Cost Breakdown Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* EC2 vs Databricks Breakdown */}
+        {/* Cloud vs Databricks Breakdown */}
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Cost Breakdown</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {/* EC2 Costs */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                  <span className="text-sm font-medium">{cloudConfig?.compute_display_name || 'EC2 Costs'}</span>
-                </div>
-                <div className="text-right">
-                  <div className="font-semibold">{formatCurrency(metrics.total_ec2_cost)}</div>
-                  <div className="text-xs text-muted-foreground">{ec2Percentage.toFixed(1)}%</div>
-                </div>
-              </div>
+              {hasSegmented ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+                      <span className="text-sm font-medium">Compute</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold">{formatCurrency(metrics.total_compute_cost ?? 0)}</div>
+                      <div className="text-xs text-muted-foreground">{computePct.toFixed(1)}% of cloud</div>
+                    </div>
+                  </div>
 
-              {/* Databricks Costs */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-                  <span className="text-sm font-medium">Databricks Costs</span>
-                </div>
-                <div className="text-right">
-                  <div className="font-semibold">{formatCurrency(metrics.total_databricks_cost)}</div>
-                  <div className="text-xs text-muted-foreground">{databricksPercentage.toFixed(1)}%</div>
-                </div>
-              </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <span className="text-sm font-medium">Storage</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold">{formatCurrency(metrics.total_storage_cost ?? 0)}</div>
+                      <div className="text-xs text-muted-foreground">{storagePct.toFixed(1)}% of cloud</div>
+                    </div>
+                  </div>
 
-              {/* Visual Bar */}
-              <div className="w-full bg-gray-200 rounded-full h-2 mt-3">
-                <div
-                  className="bg-blue-500 h-2 rounded-l-full"
-                  style={{ width: `${ec2Percentage}%` }}
-                ></div>
-                <div
-                  className="bg-red-500 h-2 rounded-r-full -mt-2 ml-auto"
-                  style={{ width: `${databricksPercentage}%` }}
-                ></div>
-              </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className="w-3 h-3 bg-amber-500 rounded-full"></div>
+                      <span className="text-sm font-medium">Network</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold">{formatCurrency(metrics.total_network_cost ?? 0)}</div>
+                      <div className="text-xs text-muted-foreground">{networkPct.toFixed(1)}% of cloud</div>
+                    </div>
+                  </div>
+
+                  {(metrics.total_other_cost ?? 0) > 0 && (
+                    <div
+                      className="flex items-center justify-between cursor-pointer hover:bg-gray-50 rounded px-1 -mx-1 transition-colors"
+                      onClick={() => setShowOtherBreakdown(true)}
+                      title="Click to view breakdown of unclassified costs"
+                    >
+                      <div className="flex items-center space-x-2">
+                        <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
+                        <span className="text-sm font-medium">Other (Unclassified)</span>
+                        <Search className="h-3 w-3 text-muted-foreground" />
+                      </div>
+                      <div className="text-right">
+                        <div className="font-semibold">{formatCurrency(metrics.total_other_cost ?? 0)}</div>
+                        <div className="text-xs text-muted-foreground">{otherPct.toFixed(1)}% of cloud</div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between border-t pt-2">
+                    <div className="flex items-center space-x-2">
+                      <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                      <span className="text-sm font-medium">Databricks (DBU)</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold">{formatCurrency(metrics.total_databricks_cost)}</div>
+                      <div className="text-xs text-muted-foreground">{databricksPercentage.toFixed(1)}% of total</div>
+                    </div>
+                  </div>
+
+                  {coveragePct != null && (
+                    <div className="space-y-2 border-t pt-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-muted-foreground">Classification Coverage</span>
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant={metrics.coverage_status === 'ok' ? 'default' : metrics.coverage_status === 'warning' ? 'secondary' : 'destructive'}
+                            className={`text-xs ${
+                              metrics.coverage_status === 'ok'
+                                ? 'bg-green-100 text-green-700 hover:bg-green-100'
+                                : metrics.coverage_status === 'warning'
+                                ? 'bg-amber-100 text-amber-700 hover:bg-amber-100'
+                                : 'bg-red-100 text-red-700 hover:bg-red-100'
+                            }`}
+                          >
+                            {coveragePct.toFixed(1)}%
+                          </Badge>
+                        </div>
+                      </div>
+                      {metrics.coverage_warning && (
+                        <div className={`text-xs p-2 rounded flex items-start gap-1.5 ${
+                          metrics.coverage_status === 'critical'
+                            ? 'bg-red-50 text-red-700'
+                            : 'bg-amber-50 text-amber-700'
+                        }`}>
+                          <AlertTriangle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                          <span>{metrics.coverage_warning}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Segmented Bar */}
+                  <div className="w-full bg-gray-200 rounded-full h-2.5 mt-3 flex overflow-hidden">
+                    <div className="bg-blue-500 h-2.5" style={{ width: `${computePct * ec2Percentage / 100}%` }}></div>
+                    <div className="bg-green-500 h-2.5" style={{ width: `${storagePct * ec2Percentage / 100}%` }}></div>
+                    <div className="bg-amber-500 h-2.5" style={{ width: `${networkPct * ec2Percentage / 100}%` }}></div>
+                    {otherPct > 0 && <div className="bg-gray-400 h-2.5" style={{ width: `${otherPct * ec2Percentage / 100}%` }}></div>}
+                    <div className="bg-red-500 h-2.5" style={{ width: `${databricksPercentage}%` }}></div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+                      <span className="text-sm font-medium">{cloudConfig?.compute_display_name || 'Cloud Costs'}</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold">{formatCurrency(metrics.total_ec2_cost)}</div>
+                      <div className="text-xs text-muted-foreground">{ec2Percentage.toFixed(1)}%</div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                      <span className="text-sm font-medium">Databricks Costs</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold">{formatCurrency(metrics.total_databricks_cost)}</div>
+                      <div className="text-xs text-muted-foreground">{databricksPercentage.toFixed(1)}%</div>
+                    </div>
+                  </div>
+
+                  <div className="w-full bg-gray-200 rounded-full h-2 mt-3 flex overflow-hidden">
+                    <div className="bg-blue-500 h-2" style={{ width: `${ec2Percentage}%` }}></div>
+                    <div className="bg-red-500 h-2" style={{ width: `${databricksPercentage}%` }}></div>
+                  </div>
+                </>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -221,6 +337,20 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Coverage Trend */}
+      {hasSegmented && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <CoverageTrendChart />
+        </div>
+      )}
+
+      {/* Other Cost Breakdown Modal */}
+      <OtherCostBreakdownModal
+        dateRange={dateRange}
+        isOpen={showOtherBreakdown}
+        onClose={() => setShowOtherBreakdown(false)}
+      />
     </div>
   );
 };

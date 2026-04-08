@@ -10,9 +10,14 @@ export type CostBreakdown = {
     run_id: string;
     cluster_id: string;
     usage_date: string;
+    end_date?: (string | null);
     ec2_cost: number;
     databricks_cost: number;
     total_cost: number;
+    compute_cost?: (number | null);
+    storage_cost?: (number | null);
+    network_cost?: (number | null);
+    other_cost?: (number | null);
     cost_split?: Array<Record<string, any>>;
 };
 

@@ -82,6 +82,37 @@ DBSPEND360
   3. App uses databricks-claude-sonnet-4 as foundation model to generate insights for cost/performance improvements.
 
 
+### Unity Catalog Grants for the App Service Principal
+
+When the app is deployed as a Databricks App, it runs under a **service principal** that may not have explicit Unity Catalog permissions on your tables, even if it belongs to an admins group. Without these grants, the app will return empty results despite the underlying tables having data.
+
+Find your app's service principal ID from the Databricks App settings page, then run the following SQL grants in a Databricks SQL editor or notebook:
+
+```sql
+-- Replace <YOUR_CATALOG>, <YOUR_SCHEMA>, and <APP_SERVICE_PRINCIPAL_ID> with your values.
+
+-- Allow the service principal to see the catalog
+GRANT USE CATALOG ON CATALOG <YOUR_CATALOG> TO `<APP_SERVICE_PRINCIPAL_ID>`;
+
+-- Allow the service principal to see the schema
+GRANT USE SCHEMA ON SCHEMA <YOUR_CATALOG>.<YOUR_SCHEMA> TO `<APP_SERVICE_PRINCIPAL_ID>`;
+
+-- Allow the service principal to read all tables in the schema
+GRANT SELECT ON SCHEMA <YOUR_CATALOG>.<YOUR_SCHEMA> TO `<APP_SERVICE_PRINCIPAL_ID>`;
+```
+
+#### Optional: System Table Access
+
+The app also queries `system.lakeflow.jobs` and `system.compute.clusters` to enrich cost data with job names and cluster details. Granting SELECT on these tables requires **account admin** privileges. Without these grants the app still works, but job names and cluster details may show as null.
+
+If an account admin is available, ask them to run:
+
+```sql
+GRANT SELECT ON TABLE system.lakeflow.jobs TO `<APP_SERVICE_PRINCIPAL_ID>`;
+GRANT SELECT ON TABLE system.compute.clusters TO `<APP_SERVICE_PRINCIPAL_ID>`;
+```
+
+
 ![app1](release/readme_images/app1.png)
 
 ![app2](release/readme_images/app2.png)

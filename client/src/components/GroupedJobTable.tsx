@@ -9,7 +9,7 @@ import {
   useReactTable,
   Row,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon, Eye } from 'lucide-react';
+import { ArrowUpDown, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon, Eye, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -26,6 +26,7 @@ import { useDatabricksHost } from '@/hooks/useDatabricksHost';
 import { DateRange, GroupedJob, JobRun } from '@/types/job-spend';
 import { cn } from '@/lib/utils';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 
 interface GroupedJobTableProps {
   dateRange: DateRange;
@@ -43,6 +44,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
     pageSize: 50,
   });
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [otherBreakdownOpen, setOtherBreakdownOpen] = useState(false);
 
   useEffect(() => {
     setPagination((prev) => ({ ...prev, pageIndex: 0 }));
@@ -198,6 +200,99 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
       ),
     },
     {
+      accessorKey: 'total_compute_cost',
+      header: ({ column }) => (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+          className="h-8 px-2"
+        >
+          Compute
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      ),
+      cell: ({ row }) => {
+        const val = row.original.total_compute_cost;
+        return (
+          <div className="text-right font-medium text-blue-600">
+            {val != null ? formatCurrency(val) : '—'}
+          </div>
+        );
+      },
+    },
+    {
+      accessorKey: 'total_storage_cost',
+      header: ({ column }) => (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+          className="h-8 px-2"
+        >
+          Storage
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      ),
+      cell: ({ row }) => {
+        const val = row.original.total_storage_cost;
+        return (
+          <div className="text-right font-medium text-green-600">
+            {val != null ? formatCurrency(val) : '—'}
+          </div>
+        );
+      },
+    },
+    {
+      accessorKey: 'total_network_cost',
+      header: ({ column }) => (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+          className="h-8 px-2"
+        >
+          Network
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      ),
+      cell: ({ row }) => {
+        const val = row.original.total_network_cost;
+        return (
+          <div className="text-right font-medium text-amber-600">
+            {val != null ? formatCurrency(val) : '—'}
+          </div>
+        );
+      },
+    },
+    {
+      accessorKey: 'total_other_cost',
+      header: ({ column }) => (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+          className="h-8 px-2"
+        >
+          Other
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      ),
+      cell: ({ row }) => {
+        const val = row.original.total_other_cost;
+        if (val == null || val === 0) return <div className="text-right text-muted-foreground">—</div>;
+        return (
+          <div
+            className="text-right font-medium text-gray-500 cursor-pointer hover:text-gray-800 transition-colors flex items-center justify-end gap-1"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOtherBreakdownOpen(true);
+            }}
+            title="Click to view breakdown of unclassified costs"
+          >
+            {formatCurrency(val)}
+            <Search className="h-3 w-3" />
+          </div>
+        );
+      },
+    },
+    {
       accessorKey: 'total_ec2_cost',
       header: ({ column }) => (
         <Button
@@ -205,7 +300,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
           onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
           className="h-8 px-2"
         >
-          Total {cloudConfig?.compute_service || 'EC2'} Cost
+          Total {cloudConfig?.compute_service || 'Cloud'} Cost
           <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
       ),
@@ -317,11 +412,31 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
                     </div>
                   </div>
                   <div className="flex items-center space-x-4">
-                    <div className="text-sm text-blue-600">
-{cloudConfig?.compute_service || 'EC2'}: {formatCurrency(run.ec2_cost)}
-                    </div>
+                    {run.compute_cost != null && (
+                      <>
+                        <div className="text-sm text-blue-600">
+                          Compute: {formatCurrency(run.compute_cost)}
+                        </div>
+                        <div className="text-sm text-green-600">
+                          Storage: {formatCurrency(run.storage_cost ?? 0)}
+                        </div>
+                        <div className="text-sm text-amber-600">
+                          Network: {formatCurrency(run.network_cost ?? 0)}
+                        </div>
+                        {(run.other_cost ?? 0) > 0 && (
+                          <div className="text-sm text-gray-500">
+                            Other: {formatCurrency(run.other_cost ?? 0)}
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {run.compute_cost == null && (
+                      <div className="text-sm text-blue-600">
+                        {cloudConfig?.compute_service || 'Cloud'}: {formatCurrency(run.ec2_cost)}
+                      </div>
+                    )}
                     <div className="text-sm text-red-600">
-                      DB: {formatCurrency(run.databricks_cost)}
+                      DBU: {formatCurrency(run.databricks_cost)}
                     </div>
                     <div className="text-sm font-semibold">
                       Total: {formatCurrency(run.total_cost)}
@@ -437,6 +552,13 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
           </div>
         </div>
       )}
+
+      {/* Other Cost Breakdown Modal */}
+      <OtherCostBreakdownModal
+        dateRange={dateRange}
+        isOpen={otherBreakdownOpen}
+        onClose={() => setOtherBreakdownOpen(false)}
+      />
     </div>
   );
 };
