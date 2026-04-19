@@ -1,7 +1,7 @@
 %sql
 CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.dbspend360_error_log (
-  source_system STRING,   -- 'AZURE_COST' or 'DBR_DBU'
-  error_type    STRING,   -- e.g., 'NO_MATCH_DBR_DBU', 'NO_MATCH_AZURE_COST'
+  source_system STRING,   -- 'AWS_COST' or 'AZURE_COST' or 'GCP_COST' or 'DBR_DBU'
+  error_type    STRING,   -- e.g., 'NO_MATCH_DBR_DBU', 'NO_MATCH_AWS_COST', 'NO_MATCH_AZURE_COST', 'NO_MATCH_GCP_COST'
   cluster_id    STRING,
   job_id        STRING,
   run_id        STRING,

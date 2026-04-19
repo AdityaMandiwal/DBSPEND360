@@ -7,7 +7,7 @@
  */
 export type JobSpend = {
     cluster_id: string;
-    ec2_cost: number;
+    cloud_cost: number;
     job_id: string;
     job_name?: (string | null);
     run_id: string;
@@ -18,13 +18,13 @@ export type JobSpend = {
     network_cost?: (number | null);
     other_cost?: (number | null);
     /**
-     * Calculate total cost as sum of EC2 and Databricks costs.
+     * Calculate total cost as sum of cloud and Databricks costs.
      */
     readonly total_cost: number;
     /**
-     * Calculate EC2 cost as percentage of total.
+     * Calculate cloud cost as percentage of total.
      */
-    readonly ec2_percentage: number;
+    readonly cloud_percentage: number;
     /**
      * Calculate Databricks cost as percentage of total.
      */

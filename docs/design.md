@@ -79,7 +79,7 @@ dependencies = [
 -- pritam_demo.dbcost360.databricks_job_spends
 CREATE TABLE databricks_job_spends (
     cluster_id STRING,
-    ec2_cost DOUBLE,
+    cloud_cost DOUBLE,
     job_id STRING,
     run_id STRING,
     usage_date DATE,
@@ -109,9 +109,9 @@ SELECT
     job_id,
     run_id,
     usage_date,
-    ec2_cost,
+    cloud_cost,
     databricks_cost,
-    (ec2_cost + databricks_cost) as total_cost
+    (cloud_cost + databricks_cost) as total_cost
 FROM pritam_demo.dbcost360.databricks_job_spends
 WHERE usage_date >= ? AND usage_date <= ?
 ORDER BY total_cost DESC;
@@ -119,9 +119,9 @@ ORDER BY total_cost DESC;
 -- Summary metrics
 SELECT
     COUNT(*) as total_jobs,
-    SUM(ec2_cost + databricks_cost) as total_spend,
-    AVG(ec2_cost + databricks_cost) as avg_cost,
-    MAX(ec2_cost + databricks_cost) as max_cost
+    SUM(cloud_cost + databricks_cost) as total_spend,
+    AVG(cloud_cost + databricks_cost) as avg_cost,
+    MAX(cloud_cost + databricks_cost) as max_cost
 FROM pritam_demo.dbcost360.databricks_job_spends
 WHERE usage_date >= ? AND usage_date <= ?;
 ```
@@ -166,7 +166,7 @@ EMAIL_CONFIG = {
    # server/models/job_spend.py
    class JobSpend(BaseModel):
        cluster_id: str
-       ec2_cost: float
+       cloud_cost: float
        job_id: str
        run_id: str
        usage_date: date

@@ -172,7 +172,7 @@ async def get_job_cost_breakdown(
     """
     Get detailed cost breakdown for a specific job run.
 
-    Returns EC2 vs Databricks cost breakdown and additional job details
+    Returns cloud vs Databricks cost breakdown and additional job details
     for use in drill-down modals and pie charts.
     """
     try:
@@ -422,7 +422,7 @@ async def debug_table_data():
             "sample_data": sample_data,
             "date_range": date_range,
             "test_filter_count": test_filter_count,
-            "columns": ["cluster_id", "ec2_cost", "job_id", "run_id", "usage_date", "databricks_cost"]
+            "columns": ["cluster_id", "cloud_cost", "job_id", "run_id", "usage_date", "databricks_cost"]
         }
 
     except Exception as e:
@@ -477,7 +477,7 @@ async def analyze_job_costs(
         analysis = await llm.analyze_job_costs(
             job_id=job_id,
             run_id=run_id,
-            ec2_cost=breakdown.ec2_cost,
+            cloud_cost=breakdown.cloud_cost,
             databricks_cost=breakdown.databricks_cost,
             total_cost=breakdown.total_cost,
             cluster_id=breakdown.cluster_id,

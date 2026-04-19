@@ -40,14 +40,21 @@ export const CloudPlatformProvider: React.FC<CloudPlatformProviderProps> = ({ ch
         setError(null);
       } catch (err) {
         console.error('Failed to fetch cloud platform config:', err);
-        // Fallback to AWS if API fails
+        // Surface the failure via neutral placeholder + error state instead
+        // of silently mislabeling the dashboard as AWS / EC2. UI components
+        // should render `compute_display_name` and check `error` so they can
+        // show a banner rather than a wrong provider name.
         setConfig({
-          platform: 'AWS',
-          compute_service: 'EC2',
-          compute_display_name: 'EC2 Cost',
-          platform_display_name: 'AWS',
+          platform: 'Unknown',
+          compute_service: 'Cloud',
+          compute_display_name: 'Cloud Cost',
+          platform_display_name: 'Unknown Cloud',
         });
-        setError('Failed to fetch cloud platform config, using AWS defaults');
+        setError(
+          err instanceof Error
+            ? `Failed to fetch cloud platform config: ${err.message}`
+            : 'Failed to fetch cloud platform config'
+        );
       } finally {
         setLoading(false);
       }

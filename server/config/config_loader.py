@@ -7,6 +7,15 @@ from typing import Optional, Dict, Any
 from enum import Enum
 
 
+class ConfigurationError(Exception):
+    """Raised when application configuration is missing or invalid.
+
+    Surfaced in place of silent provider-specific defaults so misconfiguration
+    on Azure / GCP deployments fails loudly instead of mislabeling everything
+    as AWS / EC2.
+    """
+
+
 class Environment(Enum):
     """Supported deployment environments."""
     DEVELOPMENT = "dev"
@@ -59,12 +68,26 @@ class AppConfig:
     # Cloud Platform Configuration
     @property
     def cloud_platform(self) -> CloudPlatform:
-        """Get the configured cloud platform."""
-        platform_str = self.config.get("cloud", "platform", fallback="AWS")
+        """Get the configured cloud platform.
+
+        Raises:
+            ConfigurationError: when [cloud] platform is missing or set to a
+                value outside CloudPlatform. Surfacing this loudly avoids the
+                old behavior of silently returning AWS on Azure/GCP deployments.
+        """
+        platform_str = self.config.get("cloud", "platform", fallback=None)
+        if platform_str is None:
+            raise ConfigurationError(
+                "Missing [cloud] platform in app config. "
+                "Set platform = AWS|Azure|GCP."
+            )
         try:
             return CloudPlatform(platform_str)
-        except ValueError:
-            return CloudPlatform.AWS  # Default fallback
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"Invalid [cloud] platform value '{platform_str}'. "
+                "Expected one of: AWS, Azure, GCP."
+            ) from exc
 
     # Databricks Configuration
     @property
@@ -132,26 +155,48 @@ class AppConfig:
 
     # Cloud Platform Specific Methods
     def get_compute_service_name(self) -> str:
-        """Get the compute service name based on cloud platform."""
+        """Get the compute service name based on cloud platform.
+
+        Raises:
+            ConfigurationError: if the resolved cloud platform has no entry
+                in the mapping. Replaces the old silent EC2 default.
+        """
         platform_mappings = {
             CloudPlatform.AWS: "EC2",
             CloudPlatform.AZURE: "Azure Compute",
             CloudPlatform.GCP: "GCE"
         }
-        return platform_mappings.get(self.cloud_platform, "EC2")
+        try:
+            return platform_mappings[self.cloud_platform]
+        except KeyError as exc:
+            raise ConfigurationError(
+                f"No compute service name mapping for platform "
+                f"{self.cloud_platform!r}."
+            ) from exc
 
     def get_compute_display_name(self) -> str:
         """Get the compute cost display name."""
         return f"{self.get_compute_service_name()} Cost"
 
     def get_platform_display_name(self) -> str:
-        """Get the platform display name."""
+        """Get the platform display name.
+
+        Raises:
+            ConfigurationError: if the resolved cloud platform has no entry
+                in the mapping. Replaces the old silent AWS default.
+        """
         platform_mappings = {
             CloudPlatform.AWS: "AWS",
             CloudPlatform.AZURE: "Azure",
             CloudPlatform.GCP: "Google Cloud"
         }
-        return platform_mappings.get(self.cloud_platform, "AWS")
+        try:
+            return platform_mappings[self.cloud_platform]
+        except KeyError as exc:
+            raise ConfigurationError(
+                f"No platform display name mapping for platform "
+                f"{self.cloud_platform!r}."
+            ) from exc
 
     def get_cost_breakdown_labels(self) -> Dict[str, str]:
         """Get labels for cost breakdown charts and displays."""

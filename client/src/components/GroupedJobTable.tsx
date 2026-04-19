@@ -293,7 +293,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
       },
     },
     {
-      accessorKey: 'total_ec2_cost',
+      accessorKey: 'total_cloud_cost',
       header: ({ column }) => (
         <Button
           variant="ghost"
@@ -306,7 +306,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
       ),
       cell: ({ row }) => (
         <div className="text-right font-medium text-blue-600">
-          {formatCurrency(row.getValue('total_ec2_cost'))}
+          {formatCurrency(row.getValue('total_cloud_cost'))}
         </div>
       ),
     },
@@ -432,7 +432,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
                     )}
                     {run.compute_cost == null && (
                       <div className="text-sm text-blue-600">
-                        {cloudConfig?.compute_service || 'Cloud'}: {formatCurrency(run.ec2_cost)}
+                        {cloudConfig?.compute_service || 'Cloud'}: {formatCurrency(run.cloud_cost)}
                       </div>
                     )}
                     <div className="text-sm text-red-600">

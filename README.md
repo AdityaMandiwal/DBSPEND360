@@ -7,7 +7,7 @@ DBSPEND360
 * DBSPEND360 is a Databricks-native solution that provides clear job-level visibility into cloud and DBU spends for Databricks workloads.
 
 * Tracks end-to-end cost at job, run, and cluster level for Databricks jobs.
-* Combines cloud VM cost from the cloud cost explorer with Databricks DBU cost from system billing tables.
+* Combines cloud VM cost (AWS Cost Explorer, Azure Cost Management, or — once implemented — GCP Cloud Billing) with Databricks DBU cost from system billing tables.
 * Produces a consolidated dbspend360_total_job_spends table as the single source of truth for job-level cost.
 * Includes audit and error logging to support incremental loads, monitoring, and reconciliation.
 * Powers the DBSPEND360 Databricks App, which provides dashboards and AI-driven cost and performance recommendations.
@@ -36,7 +36,10 @@ DBSPEND360
 * Download the DBSPEND360 databricks app repo from https://github.com/pritampaul-db/DBSpend360.
 
 * Jobs folder contains all the DDL, Notebooks , and resource template for DBSPEND360 Job.
-* release folder contains the product release doc and the azure SPN setup guide needed for the data ingestion from cost explorer.
+* release folder contains the product release doc and the per-cloud credentials setup guides needed for data ingestion from each cost explorer:
+    * `release/AWS Credentials and Permissions Setup.md` — AWS Cost Explorer / CUR setup.
+    * `release/Azure Credentials and Permissions Setup.docx` — Azure Cost Management SPN setup.
+    * `release/GCP Credentials and Permissions Setup.md` — GCP Cloud Billing setup (stub; pending implementation).
 * readme.md contains all the usage related description as mentioned below:
 
     1. Setup your local databrickscfg file with DATABRICKS_HOST and DATABRICKS_TOKEN details. 
@@ -116,3 +119,30 @@ GRANT SELECT ON TABLE system.compute.clusters TO `<APP_SERVICE_PRINCIPAL_ID>`;
 ![app1](release/readme_images/app1.png)
 
 ![app2](release/readme_images/app2.png)
+
+
+### Cloud Provider Selection
+
+DBSPEND360 is cloud-agnostic at the data layer (`dbspend360_cloud_cost_explorer.cloud_cost`) and label-aware at the UI / LLM layer. Pick a provider in `config/app.<env>.config`:
+
+```ini
+[cloud]
+# Supported platforms: AWS, Azure, GCP
+platform = AWS
+```
+
+The chosen `platform` value drives, end-to-end:
+
+1. **Notebook selection** — the `cloud_provider` job parameter in
+   `jobs/resource_templates/DBSPEND360.yaml` resolves to
+   `${cloud_provider}_cloud_cost_explorer_app`, i.e.
+   `aws_cloud_cost_explorer_app`, `azure_cloud_cost_explorer_app`, or
+   `gcp_cloud_cost_explorer_app`.
+2. **Cluster-attribute reads** — `get_cluster_details` reads whichever of
+   `aws_attributes` / `azure_attributes` / `gcp_attributes` is populated on
+   `system.compute.clusters` (see `server/services/databricks_service.py`).
+3. **Label rendering** — the `/api/cloud-platform` endpoint feeds
+   `CloudPlatformContext` so frontend tables/cards render
+   "EC2 Cost", "Azure Compute Cost", or "GCE Cost" dynamically.
+4. **LLM prompts** — cluster-analysis prompts in `server/services/llm_service.py`
+   substitute the active provider's name so insights stay grounded.
