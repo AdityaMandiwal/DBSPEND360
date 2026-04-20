@@ -66,18 +66,18 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
   }
 
   const dailyAverageSpend = metrics.total_spend / Math.max(metrics.date_range_days, 1);
-  const ec2Percentage = metrics.total_spend > 0 ? (metrics.total_ec2_cost / metrics.total_spend) * 100 : 0;
+  const cloudPercentage = metrics.total_spend > 0 ? (metrics.total_cloud_cost / metrics.total_spend) * 100 : 0;
   const databricksPercentage = metrics.total_spend > 0 ? (metrics.total_databricks_cost / metrics.total_spend) * 100 : 0;
 
   const hasSegmented = metrics.total_compute_cost != null;
-  const computePct = hasSegmented && metrics.total_ec2_cost > 0
-    ? ((metrics.total_compute_cost ?? 0) / metrics.total_ec2_cost) * 100 : 0;
-  const storagePct = hasSegmented && metrics.total_ec2_cost > 0
-    ? ((metrics.total_storage_cost ?? 0) / metrics.total_ec2_cost) * 100 : 0;
-  const networkPct = hasSegmented && metrics.total_ec2_cost > 0
-    ? ((metrics.total_network_cost ?? 0) / metrics.total_ec2_cost) * 100 : 0;
-  const otherPct = hasSegmented && metrics.total_ec2_cost > 0
-    ? ((metrics.total_other_cost ?? 0) / metrics.total_ec2_cost) * 100 : 0;
+  const computePct = hasSegmented && metrics.total_cloud_cost > 0
+    ? ((metrics.total_compute_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
+  const storagePct = hasSegmented && metrics.total_cloud_cost > 0
+    ? ((metrics.total_storage_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
+  const networkPct = hasSegmented && metrics.total_cloud_cost > 0
+    ? ((metrics.total_network_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
+  const otherPct = hasSegmented && metrics.total_cloud_cost > 0
+    ? ((metrics.total_other_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
   const coveragePct = metrics.classification_coverage_pct;
 
   return (
@@ -256,10 +256,10 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
 
                   {/* Segmented Bar */}
                   <div className="w-full bg-gray-200 rounded-full h-2.5 mt-3 flex overflow-hidden">
-                    <div className="bg-blue-500 h-2.5" style={{ width: `${computePct * ec2Percentage / 100}%` }}></div>
-                    <div className="bg-green-500 h-2.5" style={{ width: `${storagePct * ec2Percentage / 100}%` }}></div>
-                    <div className="bg-amber-500 h-2.5" style={{ width: `${networkPct * ec2Percentage / 100}%` }}></div>
-                    {otherPct > 0 && <div className="bg-gray-400 h-2.5" style={{ width: `${otherPct * ec2Percentage / 100}%` }}></div>}
+                    <div className="bg-blue-500 h-2.5" style={{ width: `${computePct * cloudPercentage / 100}%` }}></div>
+                    <div className="bg-green-500 h-2.5" style={{ width: `${storagePct * cloudPercentage / 100}%` }}></div>
+                    <div className="bg-amber-500 h-2.5" style={{ width: `${networkPct * cloudPercentage / 100}%` }}></div>
+                    {otherPct > 0 && <div className="bg-gray-400 h-2.5" style={{ width: `${otherPct * cloudPercentage / 100}%` }}></div>}
                     <div className="bg-red-500 h-2.5" style={{ width: `${databricksPercentage}%` }}></div>
                   </div>
                 </>
@@ -271,8 +271,8 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                       <span className="text-sm font-medium">{cloudConfig?.compute_display_name || 'Cloud Costs'}</span>
                     </div>
                     <div className="text-right">
-                      <div className="font-semibold">{formatCurrency(metrics.total_ec2_cost)}</div>
-                      <div className="text-xs text-muted-foreground">{ec2Percentage.toFixed(1)}%</div>
+                      <div className="font-semibold">{formatCurrency(metrics.total_cloud_cost)}</div>
+                      <div className="text-xs text-muted-foreground">{cloudPercentage.toFixed(1)}%</div>
                     </div>
                   </div>
 
@@ -288,7 +288,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                   </div>
 
                   <div className="w-full bg-gray-200 rounded-full h-2 mt-3 flex overflow-hidden">
-                    <div className="bg-blue-500 h-2" style={{ width: `${ec2Percentage}%` }}></div>
+                    <div className="bg-blue-500 h-2" style={{ width: `${cloudPercentage}%` }}></div>
                     <div className="bg-red-500 h-2" style={{ width: `${databricksPercentage}%` }}></div>
                   </div>
                 </>

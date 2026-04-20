@@ -143,20 +143,20 @@ export const JobSpendTable = ({ dateRange, jobFilter, onJobClick }: JobSpendTabl
       cell: ({ row }) => formatDate(row.getValue('usage_date')),
     },
     {
-      accessorKey: 'ec2_cost',
+      accessorKey: 'cloud_cost',
       header: ({ column }) => (
         <Button
           variant="ghost"
           onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
           className="h-8 px-2"
         >
-          {cloudConfig?.compute_display_name || 'EC2 Cost'}
+          {cloudConfig?.compute_display_name || 'Cloud Cost'}
           <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
       ),
       cell: ({ row }) => (
         <div className="text-right font-medium text-blue-600">
-          {formatCurrency(row.getValue('ec2_cost'))}
+          {formatCurrency(row.getValue('cloud_cost'))}
         </div>
       ),
     },

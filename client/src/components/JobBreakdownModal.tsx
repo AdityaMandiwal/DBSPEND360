@@ -268,7 +268,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                     <div className="grid grid-cols-2 gap-4">
                       <div className="text-center p-3 bg-blue-50 rounded">
                         <div className="text-2xl font-bold text-blue-600">
-                          {breakdown.total_cost > 0 ? ((breakdown.ec2_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                          {breakdown.total_cost > 0 ? ((breakdown.cloud_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                         </div>
                         <div className="text-sm text-blue-600">{cloudConfig?.compute_service || 'Cloud'} Share</div>
                       </div>
@@ -288,7 +288,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                         High Cost Job
                       </Badge>
                     )}
-                    {breakdown.ec2_cost > breakdown.databricks_cost ? (
+                    {breakdown.cloud_cost > breakdown.databricks_cost ? (
                       <Badge variant="secondary" className="w-full justify-center">
                         Cloud-Heavy Workload
                       </Badge>
@@ -573,7 +573,7 @@ const ClusterDetailsModal = ({ clusterId, isOpen, onClose }: ClusterDetailsModal
                       </div>
                     </div>
 
-                    {clusterDetails.aws_attributes.spot_bid_price_percent && (
+                    {clusterDetails.aws_attributes.spot_bid_price_percent != null && (
                       <div className="flex justify-between items-start">
                         <span className="text-sm font-medium text-muted-foreground">Spot Bid</span>
                         <div className="text-right">
@@ -587,6 +587,72 @@ const ClusterDetailsModal = ({ clusterId, isOpen, onClose }: ClusterDetailsModal
                         <span className="text-sm font-medium text-muted-foreground">AZ</span>
                         <div className="text-right">
                           <div className="text-sm font-mono">{clusterDetails.aws_attributes.zone_id}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {clusterDetails.azure_attributes && (
+                  <div className="p-4 border rounded-lg space-y-3">
+                    <h4 className="font-semibold">Azure Configuration</h4>
+
+                    <div className="flex justify-between items-start">
+                      <span className="text-sm font-medium text-muted-foreground">Availability</span>
+                      <div className="text-right">
+                        <Badge variant="outline" className="text-xs">
+                          {clusterDetails.azure_attributes.availability || 'N/A'}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    {clusterDetails.azure_attributes.spot_bid_max_price != null && (
+                      <div className="flex justify-between items-start">
+                        <span className="text-sm font-medium text-muted-foreground">Spot Bid Max</span>
+                        <div className="text-right">
+                          <div className="text-sm">{clusterDetails.azure_attributes.spot_bid_max_price}</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {clusterDetails.azure_attributes.first_on_demand != null && (
+                      <div className="flex justify-between items-start">
+                        <span className="text-sm font-medium text-muted-foreground">First On-Demand</span>
+                        <div className="text-right">
+                          <div className="text-sm">{clusterDetails.azure_attributes.first_on_demand}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {clusterDetails.gcp_attributes && (
+                  <div className="p-4 border rounded-lg space-y-3">
+                    <h4 className="font-semibold">GCP Configuration</h4>
+
+                    <div className="flex justify-between items-start">
+                      <span className="text-sm font-medium text-muted-foreground">Availability</span>
+                      <div className="text-right">
+                        <Badge variant="outline" className="text-xs">
+                          {clusterDetails.gcp_attributes.availability || 'N/A'}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    {clusterDetails.gcp_attributes.zone_id && (
+                      <div className="flex justify-between items-start">
+                        <span className="text-sm font-medium text-muted-foreground">Zone</span>
+                        <div className="text-right">
+                          <div className="text-sm font-mono">{clusterDetails.gcp_attributes.zone_id}</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {clusterDetails.gcp_attributes.boot_disk_size != null && (
+                      <div className="flex justify-between items-start">
+                        <span className="text-sm font-medium text-muted-foreground">Boot Disk Size</span>
+                        <div className="text-right">
+                          <div className="text-sm">{clusterDetails.gcp_attributes.boot_disk_size} GB</div>
                         </div>
                       </div>
                     )}

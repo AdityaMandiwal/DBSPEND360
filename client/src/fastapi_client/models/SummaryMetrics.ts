@@ -11,7 +11,7 @@ export type SummaryMetrics = {
     average_cost: number;
     max_cost: number;
     min_cost: number;
-    total_ec2_cost: number;
+    total_cloud_cost: number;
     total_databricks_cost: number;
     total_compute_cost?: (number | null);
     total_storage_cost?: (number | null);

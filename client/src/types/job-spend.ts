@@ -1,13 +1,13 @@
 export interface JobSpend {
   cluster_id: string;
-  ec2_cost: number;
+  cloud_cost: number;
   job_id: string;
   job_name?: string;
   run_id: string;
   usage_date: string; // ISO date string
   databricks_cost: number;
   total_cost: number;
-  ec2_percentage: number;
+  cloud_percentage: number;
   databricks_percentage: number;
   compute_cost?: number | null;
   storage_cost?: number | null;
@@ -21,7 +21,7 @@ export interface SummaryMetrics {
   average_cost: number;
   max_cost: number;
   min_cost: number;
-  total_ec2_cost: number;
+  total_cloud_cost: number;
   total_databricks_cost: number;
   total_compute_cost?: number | null;
   total_storage_cost?: number | null;
@@ -39,7 +39,7 @@ export interface CostBreakdown {
   cluster_id: string;
   usage_date: string;
   end_date?: string | null;
-  ec2_cost: number;
+  cloud_cost: number;
   databricks_cost: number;
   total_cost: number;
   compute_cost?: number | null;
@@ -58,10 +58,10 @@ export interface JobRun {
   cluster_id: string;
   start_date: string; // ISO date string
   end_date: string; // ISO date string
-  ec2_cost: number;
+  cloud_cost: number;
   databricks_cost: number;
   total_cost: number;
-  ec2_percentage: number;
+  cloud_percentage: number;
   databricks_percentage: number;
   compute_cost?: number | null;
   storage_cost?: number | null;
@@ -73,7 +73,7 @@ export interface GroupedJob {
   job_id: string;
   job_name?: string;
   run_count: number;
-  total_ec2_cost: number;
+  total_cloud_cost: number;
   total_databricks_cost: number;
   total_compute_cost?: number | null;
   total_storage_cost?: number | null;
@@ -81,7 +81,7 @@ export interface GroupedJob {
   total_other_cost?: number | null;
   runs: JobRun[];
   total_cost: number;
-  ec2_percentage: number;
+  cloud_percentage: number;
   databricks_percentage: number;
 }
 
@@ -143,7 +143,9 @@ export interface ClusterDetails {
   auto_termination_minutes?: number;
   enable_elastic_disk?: boolean;
   tags?: Record<string, any>;
-  aws_attributes?: Record<string, any>;
+  aws_attributes?: Record<string, any> | null;
+  azure_attributes?: Record<string, any> | null;
+  gcp_attributes?: Record<string, any> | null;
   dbr_version?: string;
   data_security_mode?: string;
 }

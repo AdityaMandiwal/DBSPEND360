@@ -8,7 +8,7 @@ class JobSpend(BaseModel):
     """Data model for Databricks job spending records."""
 
     cluster_id: str
-    ec2_cost: float
+    cloud_cost: float
     job_id: str
     job_name: Optional[str] = None
     run_id: str
@@ -22,16 +22,16 @@ class JobSpend(BaseModel):
     @computed_field
     @property
     def total_cost(self) -> float:
-        """Calculate total cost as sum of EC2 and Databricks costs."""
-        return self.ec2_cost + self.databricks_cost
+        """Calculate total cost as sum of cloud and Databricks costs."""
+        return self.cloud_cost + self.databricks_cost
 
     @computed_field
     @property
-    def ec2_percentage(self) -> float:
-        """Calculate EC2 cost as percentage of total."""
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
         if self.total_cost == 0:
             return 0.0
-        return (self.ec2_cost / self.total_cost) * 100
+        return (self.cloud_cost / self.total_cost) * 100
 
     @computed_field
     @property
@@ -60,7 +60,7 @@ class SummaryMetrics(BaseModel):
     average_cost: float
     max_cost: float
     min_cost: float
-    total_ec2_cost: float
+    total_cloud_cost: float
     total_databricks_cost: float
     total_compute_cost: Optional[float] = None
     total_storage_cost: Optional[float] = None
@@ -80,7 +80,7 @@ class CostBreakdown(BaseModel):
     cluster_id: str
     usage_date: date
     end_date: Optional[date] = None
-    ec2_cost: float
+    cloud_cost: float
     databricks_cost: float
     total_cost: float
     compute_cost: Optional[float] = None
@@ -111,7 +111,7 @@ class CostBreakdown(BaseModel):
             self.cost_split = split
         else:
             self.cost_split = [
-                {"name": labels["compute_cost"], "value": self.ec2_cost, "color": "#3b82f6"},
+                {"name": labels["compute_cost"], "value": self.cloud_cost, "color": "#3b82f6"},
                 {"name": labels["databricks_cost"], "value": float(data.get("databricks_cost", 0)), "color": "#ef4444"},
             ]
 
@@ -123,7 +123,7 @@ class JobRun(BaseModel):
     cluster_id: str
     start_date: date
     end_date: date
-    ec2_cost: float
+    cloud_cost: float
     databricks_cost: float
     compute_cost: Optional[float] = None
     storage_cost: Optional[float] = None
@@ -133,16 +133,16 @@ class JobRun(BaseModel):
     @computed_field
     @property
     def total_cost(self) -> float:
-        """Calculate total cost as sum of EC2 and Databricks costs."""
-        return self.ec2_cost + self.databricks_cost
+        """Calculate total cost as sum of cloud and Databricks costs."""
+        return self.cloud_cost + self.databricks_cost
 
     @computed_field
     @property
-    def ec2_percentage(self) -> float:
-        """Calculate EC2 cost as percentage of total."""
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
         if self.total_cost == 0:
             return 0.0
-        return (self.ec2_cost / self.total_cost) * 100
+        return (self.cloud_cost / self.total_cost) * 100
 
     @computed_field
     @property
@@ -159,7 +159,7 @@ class GroupedJob(BaseModel):
     job_id: str
     job_name: Optional[str] = None
     run_count: int
-    total_ec2_cost: float
+    total_cloud_cost: float
     total_databricks_cost: float
     total_compute_cost: Optional[float] = None
     total_storage_cost: Optional[float] = None
@@ -171,15 +171,15 @@ class GroupedJob(BaseModel):
     @property
     def total_cost(self) -> float:
         """Calculate total cost across all runs."""
-        return self.total_ec2_cost + self.total_databricks_cost
+        return self.total_cloud_cost + self.total_databricks_cost
 
     @computed_field
     @property
-    def ec2_percentage(self) -> float:
-        """Calculate EC2 cost as percentage of total."""
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
         if self.total_cost == 0:
             return 0.0
-        return (self.total_ec2_cost / self.total_cost) * 100
+        return (self.total_cloud_cost / self.total_cost) * 100
 
     @computed_field
     @property
@@ -238,6 +238,8 @@ class ClusterDetails(BaseModel):
     enable_elastic_disk: Optional[bool] = None
     tags: Optional[dict] = None
     aws_attributes: Optional[dict] = None
+    azure_attributes: Optional[dict] = None
+    gcp_attributes: Optional[dict] = None
     dbr_version: Optional[str] = None
     data_security_mode: Optional[str] = None
 

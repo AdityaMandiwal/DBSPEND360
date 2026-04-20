@@ -18,6 +18,8 @@ export type ClusterDetails = {
     enable_elastic_disk?: (boolean | null);
     tags?: (Record<string, any> | null);
     aws_attributes?: (Record<string, any> | null);
+    azure_attributes?: (Record<string, any> | null);
+    gcp_attributes?: (Record<string, any> | null);
     dbr_version?: (string | null);
     data_security_mode?: (string | null);
 };

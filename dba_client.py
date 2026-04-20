@@ -242,10 +242,10 @@ Examples:
   python dba_client.py /api/user/me
   python dba_client.py /api/data POST '{"key":"value"}'
   
-  # Or specify app URL explicitly  
-  python dba_client.py /api/config/ --app_url https://my-app.aws.databricksapps.com
-  python dba_client.py /api/user/me --app_url https://my-app.aws.databricksapps.com
-  python dba_client.py /api/data POST '{"key":"value"}' --app_url https://my-app.aws.databricksapps.com
+  # Or specify app URL explicitly
+  python dba_client.py /api/config/ --app_url https://<your-app>.databricksapps.com
+  python dba_client.py /api/user/me --app_url https://<your-app>.databricksapps.com
+  python dba_client.py /api/data POST '{"key":"value"}' --app_url https://<your-app>.databricksapps.com
         """,
   )
 

@@ -39,7 +39,7 @@ DBSpend360 is an interactive cost analytics dashboard that provides real-time vi
 ### 2. Cost Breakdown Drill-Down
 - **Trigger**: Click any row in the main table
 - **Display**: Modal/popup window with:
-  - Pie chart showing EC2 vs Databricks cost breakdown
+  - Pie chart showing Cloud (EC2 / Azure VM / GCE) vs Databricks (DBU) cost breakdown
   - Additional job details (duration, cluster size, etc.)
   - Job-specific metrics and performance data
 
@@ -75,7 +75,7 @@ DBSpend360 is an interactive cost analytics dashboard that provides real-time vi
 
 ### Manager Daily Workflow
 1. **As a manager**, I want to see a summary of yesterday's job costs when I open the dashboard, so I can quickly assess spending patterns
-2. **As a manager**, I want to click on high-cost jobs to see their EC2/Databricks breakdown, so I can understand cost drivers
+2. **As a manager**, I want to click on high-cost jobs to see their Cloud (EC2 / Azure VM / GCE) vs Databricks (DBU) cost breakdown, so I can understand cost drivers
 3. **As a manager**, I want to filter jobs by name and date range, so I can analyze specific workloads or time periods
 4. **As a manager**, I want to receive email alerts when jobs exceed cost thresholds, so I can take immediate action
 
@@ -114,7 +114,7 @@ DBSpend360 is an interactive cost analytics dashboard that provides real-time vi
 4. **Professional UI**: Clean, professional color scheme and layout
 
 ### Phase 2: Advanced Analytics (High Priority)
-1. **Drill-Down Modal**: Click-to-expand pie chart with EC2/Databricks breakdown
+1. **Drill-Down Modal**: Click-to-expand pie chart with Cloud (EC2 / Azure VM / GCE) vs Databricks (DBU) cost breakdown
 2. **Job Filtering**: Filter by job name functionality
 3. **Additional Job Details**: Duration, cluster size in drill-down view
 4. **Data Refresh**: Real-time connection to source table

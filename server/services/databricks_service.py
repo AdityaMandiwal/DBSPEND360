@@ -131,7 +131,7 @@ class DatabricksService:
 
                 job_spend = JobSpend(
                     cluster_id=row[0],
-                    ec2_cost=float(row[1]),
+                    cloud_cost=float(row[1]),
                     job_id=job_id,
                     job_name=row[6],
                     run_id=row[3],
@@ -168,7 +168,7 @@ class DatabricksService:
             AVG(cloud_cost + databricks_cost) as avg_cost,
             MAX(cloud_cost + databricks_cost) as max_cost,
             MIN(cloud_cost + databricks_cost) as min_cost,
-            SUM(cloud_cost) as total_ec2_cost,
+            SUM(cloud_cost) as total_cloud_cost,
             SUM(databricks_cost) as total_databricks_cost,
             SUM(compute_cost) as total_compute_cost,
             SUM(storage_cost) as total_storage_cost,
@@ -192,11 +192,11 @@ class DatabricksService:
             total_network = float(row[9]) if row[9] is not None else None
             total_other = float(row[10]) if row[10] is not None else None
 
-            total_ec2 = float(row[5]) if row[5] else 0.0
+            total_cloud = float(row[5]) if row[5] else 0.0
             coverage_pct = None
-            if total_compute is not None and total_ec2 > 0:
+            if total_compute is not None and total_cloud > 0:
                 classified = (total_compute or 0) + (total_storage or 0) + (total_network or 0)
-                coverage_pct = (classified / total_ec2) * 100
+                coverage_pct = (classified / total_cloud) * 100
 
             coverage_status = None
             coverage_warning = None
@@ -222,7 +222,7 @@ class DatabricksService:
                 average_cost=float(row[2]) if row[2] else 0.0,
                 max_cost=float(row[3]) if row[3] else 0.0,
                 min_cost=float(row[4]) if row[4] else 0.0,
-                total_ec2_cost=total_ec2,
+                total_cloud_cost=total_cloud,
                 total_databricks_cost=float(row[6]) if row[6] else 0.0,
                 total_compute_cost=total_compute,
                 total_storage_cost=total_storage,
@@ -240,7 +240,7 @@ class DatabricksService:
             average_cost=0.0,
             max_cost=0.0,
             min_cost=0.0,
-            total_ec2_cost=0.0,
+            total_cloud_cost=0.0,
             total_databricks_cost=0.0,
             date_range_days=(end_date - start_date).days + 1
         )
@@ -258,7 +258,7 @@ class DatabricksService:
             MIN(cluster_id) as cluster_id,
             MIN(usage_date) as start_date,
             MAX(usage_date) as end_date,
-            SUM(cloud_cost) as total_ec2_cost,
+            SUM(cloud_cost) as total_cloud_cost,
             SUM(databricks_cost) as total_databricks_cost,
             SUM(compute_cost) as total_compute_cost,
             SUM(storage_cost) as total_storage_cost,
@@ -276,7 +276,7 @@ class DatabricksService:
 
         if response.result and response.result.data_array:
             row = response.result.data_array[0]
-            ec2_cost = float(row[5])
+            cloud_cost = float(row[5])
             databricks_cost = float(row[6])
             start_date = date.fromisoformat(row[3])
             end_date = date.fromisoformat(row[4])
@@ -287,9 +287,9 @@ class DatabricksService:
                 cluster_id=row[2],
                 usage_date=start_date,
                 end_date=end_date if end_date != start_date else None,
-                ec2_cost=ec2_cost,
+                cloud_cost=cloud_cost,
                 databricks_cost=databricks_cost,
-                total_cost=ec2_cost + databricks_cost,
+                total_cost=cloud_cost + databricks_cost,
                 compute_cost=float(row[7]) if row[7] is not None else None,
                 storage_cost=float(row[8]) if row[8] is not None else None,
                 network_cost=float(row[9]) if row[9] is not None else None,
@@ -332,7 +332,7 @@ class DatabricksService:
 
                 job_spend = JobSpend(
                     cluster_id=row[0],
-                    ec2_cost=float(row[1]),
+                    cloud_cost=float(row[1]),
                     job_id=job_id,
                     job_name=row[6],
                     run_id=row[3],
@@ -389,7 +389,7 @@ class DatabricksService:
         job_level AS (
             SELECT
                 job_id,
-                SUM(cloud_cost) AS total_ec2_cost,
+                SUM(cloud_cost) AS total_cloud_cost,
                 SUM(databricks_cost) AS total_databricks_cost,
                 SUM(compute_cost) AS total_compute_cost,
                 SUM(storage_cost) AS total_storage_cost,
@@ -404,7 +404,7 @@ class DatabricksService:
         {base_cte}
         SELECT
             j.job_id,
-            j.total_ec2_cost,
+            j.total_cloud_cost,
             j.total_databricks_cost,
             j.run_count,
             lj.name,
@@ -420,7 +420,7 @@ class DatabricksService:
         ) lj
         ON j.job_id = lj.job_id
         {search_clause}
-        ORDER BY (j.total_ec2_cost + j.total_databricks_cost) DESC
+        ORDER BY (j.total_cloud_cost + j.total_databricks_cost) DESC
         LIMIT {limit} OFFSET {offset}
         """
 
@@ -440,7 +440,7 @@ class DatabricksService:
 
             for row in data_response.result.data_array:
                 job_id = row[0]
-                total_ec2_cost = float(row[1])
+                total_cloud_cost = float(row[1])
                 total_databricks_cost = float(row[2])
                 run_count = int(row[3])
 
@@ -448,7 +448,7 @@ class DatabricksService:
                     job_id=job_id,
                     job_name=row[4],
                     run_count=run_count,
-                    total_ec2_cost=total_ec2_cost,
+                    total_cloud_cost=total_cloud_cost,
                     total_databricks_cost=total_databricks_cost,
                     total_compute_cost=float(row[6]) if row[6] is not None else None,
                     total_storage_cost=float(row[7]) if row[7] is not None else None,
@@ -494,7 +494,7 @@ class DatabricksService:
                 cluster_id,
                 MIN(usage_date) as start_date,
                 MAX(usage_date) as end_date,
-                SUM(cloud_cost) as total_ec2_cost,
+                SUM(cloud_cost) as total_cloud_cost,
                 SUM(databricks_cost) as total_databricks_cost,
                 SUM(compute_cost) as total_compute_cost,
                 SUM(storage_cost) as total_storage_cost,
@@ -511,7 +511,7 @@ class DatabricksService:
             GROUP BY job_id, run_id, cluster_id
         )
         SELECT job_id, run_id, cluster_id, start_date, end_date,
-               total_ec2_cost, total_databricks_cost,
+               total_cloud_cost, total_databricks_cost,
                total_compute_cost, total_storage_cost, total_network_cost,
                total_other_cost
         FROM ranked_runs
@@ -533,7 +533,7 @@ class DatabricksService:
                     cluster_id=row[2],
                     start_date=date.fromisoformat(row[3]),
                     end_date=date.fromisoformat(row[4]),
-                    ec2_cost=float(row[5]),
+                    cloud_cost=float(row[5]),
                     databricks_cost=float(row[6]),
                     compute_cost=float(row[7]) if row[7] is not None else None,
                     storage_cost=float(row[8]) if row[8] is not None else None,
@@ -556,7 +556,7 @@ class DatabricksService:
             cluster_id,
             MIN(usage_date) as start_date,
             MAX(usage_date) as end_date,
-            SUM(cloud_cost) as total_ec2_cost,
+            SUM(cloud_cost) as total_cloud_cost,
             SUM(databricks_cost) as total_databricks_cost,
             SUM(compute_cost) as total_compute_cost,
             SUM(storage_cost) as total_storage_cost,
@@ -584,7 +584,7 @@ class DatabricksService:
                     cluster_id=row[1],
                     start_date=date.fromisoformat(row[2]),
                     end_date=date.fromisoformat(row[3]),
-                    ec2_cost=float(row[4]),
+                    cloud_cost=float(row[4]),
                     databricks_cost=float(row[5]),
                     compute_cost=float(row[6]) if row[6] is not None else None,
                     storage_cost=float(row[7]) if row[7] is not None else None,
@@ -617,6 +617,8 @@ class DatabricksService:
                 enable_elastic_disk,
                 tags,
                 aws_attributes,
+                azure_attributes,
+                gcp_attributes,
                 dbr_version,
                 data_security_mode
             FROM system.compute.clusters
@@ -632,23 +634,36 @@ class DatabricksService:
             if response.result and response.result.data_array and len(response.result.data_array) > 0:
                 row = response.result.data_array[0]
 
-                # Parse tags and aws_attributes as JSON if they exist
+                # Parse tags and provider-specific attribute blocks as JSON if they exist
+                import json
                 tags = None
                 aws_attributes = None
+                azure_attributes = None
+                gcp_attributes = None
 
                 try:
                     if row[10]:  # tags
-                        import json
                         tags = json.loads(row[10])
                 except:
                     tags = {"raw": row[10]} if row[10] else None
 
                 try:
                     if row[11]:  # aws_attributes
-                        import json
                         aws_attributes = json.loads(row[11])
                 except:
                     aws_attributes = {"raw": row[11]} if row[11] else None
+
+                try:
+                    if row[12]:  # azure_attributes
+                        azure_attributes = json.loads(row[12])
+                except:
+                    azure_attributes = {"raw": row[12]} if row[12] else None
+
+                try:
+                    if row[13]:  # gcp_attributes
+                        gcp_attributes = json.loads(row[13])
+                except:
+                    gcp_attributes = {"raw": row[13]} if row[13] else None
 
                 return ClusterDetails(
                     cluster_id=row[0],
@@ -663,8 +678,10 @@ class DatabricksService:
                     enable_elastic_disk=bool(row[9]) if row[9] is not None else None,
                     tags=tags,
                     aws_attributes=aws_attributes,
-                    dbr_version=row[12],
-                    data_security_mode=row[13]
+                    azure_attributes=azure_attributes,
+                    gcp_attributes=gcp_attributes,
+                    dbr_version=row[14],
+                    data_security_mode=row[15]
                 )
 
             return None

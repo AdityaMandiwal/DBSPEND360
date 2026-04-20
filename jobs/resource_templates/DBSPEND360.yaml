@@ -5,7 +5,7 @@ resources:
       tasks:
         - task_key: cloud_cost_explorer
           notebook_task:
-            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/DBSpend360-app-v2/aws_cloud_cost_explorer_app
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/DBSpend360-app-v2/${cloud_provider}_cloud_cost_explorer_app
             source: WORKSPACE
         - task_key: Dbspend360dbu_costs
           depends_on:
@@ -24,6 +24,8 @@ resources:
       parameters:
         - name: catalog
           default: dbspend360
+        - name: cloud_provider
+          default: aws
         - name: overlap_days
           default: "10"
         - name: schema

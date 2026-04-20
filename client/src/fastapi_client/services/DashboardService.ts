@@ -119,7 +119,7 @@ export class DashboardService {
      * Get Job Cost Breakdown
      * Get detailed cost breakdown for a specific job run.
      *
-     * Returns EC2 vs Databricks cost breakdown and additional job details
+     * Returns cloud vs Databricks cost breakdown and additional job details
      * for use in drill-down modals and pie charts.
      * @param jobId
      * @param runId Run ID for the specific job execution

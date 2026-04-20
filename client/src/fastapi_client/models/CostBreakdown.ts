@@ -11,7 +11,7 @@ export type CostBreakdown = {
     cluster_id: string;
     usage_date: string;
     end_date?: (string | null);
-    ec2_cost: number;
+    cloud_cost: number;
     databricks_cost: number;
     total_cost: number;
     compute_cost?: (number | null);

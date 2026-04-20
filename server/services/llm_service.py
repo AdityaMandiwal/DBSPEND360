@@ -6,6 +6,7 @@ from typing import Optional
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
+from server.config.cloud_platform import cloud_config
 from server.models.job_spend import ClusterDetails
 from server.services.databricks_service import LOOKBACK_DAYS
 
@@ -153,7 +154,7 @@ class LLMService:
         self,
         job_id: str,
         run_id: str,
-        ec2_cost: float,
+        cloud_cost: float,
         databricks_cost: float,
         total_cost: float,
         cluster_id: Optional[str] = None,
@@ -166,9 +167,9 @@ class LLMService:
         Args:
             job_id: The Databricks job ID.
             run_id: The job run ID.
-            ec2_cost: Cloud infrastructure cost for this run.
+            cloud_cost: Cloud infrastructure cost for this run.
             databricks_cost: Databricks platform cost for this run.
-            total_cost: Total cost (ec2 + databricks).
+            total_cost: Total cost (cloud + databricks).
             cluster_id: Optional cluster ID (kept for signature compat).
             usage_date: Optional usage date (kept for signature compat).
             job_name: Human-readable job name.
@@ -180,7 +181,7 @@ class LLMService:
         try:
             user_message = self._build_job_user_message(
                 job_id=job_id,
-                ec2_cost=ec2_cost,
+                cloud_cost=cloud_cost,
                 databricks_cost=databricks_cost,
                 total_cost=total_cost,
                 job_name=job_name,
@@ -206,11 +207,11 @@ class LLMService:
             if response.choices and len(response.choices) > 0:
                 return response.choices[0].message.content.strip()
 
-            return self._build_job_fallback(ec2_cost, databricks_cost, total_cost)
+            return self._build_job_fallback(cloud_cost, databricks_cost, total_cost)
 
         except Exception as e:
             logger.error("Error in LLM job cost analysis: %s", str(e))
-            return self._build_job_fallback(ec2_cost, databricks_cost, total_cost)
+            return self._build_job_fallback(cloud_cost, databricks_cost, total_cost)
 
     async def analyze_cluster_configuration(
         self,
@@ -263,14 +264,14 @@ class LLMService:
     def _build_job_user_message(
         self,
         job_id: str,
-        ec2_cost: float,
+        cloud_cost: float,
         databricks_cost: float,
         total_cost: float,
         job_name: Optional[str],
         historical_stats: Optional[dict],
     ) -> str:
         """Assemble the data-only USER message for job cost analysis."""
-        ec2_pct = (ec2_cost / total_cost * 100) if total_cost > 0 else 0.0
+        cloud_pct = (cloud_cost / total_cost * 100) if total_cost > 0 else 0.0
         dbr_pct = (databricks_cost / total_cost * 100) if total_cost > 0 else 0.0
         label = job_name or f"Job {job_id}"
 
@@ -278,7 +279,7 @@ class LLMService:
             "## Current Run",
             f"- Job: {label}",
             f"- Total Cost: ${total_cost:,.2f}",
-            f"- Cloud Cost: ${ec2_cost:,.2f} ({ec2_pct:.1f}%)",
+            f"- Cloud Cost: ${cloud_cost:,.2f} ({cloud_pct:.1f}%)",
             f"- Databricks Cost: ${databricks_cost:,.2f} ({dbr_pct:.1f}%)",
         ]
 
@@ -376,15 +377,9 @@ class LLMService:
         else:
             elastic = "Not specified"
 
-        aws_availability = "Not specified"
-        spot_bid_pct = "Not specified"
-        if cluster.aws_attributes:
-            aws_availability = cluster.aws_attributes.get(
-                "availability", "Not specified"
-            )
-            spot_bid = cluster.aws_attributes.get("spot_bid_price_percent")
-            if spot_bid is not None:
-                spot_bid_pct = f"{spot_bid}%"
+        provider_label, provider_availability, spot_bid_pct = (
+            self._extract_provider_attributes(cluster)
+        )
 
         lines: list[str] = [
             "## Cluster Configuration",
@@ -395,7 +390,7 @@ class LLMService:
             f"- Elastic Disk: {elastic}",
             f"- DBR Version: {cluster.dbr_version or 'Not specified'}",
             f"- Security Mode: {cluster.data_security_mode or 'Not specified'}",
-            f"- AWS Availability: {aws_availability}",
+            f"- {provider_label} Availability: {provider_availability}",
             f"- Spot Bid: {spot_bid_pct}",
         ]
 
@@ -437,23 +432,23 @@ class LLMService:
 
     @staticmethod
     def _build_job_fallback(
-        ec2_cost: float,
+        cloud_cost: float,
         databricks_cost: float,
         total_cost: float,
     ) -> str:
         """Return structured fallback matching the normal LLM section format."""
-        ec2_pct = (ec2_cost / total_cost * 100) if total_cost > 0 else 0.0
+        cloud_pct = (cloud_cost / total_cost * 100) if total_cost > 0 else 0.0
         dbr_pct = (databricks_cost / total_cost * 100) if total_cost > 0 else 0.0
-        dominant = "Cloud" if ec2_pct >= dbr_pct else "Databricks"
+        dominant = "Cloud" if cloud_pct >= dbr_pct else "Databricks"
         return (
             "## 1. Cost Assessment [DATA ONLY]\n"
             f"- Total Cost: ${total_cost:,.2f}\n"
-            f"- Cloud Cost: ${ec2_cost:,.2f} ({ec2_pct:.1f}%)\n"
+            f"- Cloud Cost: ${cloud_cost:,.2f} ({cloud_pct:.1f}%)\n"
             f"- Databricks Cost: ${databricks_cost:,.2f} ({dbr_pct:.1f}%)\n"
             f"- Automated classification unavailable\n\n"
             "## 2. Cost Driver Analysis\n"
             f"- {dominant} costs represent the larger share at "
-            f"{max(ec2_pct, dbr_pct):.1f}% of total spend\n"
+            f"{max(cloud_pct, dbr_pct):.1f}% of total spend\n"
             f"- Detailed analysis unavailable\n\n"
             "## 3. Optimization Opportunities\n"
             "- Automated recommendations unavailable\n\n"
@@ -503,6 +498,45 @@ class LLMService:
             "- Automated analysis could not be generated",
         ])
         return "\n".join(lines)
+
+    @staticmethod
+    def _extract_provider_attributes(
+        cluster: ClusterDetails,
+    ) -> tuple[str, str, str]:
+        """Pick the populated provider-attributes block and read availability/spot keys.
+
+        Returns:
+            (provider_label, availability, spot_bid_pct_str) triple. Falls back
+            to the configured platform's display name if no attributes block
+            is populated on this cluster row.
+        """
+        availability = "Not specified"
+        spot_bid_pct = "Not specified"
+        provider_label = cloud_config.platform_display_name
+
+        if cluster.aws_attributes:
+            provider_label = "AWS"
+            availability = cluster.aws_attributes.get(
+                "availability", "Not specified"
+            )
+            spot_bid = cluster.aws_attributes.get("spot_bid_price_percent")
+            if spot_bid is not None:
+                spot_bid_pct = f"{spot_bid}%"
+        elif cluster.azure_attributes:
+            provider_label = "Azure"
+            availability = cluster.azure_attributes.get(
+                "availability", "Not specified"
+            )
+            spot_bid = cluster.azure_attributes.get("spot_bid_max_price")
+            if spot_bid is not None:
+                spot_bid_pct = f"{spot_bid}"
+        elif cluster.gcp_attributes:
+            provider_label = "GCP"
+            availability = cluster.gcp_attributes.get(
+                "availability", "Not specified"
+            )
+
+        return provider_label, availability, spot_bid_pct
 
     @staticmethod
     def _filter_tags(tags: Optional[dict]) -> str:
