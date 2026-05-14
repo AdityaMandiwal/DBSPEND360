@@ -542,10 +542,11 @@ const ClusterDetailsModal = ({ clusterId, isOpen, onClose }: ClusterDetailsModal
                     <span className="text-sm font-medium text-muted-foreground">Auto-termination</span>
                     <div className="text-right">
                       <div className="text-sm">
-                        {clusterDetails.auto_termination_minutes ?
-                          `${clusterDetails.auto_termination_minutes} minutes` :
-                          'Disabled'
-                        }
+                        {clusterDetails.auto_termination_minutes
+                          ? `${clusterDetails.auto_termination_minutes} minutes`
+                          : clusterDetails.cluster_source?.toUpperCase() === 'JOB'
+                            ? 'N/A (ephemeral)'
+                            : 'Disabled'}
                       </div>
                     </div>
                   </div>

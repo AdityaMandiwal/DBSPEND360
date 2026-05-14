@@ -227,6 +227,8 @@ class ClusterDetails(BaseModel):
     """Cluster configuration details from system.compute.clusters."""
 
     cluster_id: str
+    cluster_name: Optional[str] = None
+    cluster_source: Optional[str] = None
     owned_by: Optional[str] = None
     create_time: Optional[str] = None
     driver_node_type: Optional[str] = None
@@ -242,6 +244,16 @@ class ClusterDetails(BaseModel):
     gcp_attributes: Optional[dict] = None
     dbr_version: Optional[str] = None
     data_security_mode: Optional[str] = None
+
+    @property
+    def is_job_cluster(self) -> bool:
+        """Return True when this row represents a job (ephemeral) cluster.
+
+        `system.compute.clusters.cluster_source` is `JOB` for clusters spun up
+        for a single job run; for those, `auto_termination_minutes` is NULL by
+        design because the cluster lifecycle is bound to the run.
+        """
+        return (self.cluster_source or "").upper() == "JOB"
 
 
 class ClusterAnalysis(BaseModel):

@@ -133,6 +133,8 @@ export interface CostAnalysis {
 
 export interface ClusterDetails {
   cluster_id: string;
+  cluster_name?: string | null;
+  cluster_source?: string | null;
   owned_by?: string;
   create_time?: string;
   driver_node_type?: string;

@@ -7,6 +7,8 @@
  */
 export type ClusterDetails = {
     cluster_id: string;
+    cluster_name?: (string | null);
+    cluster_source?: (string | null);
     owned_by?: (string | null);
     create_time?: (string | null);
     driver_node_type?: (string | null);
