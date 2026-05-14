@@ -99,6 +99,12 @@ Evaluate based on autoscaling, spot usage, and auto-termination configuration:
 - NEEDS ATTENTION: partially optimized; key features missing or misconfigured
 - WELL-OPTIMIZED: most cost-saving features enabled and properly configured
 
+Auto-termination applies ONLY to interactive (all-purpose) clusters. For JOB
+clusters (`Cluster Type: JOB`) the lifecycle is bound to the run — the cluster
+terminates automatically when the run ends. Treat auto-termination as
+not applicable for JOB clusters: do NOT flag it as missing, do NOT recommend
+enabling it, and do NOT factor it into the rating.
+
 ## Missing Data Protocol
 
 1. No cost data -> analyze configuration only; note "no spend data available for $ impact estimates".
@@ -110,6 +116,7 @@ Evaluate based on autoscaling, spot usage, and auto-termination configuration:
 - Each MUST include a dollar impact estimate when cost data is available.
 - Without cost data: describe qualitative impact; state "dollar impact requires cost data".
 - No duplicates. No filler.
+- For JOB clusters, do NOT recommend enabling auto-termination — it is N/A by design.
 
 ## Output Format (IMMUTABLE — do not add, remove, or rename sections)
 
@@ -118,6 +125,13 @@ Evaluate based on autoscaling, spot usage, and auto-termination configuration:
 ## 3. Cost Savings Opportunities (max 3, ranked by $ impact)
 ## 4. Idle Waste Risk
 ## 5. Configuration Gaps
+
+## Section 4 — Idle Waste Risk
+
+- For JOB clusters: write exactly "Not applicable — ephemeral job cluster
+  terminates on run completion." and nothing else for this section.
+- For interactive clusters: assess idle-waste risk using
+  `Auto-termination` and runtime/utilisation signals.
 
 ## Formatting
 
@@ -366,11 +380,7 @@ class LLMService:
         else:
             autoscale = "Not specified"
 
-        auto_term = (
-            f"{cluster.auto_termination_minutes} minutes"
-            if cluster.auto_termination_minutes is not None
-            else "Disabled"
-        )
+        auto_term = self._format_auto_termination(cluster)
 
         if cluster.enable_elastic_disk is not None:
             elastic = "Enabled" if cluster.enable_elastic_disk else "Disabled"
@@ -381,7 +391,11 @@ class LLMService:
             self._extract_provider_attributes(cluster)
         )
 
+        cluster_type_line = self._format_cluster_type_line(cluster)
+
         lines: list[str] = [
+            cluster_type_line,
+            "",
             "## Cluster Configuration",
             f"- Driver: {cluster.driver_node_type or 'Not specified'}",
             f"- Worker: {cluster.worker_node_type or 'Not specified'}",
@@ -462,11 +476,7 @@ class LLMService:
         cost_summary: Optional[dict],
     ) -> str:
         """Return structured fallback matching the normal LLM section format."""
-        auto_term = (
-            f"{cluster_details.auto_termination_minutes} min"
-            if cluster_details.auto_termination_minutes is not None
-            else "Disabled"
-        )
+        auto_term = LLMService._format_auto_termination(cluster_details)
         driver = cluster_details.driver_node_type or "N/A"
         worker = cluster_details.worker_node_type or "N/A"
 
@@ -491,13 +501,51 @@ class LLMService:
             "- Automated recommendations unavailable",
             "",
             "## 4. Idle Waste Risk",
-            f"- Auto-termination: {auto_term}",
-            "- Detailed analysis unavailable",
+        ])
+        if cluster_details.is_job_cluster:
+            lines.append(
+                "- Not applicable \u2014 ephemeral job cluster terminates "
+                "on run completion."
+            )
+        else:
+            lines.append(f"- Auto-termination: {auto_term}")
+            lines.append("- Detailed analysis unavailable")
+        lines.extend([
             "",
             "## 5. Configuration Gaps",
             "- Automated analysis could not be generated",
         ])
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_auto_termination(cluster: ClusterDetails) -> str:
+        """Render the auto-termination field for the LLM message and fallback.
+
+        Job clusters have no idle-shutdown setting because Databricks tears them
+        down when the run ends. Returning the literal string ``Disabled`` for
+        them leads the model to flag a non-issue, so we render ``N/A
+        (ephemeral job cluster, terminates on run end)`` instead.
+        """
+        if cluster.auto_termination_minutes is not None:
+            return f"{cluster.auto_termination_minutes} minutes"
+        if cluster.is_job_cluster:
+            return "N/A (ephemeral job cluster, terminates on run end)"
+        return "Disabled"
+
+    @staticmethod
+    def _format_cluster_type_line(cluster: ClusterDetails) -> str:
+        """Render the cluster-type preamble shown before ## Cluster Configuration."""
+        if cluster.is_job_cluster:
+            return (
+                "Cluster Type: JOB cluster "
+                "(ephemeral, lifecycle-bound to the run — auto-termination N/A)"
+            )
+        if cluster.cluster_source:
+            return (
+                f"Cluster Type: {cluster.cluster_source} cluster "
+                "(interactive — auto-termination applies)"
+            )
+        return "Cluster Type: Unknown (cluster_source unavailable)"
 
     @staticmethod
     def _extract_provider_attributes(

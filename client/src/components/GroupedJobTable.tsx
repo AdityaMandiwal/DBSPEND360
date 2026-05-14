@@ -50,13 +50,18 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
     setPagination((prev) => ({ ...prev, pageIndex: 0 }));
   }, [jobFilter, dateRange.start_date, dateRange.end_date]);
 
-  const { data, isLoading, error } = useGroupedJobSpends({
+  const { data, isLoading, isFetching, error } = useGroupedJobSpends({
     start_date: dateRange.start_date,
     end_date: dateRange.end_date,
     job_name: jobFilter || undefined,
     page: pagination.pageIndex + 1,
     per_page: pagination.pageSize,
   });
+
+  // Distinguish initial load (no previous data) from a background refetch
+  // (previous page's data is still on screen thanks to keepPreviousData).
+  const isInitialLoading = isLoading && !data;
+  const isBackgroundFetching = isFetching && !!data;
 
   const { data: databricksHost } = useDatabricksHost();
 
@@ -458,7 +463,15 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
   return (
     <div className="space-y-4">
       {/* Table */}
-      <div className="rounded-md border">
+      <div className="rounded-md border relative overflow-hidden">
+        {/* Subtle progress bar shown only during background refetches.
+            Initial load uses the row skeletons below instead. */}
+        {isBackgroundFetching && (
+          <div
+            className="absolute left-0 right-0 top-0 h-0.5 bg-blue-500/70 animate-pulse z-10"
+            aria-hidden="true"
+          />
+        )}
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -474,7 +487,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
             ))}
           </TableHeader>
           <TableBody>
-            {isLoading ? (
+            {isInitialLoading ? (
               // Loading skeleton
               [...Array(10)].map((_, i) => (
                 <TableRow key={i}>
@@ -530,21 +543,31 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
               variant="outline"
               size="sm"
               onClick={() => table.previousPage()}
-              disabled={!table.getCanPreviousPage() || isLoading}
+              disabled={!table.getCanPreviousPage() || isInitialLoading}
             >
               <ChevronLeft className="h-4 w-4 mr-1" />
               Previous
             </Button>
 
-            <div className="text-sm font-medium">
-              Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
+            <div className="text-sm font-medium flex items-center gap-2">
+              <span>
+                Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
+              </span>
+              {isBackgroundFetching && (
+                <span
+                  className="text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
+                  Updating…
+                </span>
+              )}
             </div>
 
             <Button
               variant="outline"
               size="sm"
               onClick={() => table.nextPage()}
-              disabled={!table.getCanNextPage() || isLoading}
+              disabled={!table.getCanNextPage() || isInitialLoading}
             >
               Next
               <ChevronRight className="h-4 w-4 ml-1" />

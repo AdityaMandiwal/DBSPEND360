@@ -602,7 +602,9 @@ class DatabricksService:
             # Escape single quotes to prevent SQL injection
             escaped_cluster_id = cluster_id.replace("'", "''")
 
-            # Query the system.compute.clusters table for cluster details
+            # Query the system.compute.clusters table for cluster details.
+            # `cluster_source` is read so we can distinguish JOB (ephemeral) from
+            # interactive clusters — auto-termination is N/A for JOB clusters.
             query = f"""
             SELECT
                 cluster_id,
@@ -620,7 +622,9 @@ class DatabricksService:
                 azure_attributes,
                 gcp_attributes,
                 dbr_version,
-                data_security_mode
+                data_security_mode,
+                cluster_source,
+                cluster_name
             FROM system.compute.clusters
             WHERE cluster_id = '{escaped_cluster_id}'
             LIMIT 1
@@ -681,7 +685,9 @@ class DatabricksService:
                     azure_attributes=azure_attributes,
                     gcp_attributes=gcp_attributes,
                     dbr_version=row[14],
-                    data_security_mode=row[15]
+                    data_security_mode=row[15],
+                    cluster_source=row[16],
+                    cluster_name=row[17],
                 )
 
             return None
