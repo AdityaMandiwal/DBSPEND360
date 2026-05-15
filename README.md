@@ -1,8 +1,6 @@
-----
-DBSPEND360
-----
+# DBSPEND360
 
-1. Overview
+## 1. Overview
 
 * DBSPEND360 is a Databricks-native solution that provides clear job-level visibility into cloud and DBU spends for Databricks workloads.
 
@@ -17,20 +15,20 @@ DBSPEND360
 <br>
 
 
-2. Architecture
+## 2. Architecture
 
-## Logical Architecture Diagram
+### Logical Architecture Diagram
 
-![architechture](release/readme_images/architechture.png)
+![architecture](release/readme_images/architecture.png)
 
 
-## Implementation Flow
+### Implementation Flow
 
 ![Implementation](release/readme_images/implementation_flow.png)
 
 
 
-3. Usage 
+## 3. Usage
 
 
 * Download the DBSPEND360 databricks app repo from https://github.com/pritampaul-db/DBSpend360.
@@ -40,15 +38,19 @@ DBSPEND360
     * `release/AWS Credentials and Permissions Setup.md` — AWS Cost Explorer / CUR setup.
     * `release/Azure Credentials and Permissions Setup.docx` — Azure Cost Management SPN setup.
     * `release/GCP Credentials and Permissions Setup.md` — GCP Cloud Billing setup (stub; pending implementation).
-* readme.md contains all the usage related description as mentioned below:
+* README.md contains all the usage related description as mentioned below:
 
-    1. Setup your local databrickscfg file with DATABRICKS_HOST and DATABRICKS_TOKEN details. 
+    1. Setup your local databrickscfg file with DATABRICKS_HOST and DATABRICKS_TOKEN details.
     2. Update config file from config-> app.dev.config , this will be used to deploy the app.
 
-#### Step by step setup:
+### Step by step setup
 
-* Change directory to DBSpend360 in your cloned git golder using 
-* cd DBSpend360
+* Change directory to DBSpend360 in your cloned git folder using:
+
+    ```bash
+    cd DBSpend360
+    ```
+
 * In the config folder change the values in  app.dev.config for:
     1. Warehouse_id
     2. Table_name (catalog.schema.table)
