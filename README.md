@@ -169,9 +169,11 @@ GRANT SELECT ON TABLE system.compute.clusters TO `<APP_SERVICE_PRINCIPAL_ID>`;
 ```
 
 
-![app1](release/readme_images/app1.png)
+![app_1](release/readme_images/app_1.png)
 
-![app2](release/readme_images/app2.png)
+![app_2](release/readme_images/app_2.png)
+
+![app_3](release/readme_images/app_3.png)
 
 
 ### Cloud Provider Selection
