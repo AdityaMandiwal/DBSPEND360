@@ -30,26 +30,50 @@
 
 ## 3. Usage
 
+* Clone the DBSPEND360 Databricks app repo:
 
-* Download the DBSPEND360 databricks app repo from https://github.com/pritampaul-db/DBSpend360.
+    ```bash
+    git clone https://github.com/AdityaMandiwal/DBSPEND360.git
+    cd DBSPEND360
+    ```
 
-* Jobs folder contains all the DDL, Notebooks , and resource template for DBSPEND360 Job.
-* release folder contains the product release doc and the per-cloud credentials setup guides needed for data ingestion from each cost explorer:
+* `jobs/` contains all the DDL notebooks, ETL notebooks, and the Databricks Job resource template for DBSPEND360.
+* `release/` contains the product release doc and the per-cloud credentials setup guides needed for data ingestion from each cost explorer:
     * `release/AWS Credentials and Permissions Setup.md` — AWS Cost Explorer / CUR setup.
     * `release/Azure Credentials and Permissions Setup.docx` — Azure Cost Management SPN setup.
     * `release/GCP Credentials and Permissions Setup.md` — GCP Cloud Billing setup (stub; pending implementation).
-* README.md contains all the usage related description as mentioned below:
 
-    1. Setup your local databrickscfg file with DATABRICKS_HOST and DATABRICKS_TOKEN details.
-    2. Update config file from config-> app.dev.config , this will be used to deploy the app.
+### Prerequisites
 
-### Step by step setup
+Install the following on your local machine before running `setup.sh` (the script will verify each one):
 
-* Change directory to DBSpend360 in your cloned git folder using:
+* Git
+* [uv](https://docs.astral.sh/uv/) — Python package manager
+* [Bun](https://bun.sh/) — JavaScript package manager
+* Node.js 18 or newer
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/index.html) (v0.265.0+ for `databricks apps` support)
+* On macOS only: Homebrew (used by `setup.sh` to install missing dependencies)
+
+### Configure Databricks authentication
+
+Configure local Databricks authentication using **either**:
+
+* **A profile in `~/.databrickscfg`** (recommended for repeated use):
+
+    ```ini
+    [DEFAULT]
+    host  = https://<your-workspace>.cloud.databricks.com
+    token = <your-personal-access-token>
+    ```
+
+* **Environment variables** (set in your shell or `.env.local`):
 
     ```bash
-    cd DBSpend360
+    export DATABRICKS_HOST=https://<your-workspace>.cloud.databricks.com
+    export DATABRICKS_TOKEN=<your-personal-access-token>
     ```
+
+### Step by step setup
 
 * In the config folder change the values in  app.dev.config for:
     1. Warehouse_id
@@ -65,7 +89,7 @@
 
   1. Choose the Authentication type
   2. Choose the databricks configuration profile you want to use to deploy the app
-  3. Give an app name: App name should not have cap letters or numbers
+  3. Give an app name: must be lowercase; digits and hyphens are allowed, but uppercase letters and other special characters are not.
   4. Give the source code path to store all the app related code/assets
 
 
@@ -74,24 +98,43 @@
 ![setup3](release/readme_images/setup3.png)
 
 
-* Run the deploy command : ./deploy.sh --verbose --create (This creates and deploys the app)
+* Run the deploy command: `./deploy.sh --verbose --create` (this creates and deploys the app)
 
 
 
 ![setup4](release/readme_images/setup4.png)
 
-* App SPN should have below permissions:
 
-  1. CAN USE for the sql warehouse mentioned in the app config file.
-  2. USE CATALOG, USE SCHEMA, SELECT permissions on the catalog, schema, table name used for sourcing the data of the databricks app from dbspend360_total_job_spends.
-  3. App uses databricks-claude-sonnet-4 as foundation model to generate insights for cost/performance improvements.
+### Deploy the data pipeline (Databricks Job)
+
+The Databricks App reads from `dbspend360_total_job_spends`, which is produced by a multi-task Databricks Job. Deploy the pipeline before (or in parallel with) the app:
+
+1. Import everything under `jobs/notebooks/` and `jobs/ddls/` into your Databricks workspace.
+2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use, to create `dbspend360_cloud_cost_explorer`, `dbspend360_dbu_cost`, `dbspend360_total_job_spends`, `dbspend360_audit_log`, and `dbspend360_error_log`.
+3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines three tasks executed in order:
+   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app`
+   * `Dbspend360dbu_costs` → `dbspend360_dbu_cost_app`
+   * `databricks_job_spends` → `databricks_job_spends_app`
+
+   **Update the hard-coded `notebook_path` values** in the YAML to match where you imported the notebooks (the template currently points at a developer workspace path), and review the default `parameters` block (`catalog`, `cloud_provider`, `overlap_days`, `schema`, `workspace_ids`) before deploying.
+4. Create the job either via the Databricks Workflows UI using the YAML as a reference, or by wrapping it in a Databricks Asset Bundle.
 
 
-### Unity Catalog Grants for the App Service Principal
+### Required Grants for the App Service Principal
 
-When the app is deployed as a Databricks App, it runs under a **service principal** that may not have explicit Unity Catalog permissions on your tables, even if it belongs to an admins group. Without these grants, the app will return empty results despite the underlying tables having data.
+When the app is deployed as a Databricks App, it runs under a **service principal** that may not have explicit permissions on your warehouse, Unity Catalog objects, or model serving endpoints — even if it belongs to an admins group. Without these grants, the app will return empty results or fail to render AI insights.
 
-Find your app's service principal ID from the Databricks App settings page, then run the following SQL grants in a Databricks SQL editor or notebook:
+Find your app's service principal ID from the Databricks App settings page, then apply the grants below.
+
+#### SQL warehouse
+
+Grant via the SQL Warehouse permissions UI (or via REST API):
+
+* `CAN USE` on the SQL warehouse referenced by `warehouse_id` in `config/app.<env>.config`.
+
+#### Unity Catalog (catalog / schema / table)
+
+Run the following SQL in a Databricks SQL editor or notebook:
 
 ```sql
 -- Replace <YOUR_CATALOG>, <YOUR_SCHEMA>, and <APP_SERVICE_PRINCIPAL_ID> with your values.
@@ -105,6 +148,14 @@ GRANT USE SCHEMA ON SCHEMA <YOUR_CATALOG>.<YOUR_SCHEMA> TO `<APP_SERVICE_PRINCIP
 -- Allow the service principal to read all tables in the schema
 GRANT SELECT ON SCHEMA <YOUR_CATALOG>.<YOUR_SCHEMA> TO `<APP_SERVICE_PRINCIPAL_ID>`;
 ```
+
+#### Model serving endpoint (for AI insights)
+
+The app uses `databricks-claude-sonnet-4` as the foundation model to generate cost and performance recommendations. Grant:
+
+* `CAN QUERY` on the `databricks-claude-sonnet-4` model serving endpoint.
+
+If this grant is missing, the dashboard still loads but the AI Cost Analysis panel will not render.
 
 #### Optional: System Table Access
 
@@ -132,6 +183,8 @@ DBSPEND360 is cloud-agnostic at the data layer (`dbspend360_cloud_cost_explorer.
 # Supported platforms: AWS, Azure, GCP
 platform = AWS
 ```
+
+> **Note:** GCP is selectable in config and wired through the cluster-attribute, label-rendering, and LLM layers, but the `gcp_cloud_cost_explorer_app` notebook is a stub and currently raises `NotImplementedError`. Only AWS and Azure are functional end-to-end today.
 
 The chosen `platform` value drives, end-to-end:
 
