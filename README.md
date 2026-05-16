@@ -1,95 +1,145 @@
-----
-DBSPEND360
-----
+# DBSPEND360
 
-1. Overview
+## 1. Overview
 
 * DBSPEND360 is a Databricks-native solution that provides clear job-level visibility into cloud and DBU spends for Databricks workloads.
 
 * Tracks end-to-end cost at job, run, and cluster level for Databricks jobs.
-* Combines cloud VM cost (AWS Cost Explorer, Azure Cost Management, or — once implemented — GCP Cloud Billing) with Databricks DBU cost from system billing tables.
-* Produces a consolidated dbspend360_total_job_spends table as the single source of truth for job-level cost.
+* Combines cloud VM cost (AWS Cost Explorer or Azure Cost Management) with Databricks DBU cost from system billing tables.
+* Produces a consolidated `dbspend360_total_job_spends` table as the single source of truth for job-level cost.
 * Includes audit and error logging to support incremental loads, monitoring, and reconciliation.
 * Powers the DBSPEND360 Databricks App, which provides dashboards and AI-driven cost and performance recommendations.
 
+> **Status:** AWS and Azure are functional end-to-end today. GCP is wired through the config, UI label, and LLM layers, but the GCP cloud cost explorer ETL (`jobs/notebooks/gcp_cloud_cost_explorer_app.ipynb`) is a stub that raises `NotImplementedError` and needs to be implemented before GCP can be selected as the active provider.
+
 
 <br>
 <br>
 
 
-2. Architecture
+## 2. Architecture
 
-## Logical Architecture Diagram
+### Logical Architecture Diagram
 
-![architechture](release/readme_images/architechture.png)
-
-
-## Implementation Flow
-
-![Implementation](release/readme_images/implementation_flow.png)
+![DBSPEND360 logical architecture: cloud cost explorers and Databricks DBU usage feeding the dbspend360_total_job_spends table, which powers the Databricks App with dashboards and LLM-driven insights.](release/readme_images/architecture.png)
 
 
+### Implementation Flow
 
-3. Usage 
+![DBSPEND360 implementation flow: per-cloud ETL notebooks ingest into staging tables, dbspend360_dbu_cost_app joins DBU usage, and databricks_job_spends_app produces the consolidated dbspend360_total_job_spends table consumed by the app.](release/readme_images/implementation_flow.png)
 
 
-* Download the DBSPEND360 databricks app repo from https://github.com/pritampaul-db/DBSpend360.
 
-* Jobs folder contains all the DDL, Notebooks , and resource template for DBSPEND360 Job.
-* release folder contains the product release doc and the per-cloud credentials setup guides needed for data ingestion from each cost explorer:
-    * `release/AWS Credentials and Permissions Setup.md` — AWS Cost Explorer / CUR setup.
-    * `release/Azure Credentials and Permissions Setup.docx` — Azure Cost Management SPN setup.
-    * `release/GCP Credentials and Permissions Setup.md` — GCP Cloud Billing setup (stub; pending implementation).
-* readme.md contains all the usage related description as mentioned below:
+## 3. Usage
 
-    1. Setup your local databrickscfg file with DATABRICKS_HOST and DATABRICKS_TOKEN details. 
-    2. Update config file from config-> app.dev.config , this will be used to deploy the app.
+* Clone the DBSPEND360 Databricks app repo:
 
-#### Step by step setup:
+    ```bash
+    git clone https://github.com/AdityaMandiwal/DBSPEND360.git
+    cd DBSPEND360
+    ```
 
-* Change directory to DBSpend360 in your cloned git golder using 
-* cd DBSpend360
-* In the config folder change the values in  app.dev.config for:
-    1. Warehouse_id
-    2. Table_name (catalog.schema.table)
-    3. Schema_name (catalog.schema)
+* `jobs/` contains all the DDL notebooks, ETL notebooks, and the Databricks Job resource template for DBSPEND360.
+* `release/` contains the product release doc and the per-cloud credentials setup guides needed for data ingestion from each cost explorer:
+    * `release/AWS Credentials and Permissions Setup.md` — required AWS Cost Explorer / CUR APIs, IAM policy (inline JSON), cluster-tagging convention used to join line items back to Databricks `cluster_id`, credential delivery options (Databricks Secrets / instance profile / SPN), and a verification `aws ce get-cost-and-usage` command.
+    * `release/Azure Credentials and Permissions Setup.docx` — Azure Cost Management service principal (SPN) registration, required role assignments on the billing scope, and how to wire the SPN credentials into the notebook.
+    * `release/GCP Credentials and Permissions Setup.md` — stub placeholder; pending the GCP cost explorer implementation. Outlines the GCP APIs (Cloud Billing / BigQuery), IAM roles, and verification steps that will be needed once the notebook is implemented.
+
+### Prerequisites
+
+Install the following on your local machine before running `setup.sh` (the script will verify each one):
+
+* Git
+* [uv](https://docs.astral.sh/uv/) — Python package manager
+* [Bun](https://bun.sh/) — JavaScript package manager
+* Node.js 18 or newer
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/index.html) (v0.265.0+ for `databricks apps` support)
+* On macOS only: Homebrew (used by `setup.sh` to install missing dependencies)
+
+### Configure Databricks authentication
+
+Configure local Databricks authentication using **either**:
+
+* **A named profile in `~/.databrickscfg`** (recommended for repeated use). Use any name you like — `DEFAULT` works, but a workspace-specific name is clearer once you have more than one workspace. `setup.sh` lists the profiles found in this file via `databricks auth profiles` and asks which one to use:
+
+    ```ini
+    [my-workspace]
+    host  = https://<your-workspace>.cloud.databricks.com
+    token = <your-personal-access-token>
+    ```
+
+* **Environment variables** (set in your shell or `.env.local`). Use these when you don't want a profile file on disk — `setup.sh` will pick them up if you select PAT authentication:
+
+    ```bash
+    export DATABRICKS_HOST=https://<your-workspace>.cloud.databricks.com
+    export DATABRICKS_TOKEN=<your-personal-access-token>
+    ```
+
+### Deploy the data pipeline (Databricks Job)
+
+The Databricks App reads from `dbspend360_total_job_spends`, which is produced by a multi-task Databricks Job. **Deploy and run this pipeline before deploying the app**, otherwise the dashboard renders empty and the AI insights have no data to analyze.
+
+1. Import everything under `jobs/notebooks/` and `jobs/ddls/` into your Databricks workspace.
+2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. This orchestrator notebook invokes every DDL under `jobs/ddls/` and creates: `dbspend360_audit_log`, `dbspend360_error_log`, `dbspend360_cloud_cost_explorer`, `dbspend360_dbu_cost`, `dbspend360_other_cost_breakdown`, and `dbspend360_total_job_spends`.
+3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines three tasks executed in order:
+   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app`
+   * `Dbspend360dbu_costs` → `dbspend360_dbu_cost_app`
+   * `databricks_job_spends` → `databricks_job_spends_app`
+
+   **Update the hard-coded `notebook_path` values** in the YAML to match where you imported the notebooks (the template currently points at a developer workspace path), and review the default `parameters` block (`catalog`, `cloud_provider`, `overlap_days`, `schema`, `workspace_ids`) before deploying.
+4. Create the job either via the Databricks Workflows UI using the YAML as a reference, or by wrapping it in a Databricks Asset Bundle.
+5. Run the job at least once and confirm `dbspend360_total_job_spends` has rows before moving on to the app deployment steps below.
+
+
+### Step by step setup
+
+* In the `config/` folder change the values in `app.dev.config` for:
+    1. `platform` (under `[cloud]`) — set to the cloud where your Databricks workloads run: `AWS`, `Azure`, or `GCP`. The shipped value may not match your environment, so verify it explicitly. See [Cloud Provider Selection](#cloud-provider-selection) below for what this drives.
+    2. `warehouse_id` — the SQL warehouse the app should query.
+    3. `table_name` — fully qualified `catalog.schema.table` for `dbspend360_total_job_spends`.
+    4. `schema_name` — fully qualified `catalog.schema` used by the app.
 
 
 ![app_dev_config](release/readme_images/app_dev_config.png)
 
-* Run setup.sh and follow the below steps:
+* Run `./setup.sh` and follow the prompts in this order:
 
-![setup1](release/readme_images/setup_1.png)
+![setup_1](release/readme_images/setup_1.png)
 
-  1. Choose the Authentication type
-  2. Choose the databricks configuration profile you want to use to deploy the app
-  3. Give an app name: App name should not have cap letters or numbers
-  4. Give the source code path to store all the app related code/assets
-
-
-![setup2](release/readme_images/setup2.png)
-
-![setup3](release/readme_images/setup3.png)
+  1. **Choose an authentication method:**
+     * `1` — Personal Access Token (PAT). `setup.sh` then prompts for `DATABRICKS_HOST` and the PAT itself (hidden input), and writes both to `.env.local`.
+     * `2` — Configuration Profile. `setup.sh` runs `databricks auth profiles` to list the profiles in your `~/.databrickscfg`, prompts you to pick one (defaults to `DEFAULT`), and tests the connection. If the profile is missing or invalid you can let it run `databricks auth login --profile <name>` for you.
+  2. **App name for deployment** — must be lowercase; digits and hyphens are allowed, but uppercase letters and other special characters are not.
+  3. **Source code path** — workspace path under which the app's source code will be stored on deploy (defaults to a path derived from your app name).
 
 
-* Run the deploy command : ./deploy.sh --verbose --create (This creates and deploys the app)
+![setup_2](release/readme_images/setup_2.png)
+
+![setup_3](release/readme_images/setup_3.png)
+
+
+* Run the deploy command: `./deploy.sh --verbose --create` (this creates and deploys the app)
 
 
 
-![setup4](release/readme_images/setup4.png)
-
-* App SPN should have below permissions:
-
-  1. CAN USE for the sql warehouse mentioned in the app config file.
-  2. USE CATALOG, USE SCHEMA, SELECT permissions on the catalog, schema, table name used for sourcing the data of the databricks app from dbspend360_total_job_spends.
-  3. App uses databricks-claude-sonnet-4 as foundation model to generate insights for cost/performance improvements.
+![setup_4](release/readme_images/setup_4.png)
 
 
-### Unity Catalog Grants for the App Service Principal
+### Required Grants for the App Service Principal
 
-When the app is deployed as a Databricks App, it runs under a **service principal** that may not have explicit Unity Catalog permissions on your tables, even if it belongs to an admins group. Without these grants, the app will return empty results despite the underlying tables having data.
+When the app is deployed as a Databricks App, it runs under a **service principal** that may not have explicit permissions on your warehouse, Unity Catalog objects, or model serving endpoints — even if it belongs to an admins group. Without these grants, the app will return empty results or fail to render AI insights.
 
-Find your app's service principal ID from the Databricks App settings page, then run the following SQL grants in a Databricks SQL editor or notebook:
+Find your app's service principal ID from the Databricks App settings page, then apply the grants below.
+
+#### SQL warehouse
+
+Grant via the SQL Warehouse permissions UI (or via REST API):
+
+* `CAN USE` on the SQL warehouse referenced by `warehouse_id` in `config/app.dev.config` (or whichever env-specific config file you maintain — only `app.dev.config` ships in the repo today).
+
+#### Unity Catalog (catalog / schema / table)
+
+Run the following SQL in a Databricks SQL editor or notebook:
 
 ```sql
 -- Replace <YOUR_CATALOG>, <YOUR_SCHEMA>, and <APP_SERVICE_PRINCIPAL_ID> with your values.
@@ -100,9 +150,19 @@ GRANT USE CATALOG ON CATALOG <YOUR_CATALOG> TO `<APP_SERVICE_PRINCIPAL_ID>`;
 -- Allow the service principal to see the schema
 GRANT USE SCHEMA ON SCHEMA <YOUR_CATALOG>.<YOUR_SCHEMA> TO `<APP_SERVICE_PRINCIPAL_ID>`;
 
--- Allow the service principal to read all tables in the schema
+-- Allow the service principal to read all tables in the schema.
+-- `SELECT ON SCHEMA` inherits to every existing table AND any tables
+-- created later in this schema, so you don't need per-table grants.
 GRANT SELECT ON SCHEMA <YOUR_CATALOG>.<YOUR_SCHEMA> TO `<APP_SERVICE_PRINCIPAL_ID>`;
 ```
+
+#### Model serving endpoint (for AI insights)
+
+The app uses `databricks-claude-sonnet-4` as the foundation model to generate cost and performance recommendations. Grant:
+
+* `CAN QUERY` on the `databricks-claude-sonnet-4` model serving endpoint.
+
+If this grant is missing, the dashboard still loads but the AI Cost Analysis panel will not render.
 
 #### Optional: System Table Access
 
@@ -116,20 +176,24 @@ GRANT SELECT ON TABLE system.compute.clusters TO `<APP_SERVICE_PRINCIPAL_ID>`;
 ```
 
 
-![app1](release/readme_images/app1.png)
+![app_1](release/readme_images/app_1.png)
 
-![app2](release/readme_images/app2.png)
+![app_2](release/readme_images/app_2.png)
+
+![app_3](release/readme_images/app_3.png)
 
 
 ### Cloud Provider Selection
 
-DBSPEND360 is cloud-agnostic at the data layer (`dbspend360_cloud_cost_explorer.cloud_cost`) and label-aware at the UI / LLM layer. Pick a provider in `config/app.<env>.config`:
+DBSPEND360 is cloud-agnostic at the data layer (`dbspend360_cloud_cost_explorer.cloud_cost`) and label-aware at the UI / LLM layer. Pick a provider in `config/app.dev.config` (or whichever env-specific config file you maintain). The shipped value in the repo is set to one cloud for local development — always set this explicitly for your environment:
 
 ```ini
 [cloud]
 # Supported platforms: AWS, Azure, GCP
-platform = AWS
+platform = AWS   # example only — replace with AWS, Azure, or GCP
 ```
+
+> **Note:** GCP is selectable in config and wired through the cluster-attribute, label-rendering, and LLM layers, but the `gcp_cloud_cost_explorer_app` notebook is a stub and currently raises `NotImplementedError`. Only AWS and Azure are functional end-to-end today.
 
 The chosen `platform` value drives, end-to-end:
 
