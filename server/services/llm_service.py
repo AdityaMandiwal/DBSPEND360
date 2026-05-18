@@ -301,7 +301,17 @@ class LLMService:
             self._append_historical_section(lines, historical_stats)
         elif historical_stats is not None:
             lines.extend(["", "## Historical Baseline"])
-            lines.append("No historical data available for this job.")
+            lines.append("No successful historical runs available for this job.")
+            total_unfiltered = historical_stats.get("total_runs_unfiltered", 0)
+            if total_unfiltered > 0:
+                lines.append(
+                    f"- {total_unfiltered} run(s) found in the lookback window, "
+                    f"but none completed successfully."
+                )
+            current_state = historical_stats.get("current_run_state")
+            if current_state and current_state != "SUCCEEDED":
+                state_label = current_state.replace("_", " ").title()
+                lines.append(f"- Current run state: {state_label}.")
         else:
             lines.extend(["", "## Historical Baseline"])
             lines.append("Historical data unavailable.")
@@ -313,11 +323,12 @@ class LLMService:
     ) -> None:
         """Append historical baseline and comparison sections to the message."""
         total_runs: int = stats.get("total_runs", 0)
-        limited = stats.get("limited_history", False)
-        limited_note = (
-            f" [LIMITED — {total_runs} run{'s' if total_runs != 1 else ''}]"
-            if limited else ""
+        total_runs_unfiltered: int = stats.get(
+            "total_runs_unfiltered", total_runs
         )
+        confidence_tier: str = stats.get("confidence_tier", "none")
+        state_filter_applied: bool = stats.get("state_filter_applied", False)
+        current_run_state = stats.get("current_run_state")
         data_start = stats.get("data_start", "N/A")
         data_end = stats.get("data_end", "N/A")
 
@@ -334,14 +345,43 @@ class LLMService:
         max_cost = stats.get("max_cost")
         avg_cloud_pct = stats.get("avg_cloud_pct")
 
+        # Header reflects which runs are in the baseline and how confident
+        # the trend is. The LLM uses this to calibrate its language
+        # ("high confidence" trend vs. "indicative" vs. "not enough data").
+        if state_filter_applied:
+            scope = f"{total_runs} successful runs"
+            if total_runs_unfiltered > total_runs:
+                excluded = total_runs_unfiltered - total_runs
+                scope += (
+                    f"; {excluded} non-successful run"
+                    f"{'s' if excluded != 1 else ''} excluded"
+                )
+        else:
+            scope = f"{total_runs} runs (cancelled/failed included)"
+
+        tier_note = {
+            "high": "[HIGH CONFIDENCE]",
+            "emerging": "[EMERGING TREND]",
+            "limited": "[LIMITED HISTORY]",
+            "none": "[INSUFFICIENT HISTORY]",
+        }.get(confidence_tier, "")
+
         lines.append("")
         lines.append(
-            f"## Historical Baseline "
-            f"({total_runs} runs, {data_start} to {data_end}){limited_note}"
+            f"## Historical Baseline ({scope}, {data_start} to {data_end}) "
+            f"{tier_note}".rstrip()
         )
+
+        if not state_filter_applied:
+            lines.append(
+                "- NOTE: `system.lakeflow.job_run_timeline` is not accessible, "
+                "so cancelled/failed runs may be skewing this baseline. "
+                "Grant SELECT on that table for accurate trends."
+            )
+
         lines.append(
-            f"- Avg: {_fmt(avg_cost, '/run')} | "
-            f"Median: {_fmt(median_cost, '/run')}"
+            f"- Median: {_fmt(median_cost, '/run')} | "
+            f"Avg: {_fmt(avg_cost, '/run')}"
         )
         lines.append(
             f"- P90: {_fmt(p90_cost, '/run')} | "
@@ -350,7 +390,9 @@ class LLMService:
         lines.append(
             f"- Range: {_fmt(min_cost)} – {_fmt(max_cost)}"
         )
-        cloud_pct_str = f"{avg_cloud_pct:.1f}%" if avg_cloud_pct is not None else "N/A"
+        cloud_pct_str = (
+            f"{avg_cloud_pct:.1f}%" if avg_cloud_pct is not None else "N/A"
+        )
         lines.append(
             f"- Avg Cloud Cost Share: {cloud_pct_str}"
         )
@@ -358,11 +400,29 @@ class LLMService:
         comparison = stats.get("comparison")
         last_run_cost = stats.get("last_run_cost")
 
-        if comparison is not None:
-            lines.extend(["", "## Current vs Baseline"])
-            lines.append(f"- Deviation: {comparison}")
-            if last_run_cost is not None:
-                lines.append(f"- Last Run Cost: ${last_run_cost:,.2f}")
+        lines.extend(["", "## Current vs Baseline"])
+        if current_run_state and current_run_state != "SUCCEEDED":
+            # The current run didn't complete cleanly; a deviation % is
+            # meaningless. Surface the state so the LLM can call it out.
+            state_label = current_run_state.replace("_", " ").title()
+            lines.append(
+                f"- Current run state: {state_label} "
+                f"(comparison vs baseline skipped — partial cost not "
+                f"comparable to successful runs)."
+            )
+        elif comparison is not None:
+            ref = stats.get("comparison_reference", "median")
+            lines.append(f"- Deviation vs {ref}: {comparison}")
+        elif confidence_tier == "none":
+            lines.append(
+                "- Not enough successful runs in the lookback window to "
+                "compute a reliable deviation."
+            )
+        else:
+            lines.append("- Deviation: not available.")
+
+        if last_run_cost is not None:
+            lines.append(f"- Last Successful Run Cost: ${last_run_cost:,.2f}")
 
     def _build_cluster_user_message(
         self,
