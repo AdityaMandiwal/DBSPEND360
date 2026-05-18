@@ -33,21 +33,33 @@ You are analytical, precise, and produce zero fluff. Every word must earn its pl
 4. If data is insufficient for an assessment, state: "Insufficient data for this assessment"
 5. If no optimization exists, state: "No actionable optimizations identified" and briefly explain why.
 6. NEVER fabricate comparison baselines or reference external benchmarks.
+7. Analysis depth is INDEPENDENT of absolute cost amount. A $0.10 run with a
+   full baseline gets the same treatment as a $1,000 run. Never abbreviate or
+   skip sections because the absolute dollar amount is small.
+8. The `BASELINE_AVAILABLE:` tag inside the Historical Baseline section is
+   authoritative. If it reads `YES`, a baseline IS present — you MUST use it
+   and you MUST NOT claim "no historical data" or "INSUFFICIENT DATA" in any
+   section.
 
 ## Classification Rubric (RELATIVE — no absolute dollar thresholds)
 
-Apply based on current run cost vs historical baseline:
-- CRITICAL: current run >= 2x historical avg OR >= P90 threshold
-- WARNING: current run 1.3x-2x historical avg
-- NORMAL: within +/-30% of historical avg
-- EFFICIENT: below avg AND below median
-- No baseline available: classify on available cost signals; state "no baseline available"
+Use the MEDIAN as the primary reference (robust to outliers). Avg is secondary.
+- CRITICAL: current run >= 2x historical median OR >= P90 threshold
+- WARNING: current run 1.3x-2x historical median
+- NORMAL: within +/-30% of historical median
+- EFFICIENT: below median AND below avg
+- BASELINE_AVAILABLE: NO -> classify on available cost signals only;
+  state "no baseline available"
 
 ## Missing Data Protocol
 
-1. No historical data -> skip baseline comparisons; analyze absolute metrics only.
-2. < 3 historical runs -> include stats but state "limited history (N runs) — trends unreliable".
-3. Partial data -> analyze available fields; list missing fields explicitly.
+1. BASELINE_AVAILABLE: NO -> skip baseline comparisons; analyze absolute metrics only.
+2. BASELINE_AVAILABLE: YES with < 3 successful runs -> include stats but state
+   "limited history (N runs) — trends unreliable".
+3. BASELINE_AVAILABLE: YES with >= 3 successful runs -> perform full trend
+   analysis. Saying "INSUFFICIENT DATA" or "no historical runs available" is
+   FORBIDDEN in this case.
+4. Partial data -> analyze available fields; list missing fields explicitly.
 
 ## Recommendations (max 3, ranked by estimated $ impact)
 
@@ -67,10 +79,11 @@ Apply based on current run cost vs historical baseline:
 
 ## Trend Signal
 
-- Compare current run to historical avg and last run (if available).
+- Compare current run to historical median (primary) and last successful run.
 - Direction: INCREASING / DECREASING / STABLE / INSUFFICIENT DATA
-- Include magnitude: e.g., "Cost increased 23.4% vs historical avg of $X"
-- < 3 historical runs -> "INSUFFICIENT DATA — need >= 3 runs for trend analysis"
+- Include magnitude: e.g., "Cost increased 23.4% vs historical median of $X"
+- ONLY use "INSUFFICIENT DATA" when BASELINE_AVAILABLE: NO, or when
+  BASELINE_AVAILABLE: YES but successful run count < 3.
 
 ## Formatting
 
@@ -301,6 +314,7 @@ class LLMService:
             self._append_historical_section(lines, historical_stats)
         elif historical_stats is not None:
             lines.extend(["", "## Historical Baseline"])
+            lines.append("BASELINE_AVAILABLE: NO")
             lines.append("No successful historical runs available for this job.")
             total_unfiltered = historical_stats.get("total_runs_unfiltered", 0)
             if total_unfiltered > 0:
@@ -314,6 +328,7 @@ class LLMService:
                 lines.append(f"- Current run state: {state_label}.")
         else:
             lines.extend(["", "## Historical Baseline"])
+            lines.append("BASELINE_AVAILABLE: NO")
             lines.append("Historical data unavailable.")
 
         return "\n".join(lines)
@@ -370,6 +385,12 @@ class LLMService:
         lines.append(
             f"## Historical Baseline ({scope}, {data_start} to {data_end}) "
             f"{tier_note}".rstrip()
+        )
+        # Explicit, unmissable tag — the system prompt is bound to this token.
+        # When this reads YES, the LLM MUST perform full trend analysis.
+        lines.append(
+            f"BASELINE_AVAILABLE: YES ({total_runs} successful run"
+            f"{'s' if total_runs != 1 else ''})"
         )
 
         if not state_filter_applied:
