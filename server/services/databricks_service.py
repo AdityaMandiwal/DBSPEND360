@@ -701,11 +701,324 @@ class DatabricksService:
     ) -> Optional[dict]:
         """Get historical cost statistics for a job, excluding the current run from baseline.
 
-        Pre-aggregates by run_id (a run may span multiple rows), then computes
-        baseline stats, current run cost, and comparison vs average.
+        Joins `system.lakeflow.job_run_timeline` to filter the baseline to
+        SUCCEEDED runs only, so CANCELED / FAILED / TIMED_OUT runs do not
+        skew the trend. Falls back to an unfiltered baseline (with
+        `state_filter_applied=False`) when the timeline table grant is
+        unavailable.
 
         Returns:
             dict with baseline metrics and comparison, or None on failure.
+        """
+        filtered = await self._get_job_historical_stats_filtered(
+            job_id=job_id, current_run_id=current_run_id
+        )
+        if filtered is not None:
+            return filtered
+
+        return await self._get_job_historical_stats_unfiltered(
+            job_id=job_id, current_run_id=current_run_id
+        )
+
+    @staticmethod
+    def _confidence_tier(filtered_runs: int) -> str:
+        """Map filtered baseline size to a confidence label."""
+        if filtered_runs >= 20:
+            return "high"
+        if filtered_runs >= 10:
+            return "emerging"
+        if filtered_runs >= 3:
+            return "limited"
+        return "none"
+
+    @staticmethod
+    def _is_permission_error(exc: Exception) -> bool:
+        """Detect missing-grant errors so we can fall back gracefully."""
+        msg = str(exc).lower()
+        keywords = (
+            "permission denied",
+            "insufficient_permissions",
+            "insufficient permissions",
+            "table or view not found",
+            "table_or_view_not_found",
+            "does not have",
+            "access denied",
+        )
+        return any(k in msg for k in keywords)
+
+    @staticmethod
+    def _build_comparison(
+        current_cost: Optional[float],
+        reference_cost: Optional[float],
+        reference_label: str,
+        current_state: Optional[str],
+    ) -> Tuple[Optional[str], Optional[float]]:
+        """Build comparison string + pct, only for SUCCEEDED current runs."""
+        MIN_REFERENCE_THRESHOLD = 0.01
+        # Only compare when the current run actually completed successfully.
+        # Cancelled / failed / timed-out runs incur partial cost and aren't
+        # apples-to-apples with the baseline.
+        if current_state is not None and current_state != "SUCCEEDED":
+            return None, None
+        if (
+            current_cost is None
+            or reference_cost is None
+            or reference_cost <= MIN_REFERENCE_THRESHOLD
+        ):
+            return None, None
+
+        pct = ((current_cost - reference_cost) / reference_cost) * 100
+        if pct > 0:
+            text = f"+{pct:.1f}% above {reference_label}"
+        elif pct < 0:
+            text = f"{pct:.1f}% below {reference_label}"
+        else:
+            text = f"at {reference_label}"
+        return text, pct
+
+    async def _get_job_historical_stats_filtered(
+        self, job_id: str, current_run_id: str
+    ) -> Optional[dict]:
+        """Baseline filtered to SUCCEEDED runs via `system.lakeflow.job_run_timeline`.
+
+        Returns None if the timeline grant is missing (caller falls back to
+        the unfiltered legacy query) or on any other unexpected error.
+        """
+        try:
+            escaped_job_id = job_id.replace("'", "''")
+            escaped_run_id = current_run_id.replace("'", "''")
+            lookback_date = (
+                date.today() - timedelta(days=LOOKBACK_DAYS)
+            ).isoformat()
+
+            # Notes:
+            # - system.lakeflow.job_run_timeline.run_id is BIGINT, but
+            #   dbspend360_total_job_spends.run_id is STRING. Cast on the
+            #   system side so the join works in either direction.
+            # - A run can appear in multiple timeline rows (one per snapshot
+            #   period). MAX_BY(result_state, period_end_time) collapses to
+            #   the final state per run.
+            query = f"""
+            WITH run_outcomes AS (
+                SELECT
+                    CAST(run_id AS STRING) AS run_id,
+                    MAX_BY(result_state, period_end_time) AS final_state
+                FROM system.lakeflow.job_run_timeline
+                WHERE CAST(job_id AS STRING) = '{escaped_job_id}'
+                  AND period_start_time >= TIMESTAMP '{lookback_date} 00:00:00'
+                GROUP BY run_id
+            ),
+            run_costs AS (
+                SELECT
+                    c.run_id,
+                    SUM(c.cloud_cost) AS cloud_cost,
+                    SUM(c.databricks_cost) AS databricks_cost,
+                    SUM(c.cloud_cost) + SUM(c.databricks_cost) AS total_cost,
+                    MIN(c.usage_date) AS first_date,
+                    MAX(c.usage_date) AS last_date,
+                    MAX(o.final_state) AS final_state
+                FROM {self.table_name} c
+                LEFT JOIN run_outcomes o ON c.run_id = o.run_id
+                WHERE c.job_id = '{escaped_job_id}'
+                  AND c.usage_date >= '{lookback_date}'
+                GROUP BY c.run_id
+            ),
+            baseline AS (
+                SELECT
+                    COUNT(*) AS total_runs,
+                    AVG(total_cost) AS avg_cost,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_cost) AS median_cost,
+                    PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY total_cost) AS p90_cost,
+                    MIN(total_cost) AS min_cost,
+                    MAX(total_cost) AS max_cost,
+                    STDDEV_POP(total_cost) AS stddev_cost,
+                    AVG(
+                        CASE WHEN total_cost > 0
+                             THEN cloud_cost / total_cost * 100
+                             ELSE 0
+                        END
+                    ) AS avg_cloud_pct,
+                    MIN(first_date) AS data_start,
+                    MAX(last_date) AS data_end
+                FROM run_costs
+                WHERE run_id != '{escaped_run_id}'
+                  AND final_state = 'SUCCEEDED'
+            ),
+            baseline_unfiltered AS (
+                SELECT COUNT(*) AS total_runs_unfiltered
+                FROM run_costs
+                WHERE run_id != '{escaped_run_id}'
+            ),
+            current_run AS (
+                SELECT
+                    total_cost AS current_cost,
+                    cloud_cost AS current_cloud_cost,
+                    databricks_cost AS current_databricks_cost,
+                    final_state AS current_state
+                FROM run_costs
+                WHERE run_id = '{escaped_run_id}'
+            ),
+            last_run AS (
+                SELECT total_cost AS last_run_cost
+                FROM run_costs
+                WHERE run_id != '{escaped_run_id}'
+                  AND final_state = 'SUCCEEDED'
+                ORDER BY last_date DESC, run_id DESC
+                LIMIT 1
+            )
+            SELECT
+                b.total_runs,
+                b.avg_cost,
+                b.median_cost,
+                b.p90_cost,
+                b.min_cost,
+                b.max_cost,
+                b.stddev_cost,
+                b.avg_cloud_pct,
+                b.data_start,
+                b.data_end,
+                c.current_cost,
+                c.current_cloud_cost,
+                c.current_databricks_cost,
+                l.last_run_cost,
+                bu.total_runs_unfiltered,
+                c.current_state
+            FROM baseline b
+            LEFT JOIN current_run c ON 1=1
+            LEFT JOIN last_run l ON 1=1
+            LEFT JOIN baseline_unfiltered bu ON 1=1
+            """
+
+            try:
+                response = self.client.statement_execution.execute_statement(
+                    warehouse_id=self.warehouse_id,
+                    statement=query,
+                )
+            except Exception as exc:
+                if self._is_permission_error(exc):
+                    logger.warning(
+                        "Falling back to unfiltered historical stats for job %s "
+                        "(system.lakeflow.job_run_timeline not accessible): %s",
+                        job_id, str(exc),
+                    )
+                    return None
+                raise
+
+            # Statement may also fail server-side with status=FAILED.
+            status = getattr(response, "status", None)
+            if status is not None and getattr(status, "error", None) is not None:
+                err_msg = getattr(status.error, "message", "") or ""
+                if self._is_permission_error(Exception(err_msg)):
+                    logger.warning(
+                        "Falling back to unfiltered historical stats for job %s "
+                        "(system.lakeflow.job_run_timeline not accessible): %s",
+                        job_id, err_msg,
+                    )
+                    return None
+
+            if not response.result or not response.result.data_array:
+                return {
+                    "total_runs": 0,
+                    "limited_history": True,
+                    "confidence_tier": "none",
+                    "state_filter_applied": True,
+                    "current_run_state": None,
+                    "total_runs_unfiltered": 0,
+                }
+
+            row = response.result.data_array[0]
+            total_runs = int(row[0]) if row[0] else 0
+            avg_cost = float(row[1]) if row[1] is not None else 0.0
+            current_cost = float(row[10]) if row[10] is not None else None
+            total_runs_unfiltered = (
+                int(row[14]) if row[14] is not None else 0
+            )
+            current_state = row[15] if row[15] is not None else None
+
+            # Reference for comparison: prefer median (robust to outliers),
+            # fall back to avg only when median is unavailable (n < 3).
+            median_cost_raw = float(row[2]) if row[2] is not None else None
+            p90_cost_raw = float(row[3]) if row[3] is not None else None
+            stddev_cost_raw = float(row[6]) if row[6] is not None else None
+
+            median_cost = median_cost_raw if total_runs >= 3 else None
+            p90_cost = p90_cost_raw if total_runs >= 3 else None
+            stddev_cost = stddev_cost_raw if total_runs >= 2 else None
+
+            reference_cost = (
+                median_cost if median_cost is not None else avg_cost
+            )
+            reference_label = (
+                "median" if median_cost is not None else "average"
+            )
+            comparison, comparison_pct = self._build_comparison(
+                current_cost=current_cost,
+                reference_cost=reference_cost if total_runs > 0 else None,
+                reference_label=reference_label,
+                current_state=current_state,
+            )
+
+            result: dict = {
+                "total_runs": total_runs,
+                "total_runs_unfiltered": total_runs_unfiltered,
+                "limited_history": total_runs < 3,
+                "confidence_tier": self._confidence_tier(total_runs),
+                "state_filter_applied": True,
+                "current_run_state": current_state,
+                "current_cost": current_cost,
+                "current_cloud_cost": (
+                    float(row[11]) if row[11] is not None else None
+                ),
+                "current_databricks_cost": (
+                    float(row[12]) if row[12] is not None else None
+                ),
+                "comparison": comparison,
+                "comparison_pct": comparison_pct,
+                "comparison_reference": (
+                    reference_label if comparison is not None else None
+                ),
+            }
+
+            if total_runs > 0:
+                result.update({
+                    "avg_cost": avg_cost,
+                    "median_cost": median_cost,
+                    "p90_cost": p90_cost,
+                    "min_cost": float(row[4]) if row[4] is not None else 0.0,
+                    "max_cost": float(row[5]) if row[5] is not None else 0.0,
+                    "stddev_cost": stddev_cost,
+                    "avg_cloud_pct": float(row[7]) if row[7] is not None else 0.0,
+                    "data_start": row[8],
+                    "data_end": row[9],
+                    "last_run_cost": (
+                        float(row[13]) if row[13] is not None else None
+                    ),
+                })
+
+            return result
+
+        except Exception as e:
+            if self._is_permission_error(e):
+                logger.warning(
+                    "Falling back to unfiltered historical stats for job %s "
+                    "(system.lakeflow.job_run_timeline not accessible): %s",
+                    job_id, str(e),
+                )
+                return None
+            logger.error(
+                "Error fetching filtered historical stats for job %s: %s",
+                job_id, str(e),
+            )
+            return None
+
+    async def _get_job_historical_stats_unfiltered(
+        self, job_id: str, current_run_id: str
+    ) -> Optional[dict]:
+        """Legacy unfiltered baseline (all runs regardless of result_state).
+
+        Used as a fallback when `system.lakeflow.job_run_timeline` is not
+        accessible. Stamps `state_filter_applied=False` so the LLM prompt
+        can disclose that cancelled/failed runs may be polluting the trend.
         """
         try:
             escaped_job_id = job_id.replace("'", "''")
@@ -789,28 +1102,50 @@ class DatabricksService:
             )
 
             if not response.result or not response.result.data_array:
-                return {"total_runs": 0, "limited_history": True}
+                return {
+                    "total_runs": 0,
+                    "limited_history": True,
+                    "confidence_tier": "none",
+                    "state_filter_applied": False,
+                    "current_run_state": None,
+                    "total_runs_unfiltered": 0,
+                }
 
             row = response.result.data_array[0]
             total_runs = int(row[0]) if row[0] else 0
-            avg_cost = float(row[1]) if row[1] else 0.0
+            avg_cost = float(row[1]) if row[1] is not None else 0.0
             current_cost = float(row[10]) if row[10] is not None else None
 
-            comparison: Optional[str] = None
-            comparison_pct: Optional[float] = None
-            MIN_AVG_COST_THRESHOLD = 0.01
-            if current_cost is not None and total_runs > 0 and avg_cost > MIN_AVG_COST_THRESHOLD:
-                comparison_pct = ((current_cost - avg_cost) / avg_cost) * 100
-                if comparison_pct > 0:
-                    comparison = f"+{comparison_pct:.1f}% above average"
-                elif comparison_pct < 0:
-                    comparison = f"{comparison_pct:.1f}% below average"
-                else:
-                    comparison = "at average"
+            median_cost_raw = float(row[2]) if row[2] is not None else None
+            p90_cost_raw = float(row[3]) if row[3] is not None else None
+            stddev_cost_raw = float(row[6]) if row[6] is not None else None
+
+            median_cost = median_cost_raw if total_runs >= 3 else None
+            p90_cost = p90_cost_raw if total_runs >= 3 else None
+            stddev_cost = stddev_cost_raw if total_runs >= 2 else None
+
+            reference_cost = (
+                median_cost if median_cost is not None else avg_cost
+            )
+            reference_label = (
+                "median" if median_cost is not None else "average"
+            )
+            # Without the timeline join we can't know current run's state,
+            # so pass None and let _build_comparison treat it as comparable.
+            comparison, comparison_pct = self._build_comparison(
+                current_cost=current_cost,
+                reference_cost=reference_cost if total_runs > 0 else None,
+                reference_label=reference_label,
+                current_state=None,
+            )
 
             result: dict = {
                 "total_runs": total_runs,
+                "total_runs_unfiltered": total_runs,
                 "limited_history": total_runs < 3,
+                "confidence_tier": self._confidence_tier(total_runs),
+                "state_filter_applied": False,
+                "current_run_state": None,
                 "current_cost": current_cost,
                 "current_cloud_cost": (
                     float(row[11]) if row[11] is not None else None
@@ -820,19 +1155,12 @@ class DatabricksService:
                 ),
                 "comparison": comparison,
                 "comparison_pct": comparison_pct,
+                "comparison_reference": (
+                    reference_label if comparison is not None else None
+                ),
             }
 
             if total_runs > 0:
-                median_cost = float(row[2]) if row[2] is not None else None
-                p90_cost = float(row[3]) if row[3] is not None else None
-                stddev_cost = float(row[6]) if row[6] is not None else None
-
-                if total_runs < 2:
-                    stddev_cost = None
-                if total_runs < 3:
-                    median_cost = None
-                    p90_cost = None
-
                 result.update({
                     "avg_cost": avg_cost,
                     "median_cost": median_cost,
@@ -852,7 +1180,7 @@ class DatabricksService:
 
         except Exception as e:
             logger.error(
-                "Error fetching historical stats for job %s: %s",
+                "Error fetching unfiltered historical stats for job %s: %s",
                 job_id, str(e),
             )
             return None
