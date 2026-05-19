@@ -73,7 +73,7 @@ export const FilterControls = ({
                   "text-xs",
                   dateRange.start_date === preset.start_date &&
                   dateRange.end_date === preset.end_date &&
-                  "bg-blue-50 border-blue-200 text-blue-700"
+                  "bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/40 dark:text-blue-300"
                 )}
               >
                 {preset.label}

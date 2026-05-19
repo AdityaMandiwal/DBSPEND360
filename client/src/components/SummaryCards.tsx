@@ -56,7 +56,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <Card>
           <CardContent className="p-6">
-            <div className="text-center text-slate-500">
+            <div className="text-center text-muted-foreground">
               No data available for the selected date range
             </div>
           </CardContent>
@@ -195,7 +195,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
 
                   {(metrics.total_other_cost ?? 0) > 0 && (
                     <div
-                      className="flex items-center justify-between cursor-pointer hover:bg-gray-50 rounded px-1 -mx-1 transition-colors"
+                      className="flex items-center justify-between cursor-pointer hover:bg-muted/60 rounded px-1 -mx-1 transition-colors"
                       onClick={() => setShowOtherBreakdown(true)}
                       title="Click to view breakdown of unclassified costs"
                     >
@@ -231,10 +231,10 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                             variant={metrics.coverage_status === 'ok' ? 'default' : metrics.coverage_status === 'warning' ? 'secondary' : 'destructive'}
                             className={`text-xs ${
                               metrics.coverage_status === 'ok'
-                                ? 'bg-green-100 text-green-700 hover:bg-green-100'
+                                ? 'bg-green-100 text-green-700 hover:bg-green-100 dark:bg-green-500/15 dark:text-green-300 dark:hover:bg-green-500/15'
                                 : metrics.coverage_status === 'warning'
-                                ? 'bg-amber-100 text-amber-700 hover:bg-amber-100'
-                                : 'bg-red-100 text-red-700 hover:bg-red-100'
+                                ? 'bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/15'
+                                : 'bg-red-100 text-red-700 hover:bg-red-100 dark:bg-red-500/15 dark:text-red-300 dark:hover:bg-red-500/15'
                             }`}
                           >
                             {coveragePct.toFixed(1)}%
@@ -244,8 +244,8 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                       {metrics.coverage_warning && (
                         <div className={`text-xs p-2 rounded flex items-start gap-1.5 ${
                           metrics.coverage_status === 'critical'
-                            ? 'bg-red-50 text-red-700'
-                            : 'bg-amber-50 text-amber-700'
+                            ? 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300'
+                            : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'
                         }`}>
                           <AlertTriangle className="h-3 w-3 mt-0.5 flex-shrink-0" />
                           <span>{metrics.coverage_warning}</span>
@@ -255,7 +255,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                   )}
 
                   {/* Segmented Bar */}
-                  <div className="w-full bg-gray-200 rounded-full h-2.5 mt-3 flex overflow-hidden">
+                  <div className="w-full bg-muted rounded-full h-2.5 mt-3 flex overflow-hidden">
                     <div className="bg-blue-500 h-2.5" style={{ width: `${computePct * cloudPercentage / 100}%` }}></div>
                     <div className="bg-green-500 h-2.5" style={{ width: `${storagePct * cloudPercentage / 100}%` }}></div>
                     <div className="bg-amber-500 h-2.5" style={{ width: `${networkPct * cloudPercentage / 100}%` }}></div>
@@ -287,7 +287,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                     </div>
                   </div>
 
-                  <div className="w-full bg-gray-200 rounded-full h-2 mt-3 flex overflow-hidden">
+                  <div className="w-full bg-muted rounded-full h-2 mt-3 flex overflow-hidden">
                     <div className="bg-blue-500 h-2" style={{ width: `${cloudPercentage}%` }}></div>
                     <div className="bg-red-500 h-2" style={{ width: `${databricksPercentage}%` }}></div>
                   </div>
@@ -317,7 +317,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                 {topJobs.map((job, index) => (
                   <div key={`${job.job_id}-${job.run_id}`} className="flex justify-between items-center">
                     <div className="flex items-center space-x-2">
-                      <span className="text-xs bg-slate-100 px-2 py-1 rounded">#{index + 1}</span>
+                      <span className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded">#{index + 1}</span>
                       <span className="text-sm font-medium" title={job.job_name}>
                         {job.job_name}
                       </span>
@@ -330,7 +330,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                 ))}
               </div>
             ) : (
-              <div className="text-center text-slate-500 py-4">
+              <div className="text-center text-muted-foreground py-4">
                 No jobs found for this period
               </div>
             )}

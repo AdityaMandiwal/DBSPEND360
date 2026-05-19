@@ -8,6 +8,19 @@
     <meta name="description" content="Databricks FastAPI App" />
     <link rel="apple-touch-icon" href="/logo192.png" />
     <title>Databricks FastAPI App</title>
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('dbspend360-theme');
+          var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var resolved = stored === 'dark' || stored === 'light' ? stored : prefersDark ? 'dark' : 'light';
+          if (resolved === 'dark') {
+            document.documentElement.classList.add('dark');
+          }
+          document.documentElement.style.colorScheme = resolved;
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>

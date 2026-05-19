@@ -65,9 +65,9 @@ export const OtherCostBreakdownModal = ({
     if (active && payload && payload.length) {
       const d = payload[0].payload;
       return (
-        <div className="bg-white p-3 border rounded-lg shadow-lg">
+        <div className="bg-popover text-popover-foreground p-3 border rounded-lg shadow-lg">
           <p className="font-medium text-sm">{d.fullName}</p>
-          <p className="text-indigo-600 font-semibold">{formatCurrency(d.cost)}</p>
+          <p className="text-indigo-600 dark:text-indigo-400 font-semibold">{formatCurrency(d.cost)}</p>
           <p className="text-xs text-muted-foreground">{d.percentage}% of other cost</p>
         </div>
       );
@@ -108,7 +108,7 @@ export const OtherCostBreakdownModal = ({
               </div>
               <div className="text-right">
                 <div className="text-sm text-muted-foreground">Total Other Cost</div>
-                <div className="text-lg font-bold text-gray-700">
+                <div className="text-lg font-bold text-foreground">
                   {formatCurrency(data.total_other_cost)}
                 </div>
               </div>

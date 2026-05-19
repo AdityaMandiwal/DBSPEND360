@@ -61,9 +61,9 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
       const data = payload[0];
       const percentage = ((data.value / breakdown!.total_cost) * 100).toFixed(1);
       return (
-        <div className="bg-white p-3 border rounded-lg shadow-lg">
+        <div className="bg-popover text-popover-foreground p-3 border rounded-lg shadow-lg">
           <p className="font-medium">{data.payload.name}</p>
-          <p className="text-blue-600">{formatCurrency(data.value)}</p>
+          <p className="text-blue-600 dark:text-blue-400">{formatCurrency(data.value)}</p>
           <p className="text-sm text-muted-foreground">{percentage}% of total</p>
         </div>
       );
@@ -140,7 +140,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
               {/* Cost Summary */}
               <div className="space-y-2">
                 {breakdown.cost_split.map((item) => (
-                  <div key={item.name} className="flex items-center justify-between p-2 bg-slate-50 rounded">
+                  <div key={item.name} className="flex items-center justify-between p-2 bg-muted/50 rounded">
                     <div className="flex items-center space-x-2">
                       <div
                         className="w-3 h-3 rounded-full"
@@ -151,7 +151,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                     <span className="font-bold">{formatCurrency(item.value)}</span>
                   </div>
                 ))}
-                <div className="flex items-center justify-between p-2 bg-slate-100 rounded font-bold">
+                <div className="flex items-center justify-between p-2 bg-muted rounded font-bold">
                   <span>Total Cost</span>
                   <span>{formatCurrency(breakdown.total_cost)}</span>
                 </div>
@@ -224,59 +224,59 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                   {breakdown.compute_cost != null ? (
                     <>
                       <div className={`grid gap-3 ${(breakdown.other_cost ?? 0) > 0 ? 'grid-cols-3' : 'grid-cols-2'}`}>
-                        <div className="text-center p-3 bg-blue-50 rounded">
-                          <div className="text-xl font-bold text-blue-600">
+                        <div className="text-center p-3 bg-blue-50 dark:bg-blue-500/10 rounded">
+                          <div className="text-xl font-bold text-blue-600 dark:text-blue-400">
                             {breakdown.total_cost > 0 ? ((breakdown.compute_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                           </div>
-                          <div className="text-xs text-blue-600">Compute</div>
+                          <div className="text-xs text-blue-600 dark:text-blue-400">Compute</div>
                         </div>
-                        <div className="text-center p-3 bg-green-50 rounded">
-                          <div className="text-xl font-bold text-green-600">
+                        <div className="text-center p-3 bg-green-50 dark:bg-green-500/10 rounded">
+                          <div className="text-xl font-bold text-green-600 dark:text-green-400">
                             {breakdown.total_cost > 0 ? (((breakdown.storage_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                           </div>
-                          <div className="text-xs text-green-600">Storage</div>
+                          <div className="text-xs text-green-600 dark:text-green-400">Storage</div>
                         </div>
-                        <div className="text-center p-3 bg-amber-50 rounded">
-                          <div className="text-xl font-bold text-amber-600">
+                        <div className="text-center p-3 bg-amber-50 dark:bg-amber-500/10 rounded">
+                          <div className="text-xl font-bold text-amber-600 dark:text-amber-400">
                             {breakdown.total_cost > 0 ? (((breakdown.network_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                           </div>
-                          <div className="text-xs text-amber-600">Network</div>
+                          <div className="text-xs text-amber-600 dark:text-amber-400">Network</div>
                         </div>
                         {(breakdown.other_cost ?? 0) > 0 && (
                           <div
-                            className="text-center p-3 bg-gray-50 rounded cursor-pointer hover:bg-gray-100 transition-colors"
+                            className="text-center p-3 bg-muted/60 rounded cursor-pointer hover:bg-muted transition-colors"
                             onClick={() => setIsOtherBreakdownOpen(true)}
                             title="Click to view breakdown of unclassified costs"
                           >
-                            <div className="text-xl font-bold text-gray-500">
+                            <div className="text-xl font-bold text-muted-foreground">
                               {breakdown.total_cost > 0 ? (((breakdown.other_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                             </div>
-                            <div className="text-xs text-gray-500 flex items-center justify-center gap-1">
+                            <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                               Other <Search className="h-2.5 w-2.5" />
                             </div>
                           </div>
                         )}
-                        <div className="text-center p-3 bg-red-50 rounded">
-                          <div className="text-xl font-bold text-red-600">
+                        <div className="text-center p-3 bg-red-50 dark:bg-red-500/10 rounded">
+                          <div className="text-xl font-bold text-red-600 dark:text-red-400">
                             {breakdown.total_cost > 0 ? ((breakdown.databricks_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                           </div>
-                          <div className="text-xs text-red-600">DBU</div>
+                          <div className="text-xs text-red-600 dark:text-red-400">DBU</div>
                         </div>
                       </div>
                     </>
                   ) : (
                     <div className="grid grid-cols-2 gap-4">
-                      <div className="text-center p-3 bg-blue-50 rounded">
-                        <div className="text-2xl font-bold text-blue-600">
+                      <div className="text-center p-3 bg-blue-50 dark:bg-blue-500/10 rounded">
+                        <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
                           {breakdown.total_cost > 0 ? ((breakdown.cloud_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                         </div>
-                        <div className="text-sm text-blue-600">{cloudConfig?.compute_service || 'Cloud'} Share</div>
+                        <div className="text-sm text-blue-600 dark:text-blue-400">{cloudConfig?.compute_service || 'Cloud'} Share</div>
                       </div>
-                      <div className="text-center p-3 bg-red-50 rounded">
-                        <div className="text-2xl font-bold text-red-600">
+                      <div className="text-center p-3 bg-red-50 dark:bg-red-500/10 rounded">
+                        <div className="text-2xl font-bold text-red-600 dark:text-red-400">
                           {breakdown.total_cost > 0 ? ((breakdown.databricks_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                         </div>
-                        <div className="text-sm text-red-600">Databricks Share</div>
+                        <div className="text-sm text-red-600 dark:text-red-400">Databricks Share</div>
                       </div>
                     </div>
                   )}
@@ -347,7 +347,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                                 .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                                 .replace(/• /g, '• ')
                                 .replace(/## (.*?)$/gm, '<h3 class="font-semibold text-base mb-2 mt-4">$1</h3>')
-                                .replace(/\*\*(.*?):\*\*/g, '<strong class="text-purple-700">$1:</strong>')
+                                .replace(/\*\*(.*?):\*\*/g, '<strong class="text-purple-700 dark:text-purple-300">$1:</strong>')
                             }}
                           />
                         </div>

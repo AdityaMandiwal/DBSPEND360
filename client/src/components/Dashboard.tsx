@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { format, subDays } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { SummaryCards } from './SummaryCards';
 import { FilterControls } from './FilterControls';
 import { GroupedJobTable } from './GroupedJobTable';
 import { JobBreakdownModal } from './JobBreakdownModal';
+import { ThemeToggle } from './ThemeToggle';
 import { DateRange, JobRun } from '@/types/job-spend';
 
 const Dashboard = () => {
@@ -33,16 +34,19 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-background text-foreground">
       <div className="container mx-auto p-6 space-y-6">
         {/* Header */}
-        <div className="flex flex-col space-y-2">
-          <h1 className="text-3xl font-bold text-slate-900">
-            DBSpend360
-          </h1>
-          <p className="text-slate-600">
-            Databricks Job Cost Analytics Dashboard
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-col space-y-2">
+            <h1 className="text-3xl font-bold text-foreground">
+              DBSpend360
+            </h1>
+            <p className="text-muted-foreground">
+              Databricks Job Cost Analytics Dashboard
+            </p>
+          </div>
+          <ThemeToggle />
         </div>
 
         {/* Summary Cards */}
