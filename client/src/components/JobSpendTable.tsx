@@ -239,7 +239,7 @@ export const JobSpendTable = ({ dateRange, jobFilter, onJobClick }: JobSpendTabl
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-64 border border-dashed border-red-200 rounded-lg">
+      <div className="flex items-center justify-center h-64 border border-dashed border-red-200 dark:border-red-500/40 rounded-lg">
         <div className="text-center">
           <div className="text-red-600 font-medium mb-2">Error loading job data</div>
           <div className="text-sm text-muted-foreground">{error.message}</div>

@@ -29,7 +29,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
     const pct = payload[0].value as number;
     const status = pct >= 95 ? 'text-green-600' : pct >= 80 ? 'text-amber-600' : 'text-red-600';
     return (
-      <div className="bg-white p-3 border rounded-lg shadow-lg">
+      <div className="bg-popover text-popover-foreground p-3 border rounded-lg shadow-lg">
         <p className="text-sm text-muted-foreground">{formatDate(label)}</p>
         <p className={`font-semibold ${status}`}>{pct.toFixed(1)}% classified</p>
       </div>

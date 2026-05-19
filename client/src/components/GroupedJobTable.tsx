@@ -284,7 +284,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
         if (val == null || val === 0) return <div className="text-right text-muted-foreground">—</div>;
         return (
           <div
-            className="text-right font-medium text-gray-500 cursor-pointer hover:text-gray-800 transition-colors flex items-center justify-end gap-1"
+            className="text-right font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors flex items-center justify-end gap-1"
             onClick={(e) => {
               e.stopPropagation();
               setOtherBreakdownOpen(true);
@@ -379,7 +379,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-64 border border-dashed border-red-200 rounded-lg">
+      <div className="flex items-center justify-center h-64 border border-dashed border-red-200 dark:border-red-500/40 rounded-lg">
         <div className="text-center">
           <div className="text-red-600 font-medium mb-2">Error loading job data</div>
           <div className="text-sm text-muted-foreground">{error.message}</div>
@@ -429,7 +429,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
                           Network: {formatCurrency(run.network_cost ?? 0)}
                         </div>
                         {(run.other_cost ?? 0) > 0 && (
-                          <div className="text-sm text-gray-500">
+                          <div className="text-sm text-muted-foreground">
                             Other: {formatCurrency(run.other_cost ?? 0)}
                           </div>
                         )}
