@@ -102,7 +102,16 @@ class DatabricksService:
             a.storage_cost,
             a.network_cost,
             a.other_cost
-        FROM {self.table_name} a LEFT OUTER JOIN system.lakeflow.jobs jobs ON a.job_id = jobs.job_id
+        FROM {self.table_name} a
+        LEFT OUTER JOIN (
+            -- Collapse SCD history in system.lakeflow.jobs down to the most
+            -- recent name per job_id. A bare LEFT JOIN against the raw table
+            -- multiplies each spend row by the number of historical snapshots
+            -- for that job_id, producing duplicate rows for renamed jobs.
+            SELECT job_id, MAX_BY(name, change_time) AS name
+            FROM system.lakeflow.jobs
+            GROUP BY job_id
+        ) jobs ON a.job_id = jobs.job_id
         {where_clause}
         ORDER BY (a.cloud_cost + a.databricks_cost) DESC
         LIMIT {limit} OFFSET {offset}
@@ -298,25 +307,73 @@ class DatabricksService:
 
         return None
 
-    async def get_top_jobs(self, start_date: date, end_date: date, limit: int = 5) -> List[JobSpend]:
-        """Get top N most expensive jobs for the date range."""
+    async def get_top_jobs(self, start_date: date, end_date: date, limit: int = 5) -> List[GroupedJob]:
+        """Get top N most expensive jobs (aggregated per job_id) for the date range.
+
+        Returns one row per `job_id` ranked by total `cloud_cost + databricks_cost`
+        across the window. Uses the same `filtered -> run_level -> job_level` CTE
+        chain as `get_grouped_job_spends()` so the "Top N Costliest Jobs" card and
+        the "Job Spending Details" table speak the exact same job-level model and
+        cannot disagree on what a job's total cost is.
+
+        The returned `GroupedJob` objects intentionally carry `runs=[]`: this
+        endpoint only powers a flat top-N card and skips the per-run enrichment
+        query for cost reasons. See the model docstring on `GroupedJob`.
+        """
 
         query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        run_level AS (
+            SELECT
+                job_id,
+                run_id,
+                SUM(cloud_cost) AS cloud_cost,
+                SUM(databricks_cost) AS databricks_cost,
+                SUM(compute_cost) AS compute_cost,
+                SUM(storage_cost) AS storage_cost,
+                SUM(network_cost) AS network_cost,
+                SUM(other_cost) AS other_cost
+            FROM filtered
+            GROUP BY job_id, run_id
+        ),
+        job_level AS (
+            SELECT
+                job_id,
+                SUM(cloud_cost) AS total_cloud_cost,
+                SUM(databricks_cost) AS total_databricks_cost,
+                SUM(compute_cost) AS total_compute_cost,
+                SUM(storage_cost) AS total_storage_cost,
+                SUM(network_cost) AS total_network_cost,
+                SUM(other_cost) AS total_other_cost,
+                COUNT(*) AS run_count
+            FROM run_level
+            GROUP BY job_id
+        )
         SELECT
-            a.cluster_id,
-            a.cloud_cost,
-            a.job_id,
-            a.run_id,
-            a.usage_date,
-            a.databricks_cost, 
-            jobs.name,
-            a.compute_cost,
-            a.storage_cost,
-            a.network_cost,
-            a.other_cost
-        FROM {self.table_name} a LEFT OUTER JOIN system.lakeflow.jobs jobs ON a.job_id = jobs.job_id
-        WHERE a.usage_date >= '{start_date.isoformat()}' AND a.usage_date <= '{end_date.isoformat()}'
-        ORDER BY (a.cloud_cost + a.databricks_cost) DESC
+            j.job_id,
+            j.total_cloud_cost,
+            j.total_databricks_cost,
+            j.run_count,
+            lj.name,
+            j.total_compute_cost,
+            j.total_storage_cost,
+            j.total_network_cost,
+            j.total_other_cost
+        FROM job_level j
+        LEFT JOIN (
+            -- Same SCD-collapse used by get_grouped_job_spends(): pick the
+            -- most-recent name per job_id so a renamed job doesn't fan out
+            -- into multiple top-N entries.
+            SELECT job_id, MAX_BY(name, change_time) AS name
+            FROM system.lakeflow.jobs
+            GROUP BY job_id
+        ) lj ON j.job_id = lj.job_id
+        ORDER BY (j.total_cloud_cost + j.total_databricks_cost) DESC
         LIMIT {limit}
         """
 
@@ -325,25 +382,21 @@ class DatabricksService:
             statement=query
         )
 
-        jobs = []
+        jobs: List[GroupedJob] = []
         if response.result and response.result.data_array:
             for row in response.result.data_array:
-                job_id = row[2]
-
-                job_spend = JobSpend(
-                    cluster_id=row[0],
-                    cloud_cost=float(row[1]),
-                    job_id=job_id,
-                    job_name=row[6],
-                    run_id=row[3],
-                    usage_date=date.fromisoformat(row[4]),
-                    databricks_cost=float(row[5]),
-                    compute_cost=float(row[7]) if row[7] is not None else None,
-                    storage_cost=float(row[8]) if row[8] is not None else None,
-                    network_cost=float(row[9]) if row[9] is not None else None,
-                    other_cost=float(row[10]) if row[10] is not None else None,
-                )
-                jobs.append(job_spend)
+                jobs.append(GroupedJob(
+                    job_id=row[0],
+                    job_name=row[4],
+                    run_count=int(row[3]),
+                    total_cloud_cost=float(row[1]),
+                    total_databricks_cost=float(row[2]),
+                    total_compute_cost=float(row[5]) if row[5] is not None else None,
+                    total_storage_cost=float(row[6]) if row[6] is not None else None,
+                    total_network_cost=float(row[7]) if row[7] is not None else None,
+                    total_other_cost=float(row[8]) if row[8] is not None else None,
+                    runs=[],
+                ))
 
         return jobs
 
@@ -415,8 +468,14 @@ class DatabricksService:
             j.total_other_cost
         FROM job_level j
         LEFT JOIN (
-            SELECT DISTINCT job_id, name
+            -- system.lakeflow.jobs is an SCD table that retains one row per
+            -- (job_id, name, change_time) snapshot. SELECT DISTINCT job_id, name
+            -- would keep every historical name for a renamed job and fan the
+            -- aggregated upstream row out into duplicates. Collapse to the most
+            -- recent name per job_id so this join is exactly 1:1.
+            SELECT job_id, MAX_BY(name, change_time) AS name
             FROM system.lakeflow.jobs
+            GROUP BY job_id
         ) lj
         ON j.job_id = lj.job_id
         {search_clause}

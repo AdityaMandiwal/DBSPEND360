@@ -10,8 +10,9 @@ logger = logging.getLogger(__name__)
 
 from server.models.job_spend import (
     JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends,
-    PaginatedGroupedJobs, CostAnalysis, ClusterDetails, ClusterAnalysis,
-    CloudPlatformInfo, OtherCostBreakdownResponse, CoverageTrendResponse,
+    GroupedJob, PaginatedGroupedJobs, CostAnalysis, ClusterDetails,
+    ClusterAnalysis, CloudPlatformInfo, OtherCostBreakdownResponse,
+    CoverageTrendResponse,
 )
 from server.services.databricks_service import DatabricksService
 from server.services.llm_service import LLMService
@@ -200,16 +201,21 @@ async def get_job_cost_breakdown(
         )
 
 
-@router.get("/top-jobs", response_model=list[JobSpend])
+@router.get("/top-jobs", response_model=list[GroupedJob])
 async def get_top_jobs(
     start_date: date = Query(..., description="Start date for top jobs (YYYY-MM-DD)"),
     end_date: date = Query(..., description="End date for top jobs (YYYY-MM-DD)"),
     limit: int = Query(5, ge=1, le=20, description="Number of top jobs to return")
 ):
     """
-    Get the top N most expensive jobs for the specified date range.
+    Get the top N most expensive jobs (aggregated per `job_id`) for the date range.
 
-    Used for summary cards and highlighting high-cost jobs.
+    Returns one entry per `job_id` ranked by total `cloud_cost + databricks_cost`
+    across the selected window. Shares the `GroupedJob` model with
+    `/api/grouped-job-spends` so the dashboard's "Top N Costliest Jobs" card and
+    the "Job Spending Details" table are guaranteed to agree on what a job is
+    and what its total cost is. `runs` is intentionally empty here — this
+    endpoint powers a flat top-N highlight card, not a drill-down view.
     """
     try:
         # Validate date range
