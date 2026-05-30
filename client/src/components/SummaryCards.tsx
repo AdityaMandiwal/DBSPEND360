@@ -314,20 +314,29 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
               </div>
             ) : topJobs && topJobs.length > 0 ? (
               <div className="space-y-3">
-                {topJobs.map((job, index) => (
-                  <div key={`${job.job_id}-${job.run_id}`} className="flex justify-between items-center">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded">#{index + 1}</span>
-                      <span className="text-sm font-medium" title={job.job_name}>
-                        {job.job_name}
-                      </span>
+                {topJobs.map((job, index) => {
+                  const hasName = !!job.job_name && job.job_name.trim().length > 0;
+                  const displayLabel = hasName ? job.job_name! : `Job ${job.job_id}`;
+                  return (
+                    <div key={job.job_id} className="flex justify-between items-center">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded">#{index + 1}</span>
+                        <span
+                          className={`text-sm font-medium ${hasName ? '' : 'font-mono text-muted-foreground'}`}
+                          title={hasName ? displayLabel : `Unnamed job — id ${job.job_id}`}
+                        >
+                          {displayLabel}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold">{formatCurrency(job.total_cost)}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {job.run_count} run{job.run_count === 1 ? '' : 's'}
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <div className="text-sm font-semibold">{formatCurrency(job.total_cost)}</div>
-                      <div className="text-xs text-muted-foreground">{job.usage_date}</div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <div className="text-center text-muted-foreground py-4">

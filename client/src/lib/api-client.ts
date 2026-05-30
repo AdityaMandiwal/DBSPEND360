@@ -1,4 +1,4 @@
-import { JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends, DateRange, JobSpendFilter, DatePreset, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformConfig, OtherCostBreakdownResponse, CoverageTrendResponse } from '@/types/job-spend';
+import { SummaryMetrics, CostBreakdown, PaginatedJobSpends, DateRange, JobSpendFilter, DatePreset, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformConfig, OtherCostBreakdownResponse, CoverageTrendResponse, GroupedJob } from '@/types/job-spend';
 import { API_BASE_URL } from '@/lib/api-config';
 
 class ApiClient {
@@ -61,14 +61,14 @@ class ApiClient {
     return this.fetchApi<ClusterAnalysis>(`/cluster/${clusterId}/analyze`);
   }
 
-  async getTopJobs(dateRange: DateRange, limit: number = 5): Promise<JobSpend[]> {
+  async getTopJobs(dateRange: DateRange, limit: number = 5): Promise<GroupedJob[]> {
     const params = new URLSearchParams({
       start_date: dateRange.start_date,
       end_date: dateRange.end_date,
       limit: limit.toString(),
     });
 
-    return this.fetchApi<JobSpend[]>(`/top-jobs?${params}`);
+    return this.fetchApi<GroupedJob[]>(`/top-jobs?${params}`);
   }
 
   async getDatePresets(): Promise<Record<string, DatePreset>> {

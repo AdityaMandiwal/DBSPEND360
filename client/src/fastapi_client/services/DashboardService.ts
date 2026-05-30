@@ -8,7 +8,7 @@ import type { ClusterDetails } from '../models/ClusterDetails';
 import type { CostAnalysis } from '../models/CostAnalysis';
 import type { CostBreakdown } from '../models/CostBreakdown';
 import type { CoverageTrendResponse } from '../models/CoverageTrendResponse';
-import type { JobSpend } from '../models/JobSpend';
+import type { GroupedJob } from '../models/GroupedJob';
 import type { OtherCostBreakdownResponse } from '../models/OtherCostBreakdownResponse';
 import type { PaginatedGroupedJobs } from '../models/PaginatedGroupedJobs';
 import type { PaginatedJobSpends } from '../models/PaginatedJobSpends';
@@ -146,20 +146,25 @@ export class DashboardService {
     }
     /**
      * Get Top Jobs
-     * Get the top N most expensive jobs for the specified date range.
+     * Get the top N most expensive jobs (aggregated per `job_id`) for the date range.
      *
-     * Used for summary cards and highlighting high-cost jobs.
+     * Returns one entry per `job_id` ranked by total `cloud_cost + databricks_cost`
+     * across the selected window. Shares the `GroupedJob` model with
+     * `/api/grouped-job-spends` so the dashboard's "Top N Costliest Jobs" card and
+     * the "Job Spending Details" table are guaranteed to agree on what a job is
+     * and what its total cost is. `runs` is intentionally empty here — this
+     * endpoint powers a flat top-N highlight card, not a drill-down view.
      * @param startDate Start date for top jobs (YYYY-MM-DD)
      * @param endDate End date for top jobs (YYYY-MM-DD)
      * @param limit Number of top jobs to return
-     * @returns JobSpend Successful Response
+     * @returns GroupedJob Successful Response
      * @throws ApiError
      */
     public static getTopJobsApiTopJobsGet(
         startDate: string,
         endDate: string,
         limit: number = 5,
-    ): CancelablePromise<Array<JobSpend>> {
+    ): CancelablePromise<Array<GroupedJob>> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/top-jobs',
