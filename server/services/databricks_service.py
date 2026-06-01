@@ -168,23 +168,62 @@ class DatabricksService:
         )
 
     async def get_summary_metrics(self, start_date: date, end_date: date) -> SummaryMetrics:
-        """Get summary metrics for the specified date range."""
+        """Get summary metrics for the specified date range.
+
+        Uses the same `filtered -> run_level -> job_level` CTE chain as
+        `get_top_jobs()` / `get_grouped_job_spends()` so KPI cards speak the
+        same job-level / run-level model as the lists below them and the
+        numbers can be reconciled:
+
+        - `total_jobs` counts distinct `job_id`s in the window (not raw spend
+          rows). Same denominator as the "Job Spending Details" table.
+        - `average_cost` / `max_cost` / `min_cost` are computed at the run
+          level (one row per `(job_id, run_id)`, summed across days), so the
+          "Highest Cost" card is the costliest actual job execution and a user
+          can drill into it from `/api/grouped-job-spends`.
+        - `total_*_cost` sums are taken at the run level too, which is
+          arithmetically identical to summing the raw rows but stays
+          consistent with the rest of the query's grain.
+        """
 
         query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        run_level AS (
+            SELECT
+                job_id,
+                run_id,
+                SUM(cloud_cost) AS cloud_cost,
+                SUM(databricks_cost) AS databricks_cost,
+                SUM(compute_cost) AS compute_cost,
+                SUM(storage_cost) AS storage_cost,
+                SUM(network_cost) AS network_cost,
+                SUM(other_cost) AS other_cost
+            FROM filtered
+            GROUP BY job_id, run_id
+        ),
+        job_level AS (
+            SELECT job_id
+            FROM run_level
+            GROUP BY job_id
+        )
         SELECT
-            COUNT(*) as total_jobs,
-            SUM(cloud_cost + databricks_cost) as total_spend,
-            AVG(cloud_cost + databricks_cost) as avg_cost,
-            MAX(cloud_cost + databricks_cost) as max_cost,
-            MIN(cloud_cost + databricks_cost) as min_cost,
-            SUM(cloud_cost) as total_cloud_cost,
-            SUM(databricks_cost) as total_databricks_cost,
-            SUM(compute_cost) as total_compute_cost,
-            SUM(storage_cost) as total_storage_cost,
-            SUM(network_cost) as total_network_cost,
-            SUM(other_cost) as total_other_cost
-        FROM {self.table_name}
-        WHERE usage_date >= '{start_date.isoformat()}' AND usage_date <= '{end_date.isoformat()}'
+            (SELECT COUNT(*) FROM job_level) AS total_jobs,
+            SUM(cloud_cost + databricks_cost) AS total_spend,
+            AVG(cloud_cost + databricks_cost) AS avg_cost,
+            MAX(cloud_cost + databricks_cost) AS max_cost,
+            MIN(cloud_cost + databricks_cost) AS min_cost,
+            SUM(cloud_cost) AS total_cloud_cost,
+            SUM(databricks_cost) AS total_databricks_cost,
+            SUM(compute_cost) AS total_compute_cost,
+            SUM(storage_cost) AS total_storage_cost,
+            SUM(network_cost) AS total_network_cost,
+            SUM(other_cost) AS total_other_cost
+        FROM run_level
         """
 
         response = self.client.statement_execution.execute_statement(
