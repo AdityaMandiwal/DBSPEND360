@@ -80,11 +80,24 @@ Configure local Databricks authentication using **either**:
 The Databricks App reads from `dbspend360_total_job_spends`, which is produced by a multi-task Databricks Job. **Deploy and run this pipeline before deploying the app**, otherwise the dashboard renders empty and the AI insights have no data to analyze.
 
 1. Import everything under `jobs/notebooks/` and `jobs/ddls/` into your Databricks workspace.
-2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. This orchestrator notebook invokes every DDL under `jobs/ddls/` and creates: `dbspend360_audit_log`, `dbspend360_error_log`, `dbspend360_cloud_cost_explorer`, `dbspend360_dbu_cost`, `dbspend360_other_cost_breakdown`, and `dbspend360_total_job_spends`.
-3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines three tasks executed in order:
-   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app`
-   * `Dbspend360dbu_costs` → `dbspend360_dbu_cost_app`
-   * `databricks_job_spends` → `databricks_job_spends_app`
+2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. This orchestrator notebook invokes every DDL under `jobs/ddls/` and creates: `dbspend360_audit_log`, `dbspend360_error_log`, `dbspend360_cloud_cost_explorer`, `dbspend360_dbu_cost`, `dbspend360_other_cost_breakdown`, `dbspend360_total_job_spends`, `dbspend360_all_purpose_dbu_cost`, and `dbspend360_total_all_purpose_spends`. The last two back the upcoming All-Purpose Clusters tab; they are populated by the parallel pipeline branch described in step 3 below.
+3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines five tasks across two parallel branches that fan out from a shared cloud-cost-ingest task:
+
+   ```
+   cloud_cost_explorer
+   ├─ Dbspend360dbu_costs ──────────────── databricks_job_spends       (Job Clusters branch)
+   └─ Dbspend360_all_purpose_dbu_costs ─── all_purpose_spends           (All-Purpose Clusters branch)
+   ```
+
+   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app` — cloud-source-agnostic; feeds both branches.
+   * Job Clusters branch (writes `dbspend360_total_job_spends`):
+     * `Dbspend360dbu_costs` → `dbspend360_dbu_cost_app`
+     * `databricks_job_spends` → `databricks_job_spends_app`
+   * All-Purpose Clusters branch (writes `dbspend360_total_all_purpose_spends`):
+     * `Dbspend360_all_purpose_dbu_costs` → `dbspend360_all_purpose_dbu_cost_app`
+     * `all_purpose_spends` → `all_purpose_spends_app`
+
+   The two branches are independent — failures in one do not block the other — and the app reads each branch's output table through its respective tab. See `docs/plan_all_purpose_clusters_tab.md` for the design rationale (cluster-source filter, owner-based attribution, no apportionment in v1).
 
    **Update the hard-coded `notebook_path` values** in the YAML to match where you imported the notebooks (the template currently points at a developer workspace path), and review the default `parameters` block (`catalog`, `cloud_provider`, `overlap_days`, `schema`, `workspace_ids`) before deploying.
 4. Create the job either via the Databricks Workflows UI using the YAML as a reference, or by wrapping it in a Databricks Asset Bundle.

@@ -309,3 +309,244 @@ class CoverageTrendResponse(BaseModel):
     """Response for classification coverage trend."""
 
     data: list[CoverageTrendPoint]
+
+
+# ---------------------------------------------------------------------------
+# All-Purpose cluster models
+#
+# Wire-level types for the All-Purpose Clusters tab. Source table is
+# `dbspend360_total_all_purpose_spends`, keyed `(cluster_id, user_id, usage_date)`
+# with `user_id` derived from `system.compute.clusters.owned_by` (see plan
+# §3.2). Under v1 owner attribution every (cluster_id, usage_date) resolves to
+# exactly one user_id; the (user_id, ...) key shape is preserved for v2
+# multi-user attribution forward compatibility.
+# ---------------------------------------------------------------------------
+
+
+class AllPurposeUserSpend(BaseModel):
+    """Per-day cost contribution within an all-purpose cluster grouping.
+
+    Drill-down sub-row inside `GroupedAllPurposeCluster.users`. Under v1 owner
+    attribution there is exactly one user per (cluster_id, usage_date), so
+    this row collapses to a single calendar day's cost on the cluster owned by
+    that user. Forward-compatible with v2 multi-user attribution where the
+    same cluster-day can fan out to multiple users.
+    """
+
+    cluster_id: str
+    user_id: str
+    usage_date: date
+    cloud_cost: float
+    databricks_cost: float
+    compute_cost: Optional[float] = None
+    storage_cost: Optional[float] = None
+    network_cost: Optional[float] = None
+    other_cost: Optional[float] = None
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        """Calculate total cost as sum of cloud and Databricks costs."""
+        return self.cloud_cost + self.databricks_cost
+
+    @computed_field
+    @property
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.cloud_cost / self.total_cost) * 100
+
+    @computed_field
+    @property
+    def databricks_percentage(self) -> float:
+        """Calculate Databricks cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.databricks_cost / self.total_cost) * 100
+
+
+class AllPurposeClusterSpend(BaseModel):
+    """Per-cluster cost contribution within a user grouping.
+
+    Drill-down sub-row inside `GroupedAllPurposeUser.clusters`. Aggregates a
+    user's cost on a single cluster across the queried date window;
+    `cluster_active_days` is `COUNT(DISTINCT usage_date)` for that
+    `(user_id, cluster_id)` pair. `data_security_mode` is denormalized so the
+    UI can render the attribution-quality badge ("Dedicated" / "Shared" /
+    "Legacy" / "Unknown") next to the cluster name without a second lookup.
+    """
+
+    cluster_id: str
+    cluster_name: Optional[str] = None
+    user_id: str
+    cluster_active_days: int
+    cloud_cost: float
+    databricks_cost: float
+    compute_cost: Optional[float] = None
+    storage_cost: Optional[float] = None
+    network_cost: Optional[float] = None
+    other_cost: Optional[float] = None
+    data_security_mode: Optional[str] = None
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        """Calculate total cost as sum of cloud and Databricks costs."""
+        return self.cloud_cost + self.databricks_cost
+
+    @computed_field
+    @property
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.cloud_cost / self.total_cost) * 100
+
+    @computed_field
+    @property
+    def databricks_percentage(self) -> float:
+        """Calculate Databricks cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.databricks_cost / self.total_cost) * 100
+
+
+class GroupedAllPurposeCluster(BaseModel):
+    """Cluster-level rollup for the By-Cluster sub-tab.
+
+    One row per all-purpose cluster within the queried window. `users` is the
+    per-day drill-down expansion (under v1: one user per day, the cluster
+    owner). `data_security_mode` drives the UI attribution-quality badge.
+    `cluster_name` may be NULL when the `system.compute.clusters` snapshot row
+    is missing (cluster deleted before October 2023, see plan §10); the UI
+    falls back to `Cluster {cluster_id}` in that case.
+    """
+
+    cluster_id: str
+    cluster_name: Optional[str] = None
+    owner_user_id: str
+    data_security_mode: Optional[str] = None
+    active_days: int
+    total_cloud_cost: float
+    total_databricks_cost: float
+    total_compute_cost: Optional[float] = None
+    total_storage_cost: Optional[float] = None
+    total_network_cost: Optional[float] = None
+    total_other_cost: Optional[float] = None
+    users: list[AllPurposeUserSpend] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        """Calculate total cost across all users on this cluster."""
+        return self.total_cloud_cost + self.total_databricks_cost
+
+    @computed_field
+    @property
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.total_cloud_cost / self.total_cost) * 100
+
+    @computed_field
+    @property
+    def databricks_percentage(self) -> float:
+        """Calculate Databricks cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.total_databricks_cost / self.total_cost) * 100
+
+
+class GroupedAllPurposeUser(BaseModel):
+    """User-level rollup for the By-User (chargeback) sub-tab.
+
+    One row per cluster owner within the queried window. `clusters` lists the
+    per-cluster drill-down rows (one entry per (user_id, cluster_id) pair).
+    `user_active_days` is `COUNT(DISTINCT usage_date)` from the raw rows
+    (not summed across clusters — a user active on multiple clusters on the
+    same day must not double-count; see plan §5.2).
+    """
+
+    user_id: str
+    cluster_count: int
+    user_active_days: int
+    total_cloud_cost: float
+    total_databricks_cost: float
+    total_compute_cost: Optional[float] = None
+    total_storage_cost: Optional[float] = None
+    total_network_cost: Optional[float] = None
+    total_other_cost: Optional[float] = None
+    clusters: list[AllPurposeClusterSpend] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        """Calculate total cost across all clusters this user owns."""
+        return self.total_cloud_cost + self.total_databricks_cost
+
+    @computed_field
+    @property
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.total_cloud_cost / self.total_cost) * 100
+
+    @computed_field
+    @property
+    def databricks_percentage(self) -> float:
+        """Calculate Databricks cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.total_databricks_cost / self.total_cost) * 100
+
+
+class AllPurposeSummaryMetrics(BaseModel):
+    """Summary metrics for the All-Purpose tab KPI strip.
+
+    `avg_cost_per_cluster_day` / `max_cost_per_cluster_day` /
+    `min_cost_per_cluster_day` are computed at the (cluster_id, user_id,
+    usage_date) grain (see plan §5.3) — not per cluster overall — so the
+    "average" is interpretable as "what does a single day on a single cluster
+    cost on average".
+    """
+
+    total_clusters: int
+    total_users: int
+    total_spend: float
+    avg_cost_per_cluster_day: float
+    max_cost_per_cluster_day: float
+    min_cost_per_cluster_day: float
+    total_cloud_cost: float
+    total_databricks_cost: float
+    total_compute_cost: Optional[float] = None
+    total_storage_cost: Optional[float] = None
+    total_network_cost: Optional[float] = None
+    total_other_cost: Optional[float] = None
+    date_range_days: int
+
+
+class PaginatedAllPurposeClusters(BaseModel):
+    """Paginated response for the By-Cluster sub-tab."""
+
+    data: list[GroupedAllPurposeCluster]
+    total_count: int
+    page: int
+    per_page: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
+
+
+class PaginatedAllPurposeUsers(BaseModel):
+    """Paginated response for the By-User sub-tab."""
+
+    data: list[GroupedAllPurposeUser]
+    total_count: int
+    page: int
+    per_page: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool

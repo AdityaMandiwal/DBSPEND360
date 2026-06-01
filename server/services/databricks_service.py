@@ -1,7 +1,7 @@
 import logging
 import os
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 from databricks.sdk import WorkspaceClient
 
@@ -10,6 +10,10 @@ from server.models.job_spend import (
     GroupedJob, JobRun, PaginatedGroupedJobs, ClusterDetails,
     OtherCostBreakdownItem, OtherCostBreakdownResponse,
     CoverageTrendPoint, CoverageTrendResponse,
+    AllPurposeUserSpend, AllPurposeClusterSpend,
+    GroupedAllPurposeCluster, GroupedAllPurposeUser,
+    AllPurposeSummaryMetrics,
+    PaginatedAllPurposeClusters, PaginatedAllPurposeUsers,
 )
 from server.config.config_loader import app_config
 
@@ -42,6 +46,7 @@ class DatabricksService:
         # Load configuration from environment-specific config files
         self.warehouse_id = app_config.warehouse_id
         self.table_name = app_config.table_name
+        self.all_purpose_table_name = app_config.all_purpose_table_name
         self.query_timeout = app_config.query_timeout_seconds
         self.job_name_cache: Dict[str, str] = {}  # Cache for job names
 
@@ -1284,16 +1289,44 @@ class DatabricksService:
             return None
 
     async def get_cluster_cost_summary(
-        self, cluster_id: str
+        self,
+        cluster_id: str,
+        cluster_kind: Literal["job", "all_purpose"] = "job",
     ) -> Optional[dict]:
         """Get aggregated cost summary for a cluster over the lookback window.
 
-        Groups by (job_id, run_id) to avoid skewed aggregation from
-        multi-row runs, then computes totals, splits, and averages.
+        For ``cluster_kind="job"`` (default) groups by ``(job_id, run_id)``
+        against ``dbspend360_total_job_spends`` — the existing job-cluster
+        path. The default value preserves every existing call site
+        byte-identically; do not change it without auditing them.
+
+        For ``cluster_kind="all_purpose"`` groups by ``(user_id, usage_date)``
+        against ``dbspend360_total_all_purpose_spends`` — the natural grain
+        for an interactive cluster, where there is no job/run concept. The
+        returned dict keeps the same shape as the job path so downstream LLM
+        prompt builders (`llm_service._build_cluster_user_message`) work
+        without branching on cluster_kind, with this semantic remap:
+
+        - ``distinct_job_count`` → 0 (all-purpose has no jobs)
+        - ``total_run_count``    → distinct (user_id, usage_date) cluster-day
+          count — i.e. number of "active days × users on the cluster" units
+        - ``avg_cost_per_run``   → average cost per user-day on the cluster
+        - ``distinct_user_count`` (extra key, all-purpose only) → distinct
+          owners that incurred cost on this cluster in the window. Always 1
+          under v1 owner attribution but kept for v2 forward compatibility
+          (see plan §3.3).
 
         Returns:
             dict with cost breakdown, or None on failure.
         """
+        if cluster_kind == "all_purpose":
+            return await self._get_cluster_cost_summary_all_purpose(cluster_id)
+        return await self._get_cluster_cost_summary_job(cluster_id)
+
+    async def _get_cluster_cost_summary_job(
+        self, cluster_id: str
+    ) -> Optional[dict]:
+        """Job-cluster path for `get_cluster_cost_summary` (the original)."""
         try:
             escaped_cluster_id = cluster_id.replace("'", "''")
             lookback_date = (
@@ -1396,6 +1429,133 @@ class DatabricksService:
         except Exception as e:
             logger.error(
                 "Error fetching cluster cost summary for %s: %s",
+                cluster_id, str(e),
+            )
+            return None
+
+    async def _get_cluster_cost_summary_all_purpose(
+        self, cluster_id: str
+    ) -> Optional[dict]:
+        """All-purpose-cluster path for `get_cluster_cost_summary`.
+
+        Grain is ``(user_id, usage_date)`` against
+        ``dbspend360_total_all_purpose_spends``. Output dict shape mirrors
+        the job path so the LLM prompt builder doesn't branch — see
+        ``get_cluster_cost_summary`` docstring for the semantic remap.
+        """
+        try:
+            escaped_cluster_id = cluster_id.replace("'", "''")
+            lookback_date = (
+                date.today() - timedelta(days=LOOKBACK_DAYS)
+            ).isoformat()
+
+            query = f"""
+            WITH filtered AS (
+                SELECT *
+                FROM {self.all_purpose_table_name}
+                WHERE cluster_id = '{escaped_cluster_id}'
+                AND cluster_id IS NOT NULL
+                AND usage_date >= '{lookback_date}'
+            ),
+            day_level AS (
+                -- Grain mirrors run_level in the job path: one row per
+                -- (user_id, usage_date) cluster-day. Under v1 owner
+                -- attribution there's exactly one user per (cluster_id,
+                -- usage_date), so this collapses to one row per active day;
+                -- under v2 multi-user attribution it fans out.
+                SELECT
+                    user_id,
+                    usage_date,
+                    SUM(cloud_cost) AS cloud_cost,
+                    SUM(databricks_cost) AS databricks_cost
+                FROM filtered
+                GROUP BY user_id, usage_date
+            ),
+            agg AS (
+                SELECT
+                    COALESCE(SUM(cloud_cost), 0) AS total_cloud_cost,
+                    COALESCE(SUM(databricks_cost), 0) AS total_databricks_cost,
+                    COALESCE(SUM(cloud_cost + databricks_cost), 0) AS total_spend,
+                    COUNT(DISTINCT user_id) AS distinct_user_count,
+                    COUNT(*) AS total_run_count,
+                    COALESCE(AVG(cloud_cost + databricks_cost), 0) AS avg_cost_per_run
+                FROM day_level
+            ),
+            date_range AS (
+                SELECT
+                    MIN(usage_date) AS first_active_date,
+                    MAX(usage_date) AS last_active_date
+                FROM filtered
+            )
+            SELECT
+                a.total_cloud_cost,
+                a.total_databricks_cost,
+                a.total_spend,
+                a.distinct_user_count,
+                a.total_run_count,
+                a.avg_cost_per_run,
+                d.first_active_date,
+                d.last_active_date
+            FROM agg a, date_range d
+            """
+
+            response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=query,
+            )
+
+            if not response.result or not response.result.data_array:
+                return {
+                    "total_spend": 0.0,
+                    "total_cloud_cost": 0.0,
+                    "total_databricks_cost": 0.0,
+                    "cloud_pct": 0.0,
+                    "databricks_pct": 0.0,
+                    "distinct_job_count": 0,
+                    "distinct_user_count": 0,
+                    "total_run_count": 0,
+                    "avg_cost_per_run": 0.0,
+                    "first_active_date": None,
+                    "last_active_date": None,
+                    "limited_history": True,
+                }
+
+            row = response.result.data_array[0]
+            total_cloud_cost = float(row[0])
+            total_databricks_cost = float(row[1])
+            total_spend = float(row[2])
+            cloud_pct = (
+                (total_cloud_cost / total_spend * 100)
+                if total_spend > 0 else 0.0
+            )
+            databricks_pct = (
+                (total_databricks_cost / total_spend * 100)
+                if total_spend > 0 else 0.0
+            )
+
+            distinct_user_count = int(row[3]) if row[3] is not None else 0
+            total_run_count = int(row[4]) if row[4] is not None else 0
+            return {
+                "total_spend": total_spend,
+                "total_cloud_cost": total_cloud_cost,
+                "total_databricks_cost": total_databricks_cost,
+                "cloud_pct": cloud_pct,
+                "databricks_pct": databricks_pct,
+                # No job concept on all-purpose clusters; kept at 0 so the
+                # shared LLM prompt builder doesn't KeyError on the job path's
+                # `distinct_job_count` access.
+                "distinct_job_count": 0,
+                "distinct_user_count": distinct_user_count,
+                "total_run_count": total_run_count,
+                "avg_cost_per_run": float(row[5]) if row[5] is not None else 0.0,
+                "first_active_date": row[6],
+                "last_active_date": row[7],
+                "limited_history": total_run_count < 3,
+            }
+
+        except Exception as e:
+            logger.error(
+                "Error fetching all-purpose cluster cost summary for %s: %s",
                 cluster_id, str(e),
             )
             return None
@@ -1549,3 +1709,704 @@ class DatabricksService:
         except Exception as e:
             logger.error("Error fetching coverage trend: %s", str(e))
             return CoverageTrendResponse(data=[])
+
+    # ------------------------------------------------------------------
+    # All-Purpose cluster queries
+    #
+    # Source table: `dbspend360_total_all_purpose_spends`, keyed
+    # `(cluster_id, user_id, usage_date)`. Under v1 owner attribution every
+    # `(cluster_id, usage_date)` resolves to exactly one `user_id` (the
+    # cluster owner, see plan §3.2); the (user_id, ...) key shape is kept
+    # for v2 multi-user attribution forward compatibility.
+    # ------------------------------------------------------------------
+
+    async def get_all_purpose_summary_metrics(
+        self, start_date: date, end_date: date
+    ) -> AllPurposeSummaryMetrics:
+        """Get summary metrics for the All-Purpose tab KPI strip.
+
+        Implements plan §5.3. Aggregates at the `(cluster_id, user_id,
+        usage_date)` grain so `avg/max/min_cost_per_cluster_day` is
+        interpretable as "what does a single user-day on a single cluster
+        cost on average". Reports distinct cluster + distinct user counts
+        (not job counts) since the all-purpose model is keyed by user, not
+        job.
+        """
+        query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.all_purpose_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        cluster_day_level AS (
+            SELECT
+                cluster_id,
+                user_id,
+                usage_date,
+                SUM(cloud_cost)      AS cloud_cost,
+                SUM(databricks_cost) AS databricks_cost,
+                SUM(compute_cost)    AS compute_cost,
+                SUM(storage_cost)    AS storage_cost,
+                SUM(network_cost)    AS network_cost,
+                SUM(other_cost)      AS other_cost
+            FROM filtered
+            GROUP BY cluster_id, user_id, usage_date
+        )
+        SELECT
+            (SELECT COUNT(DISTINCT cluster_id) FROM filtered) AS total_clusters,
+            (SELECT COUNT(DISTINCT user_id)    FROM filtered) AS total_users,
+            COALESCE(SUM(cloud_cost + databricks_cost), 0) AS total_spend,
+            COALESCE(AVG(cloud_cost + databricks_cost), 0) AS avg_cost_per_cluster_day,
+            COALESCE(MAX(cloud_cost + databricks_cost), 0) AS max_cost_per_cluster_day,
+            COALESCE(MIN(cloud_cost + databricks_cost), 0) AS min_cost_per_cluster_day,
+            COALESCE(SUM(cloud_cost), 0)      AS total_cloud_cost,
+            COALESCE(SUM(databricks_cost), 0) AS total_databricks_cost,
+            SUM(compute_cost) AS total_compute_cost,
+            SUM(storage_cost) AS total_storage_cost,
+            SUM(network_cost) AS total_network_cost,
+            SUM(other_cost)   AS total_other_cost
+        FROM cluster_day_level
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        date_range_days = (end_date - start_date).days + 1
+
+        if response.result and response.result.data_array:
+            row = response.result.data_array[0]
+            return AllPurposeSummaryMetrics(
+                total_clusters=int(row[0]) if row[0] is not None else 0,
+                total_users=int(row[1]) if row[1] is not None else 0,
+                total_spend=float(row[2]) if row[2] is not None else 0.0,
+                avg_cost_per_cluster_day=float(row[3]) if row[3] is not None else 0.0,
+                max_cost_per_cluster_day=float(row[4]) if row[4] is not None else 0.0,
+                min_cost_per_cluster_day=float(row[5]) if row[5] is not None else 0.0,
+                total_cloud_cost=float(row[6]) if row[6] is not None else 0.0,
+                total_databricks_cost=float(row[7]) if row[7] is not None else 0.0,
+                total_compute_cost=float(row[8]) if row[8] is not None else None,
+                total_storage_cost=float(row[9]) if row[9] is not None else None,
+                total_network_cost=float(row[10]) if row[10] is not None else None,
+                total_other_cost=float(row[11]) if row[11] is not None else None,
+                date_range_days=date_range_days,
+            )
+
+        return AllPurposeSummaryMetrics(
+            total_clusters=0,
+            total_users=0,
+            total_spend=0.0,
+            avg_cost_per_cluster_day=0.0,
+            max_cost_per_cluster_day=0.0,
+            min_cost_per_cluster_day=0.0,
+            total_cloud_cost=0.0,
+            total_databricks_cost=0.0,
+            date_range_days=date_range_days,
+        )
+
+    async def get_all_purpose_grouped_by_cluster(
+        self,
+        start_date: date,
+        end_date: date,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> PaginatedAllPurposeClusters:
+        """Paginated By-Cluster rollup for the All-Purpose tab.
+
+        Implements plan §5.1. One row per cluster in the window, with the
+        owner's `user_id` and `data_security_mode` denormalized for badge
+        rendering. `users` is enriched via `_get_batch_cluster_days` with
+        the per-day drill-down expansion (under v1: one user per day, the
+        cluster owner).
+
+        `search` is a free-text term matched against cluster_name,
+        cluster_id, and owner_user_id (case-insensitive on cluster_name).
+        """
+        escaped_search = search.replace("'", "''") if search else None
+        search_clause = ""
+        if escaped_search:
+            search_clause = (
+                "WHERE ("
+                f"c.cluster_id LIKE '%{escaped_search}%' "
+                f"OR LOWER(COALESCE(cl.cluster_name, '')) LIKE LOWER('%{escaped_search}%') "
+                f"OR LOWER(COALESCE(c.owner_user_id, '')) LIKE LOWER('%{escaped_search}%')"
+                ")"
+            )
+
+        data_query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.all_purpose_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        cluster_level AS (
+            SELECT
+                cluster_id,
+                ANY_VALUE(user_id)            AS owner_user_id,
+                ANY_VALUE(data_security_mode) AS data_security_mode,
+                COUNT(DISTINCT usage_date)    AS active_days,
+                SUM(cloud_cost)               AS total_cloud_cost,
+                SUM(databricks_cost)          AS total_databricks_cost,
+                SUM(compute_cost)             AS total_compute_cost,
+                SUM(storage_cost)             AS total_storage_cost,
+                SUM(network_cost)             AS total_network_cost,
+                SUM(other_cost)               AS total_other_cost
+            FROM filtered
+            GROUP BY cluster_id
+        )
+        SELECT
+            c.cluster_id,
+            c.owner_user_id,
+            c.data_security_mode,
+            c.active_days,
+            c.total_cloud_cost,
+            c.total_databricks_cost,
+            c.total_compute_cost,
+            c.total_storage_cost,
+            c.total_network_cost,
+            c.total_other_cost,
+            cl.cluster_name,
+            COUNT(*) OVER() AS total_matching
+        FROM cluster_level c
+        LEFT JOIN (
+            -- system.compute.clusters can have multiple SCD snapshot rows
+            -- per cluster_id; MAX_BY collapses to the most-recent name so a
+            -- renamed cluster doesn't fan out into duplicate rows here.
+            SELECT cluster_id,
+                   MAX_BY(cluster_name, change_time) AS cluster_name
+            FROM system.compute.clusters
+            WHERE cluster_source IN ('UI', 'API')
+            GROUP BY cluster_id
+        ) cl ON c.cluster_id = cl.cluster_id
+        {search_clause}
+        ORDER BY (c.total_cloud_cost + c.total_databricks_cost) DESC
+        LIMIT {limit} OFFSET {offset}
+        """
+
+        data_response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=data_query,
+        )
+
+        total_count = 0
+        if data_response.result and data_response.result.data_array:
+            total_count = int(data_response.result.data_array[0][11])
+
+        grouped: List[GroupedAllPurposeCluster] = []
+        if data_response.result and data_response.result.data_array:
+            cluster_ids = [row[0] for row in data_response.result.data_array]
+            users_by_cluster = await self._get_batch_cluster_days(
+                cluster_ids, start_date, end_date, days_per_cluster=30
+            )
+
+            for row in data_response.result.data_array:
+                cluster_id = row[0]
+                grouped.append(GroupedAllPurposeCluster(
+                    cluster_id=cluster_id,
+                    cluster_name=row[10],
+                    owner_user_id=row[1] or "__unknown__",
+                    data_security_mode=row[2],
+                    active_days=int(row[3]) if row[3] is not None else 0,
+                    total_cloud_cost=float(row[4]) if row[4] is not None else 0.0,
+                    total_databricks_cost=float(row[5]) if row[5] is not None else 0.0,
+                    total_compute_cost=float(row[6]) if row[6] is not None else None,
+                    total_storage_cost=float(row[7]) if row[7] is not None else None,
+                    total_network_cost=float(row[8]) if row[8] is not None else None,
+                    total_other_cost=float(row[9]) if row[9] is not None else None,
+                    users=users_by_cluster.get(cluster_id, []),
+                ))
+
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
+        current_page = (offset // limit) + 1
+
+        return PaginatedAllPurposeClusters(
+            data=grouped,
+            total_count=total_count,
+            page=current_page,
+            per_page=limit,
+            total_pages=total_pages,
+            has_next=current_page < total_pages,
+            has_previous=current_page > 1,
+        )
+
+    async def get_all_purpose_grouped_by_user(
+        self,
+        start_date: date,
+        end_date: date,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> PaginatedAllPurposeUsers:
+        """Paginated By-User rollup for the All-Purpose tab (chargeback view).
+
+        Implements plan §5.2. The dedicated `user_active_days` CTE computes
+        distinct active days from `filtered` directly — summing
+        `COUNT(DISTINCT usage_date)` across the per-cluster CTE would
+        double-count any day on which a user was active on multiple
+        clusters. `clusters` is enriched via `_get_batch_user_clusters`
+        with the per-cluster drill-down expansion.
+        """
+        escaped_search = search.replace("'", "''") if search else None
+        search_clause = ""
+        if escaped_search:
+            search_clause = (
+                f"WHERE LOWER(COALESCE(user_id, '')) LIKE LOWER('%{escaped_search}%')"
+            )
+
+        data_query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.all_purpose_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        user_cluster_level AS (
+            SELECT
+                user_id,
+                cluster_id,
+                SUM(cloud_cost)             AS cloud_cost,
+                SUM(databricks_cost)        AS databricks_cost,
+                SUM(compute_cost)           AS compute_cost,
+                SUM(storage_cost)           AS storage_cost,
+                SUM(network_cost)           AS network_cost,
+                SUM(other_cost)             AS other_cost,
+                COUNT(DISTINCT usage_date)  AS cluster_active_days
+            FROM filtered
+            GROUP BY user_id, cluster_id
+        ),
+        user_active_days AS (
+            -- Computed from `filtered` directly so a user active on
+            -- multiple clusters on the same day doesn't double-count
+            -- (see plan §5.2).
+            SELECT user_id, COUNT(DISTINCT usage_date) AS active_days
+            FROM filtered
+            GROUP BY user_id
+        ),
+        user_level AS (
+            SELECT
+                ucl.user_id,
+                COUNT(DISTINCT ucl.cluster_id) AS cluster_count,
+                uad.active_days                AS user_active_days,
+                SUM(ucl.cloud_cost)            AS total_cloud_cost,
+                SUM(ucl.databricks_cost)       AS total_databricks_cost,
+                SUM(ucl.compute_cost)          AS total_compute_cost,
+                SUM(ucl.storage_cost)          AS total_storage_cost,
+                SUM(ucl.network_cost)          AS total_network_cost,
+                SUM(ucl.other_cost)            AS total_other_cost
+            FROM user_cluster_level ucl
+            JOIN user_active_days uad USING (user_id)
+            GROUP BY ucl.user_id, uad.active_days
+        )
+        SELECT
+            user_id,
+            cluster_count,
+            user_active_days,
+            total_cloud_cost,
+            total_databricks_cost,
+            total_compute_cost,
+            total_storage_cost,
+            total_network_cost,
+            total_other_cost,
+            COUNT(*) OVER() AS total_matching
+        FROM user_level
+        {search_clause}
+        ORDER BY (total_cloud_cost + total_databricks_cost) DESC
+        LIMIT {limit} OFFSET {offset}
+        """
+
+        data_response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=data_query,
+        )
+
+        total_count = 0
+        if data_response.result and data_response.result.data_array:
+            total_count = int(data_response.result.data_array[0][9])
+
+        grouped: List[GroupedAllPurposeUser] = []
+        if data_response.result and data_response.result.data_array:
+            user_ids = [row[0] for row in data_response.result.data_array]
+            clusters_by_user = await self._get_batch_user_clusters(
+                user_ids, start_date, end_date, clusters_per_user=20
+            )
+
+            for row in data_response.result.data_array:
+                user_id = row[0] or "__unknown__"
+                grouped.append(GroupedAllPurposeUser(
+                    user_id=user_id,
+                    cluster_count=int(row[1]) if row[1] is not None else 0,
+                    user_active_days=int(row[2]) if row[2] is not None else 0,
+                    total_cloud_cost=float(row[3]) if row[3] is not None else 0.0,
+                    total_databricks_cost=float(row[4]) if row[4] is not None else 0.0,
+                    total_compute_cost=float(row[5]) if row[5] is not None else None,
+                    total_storage_cost=float(row[6]) if row[6] is not None else None,
+                    total_network_cost=float(row[7]) if row[7] is not None else None,
+                    total_other_cost=float(row[8]) if row[8] is not None else None,
+                    clusters=clusters_by_user.get(user_id, []),
+                ))
+
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
+        current_page = (offset // limit) + 1
+
+        return PaginatedAllPurposeUsers(
+            data=grouped,
+            total_count=total_count,
+            page=current_page,
+            per_page=limit,
+            total_pages=total_pages,
+            has_next=current_page < total_pages,
+            has_previous=current_page > 1,
+        )
+
+    async def get_all_purpose_top_clusters(
+        self, start_date: date, end_date: date, limit: int = 5
+    ) -> List[GroupedAllPurposeCluster]:
+        """Get top N most expensive all-purpose clusters in the window.
+
+        Cluster-grain analogue of `get_top_jobs`. Returns flat
+        `GroupedAllPurposeCluster` rows with `users=[]` — this endpoint
+        powers a top-N card and intentionally skips the per-day enrichment
+        query for cost reasons (mirrors `get_top_jobs` returning
+        `runs=[]`; see the model docstring on `GroupedJob`).
+        """
+        query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.all_purpose_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        cluster_level AS (
+            SELECT
+                cluster_id,
+                ANY_VALUE(user_id)            AS owner_user_id,
+                ANY_VALUE(data_security_mode) AS data_security_mode,
+                COUNT(DISTINCT usage_date)    AS active_days,
+                SUM(cloud_cost)               AS total_cloud_cost,
+                SUM(databricks_cost)          AS total_databricks_cost,
+                SUM(compute_cost)             AS total_compute_cost,
+                SUM(storage_cost)             AS total_storage_cost,
+                SUM(network_cost)             AS total_network_cost,
+                SUM(other_cost)               AS total_other_cost
+            FROM filtered
+            GROUP BY cluster_id
+        )
+        SELECT
+            c.cluster_id,
+            c.owner_user_id,
+            c.data_security_mode,
+            c.active_days,
+            c.total_cloud_cost,
+            c.total_databricks_cost,
+            c.total_compute_cost,
+            c.total_storage_cost,
+            c.total_network_cost,
+            c.total_other_cost,
+            cl.cluster_name
+        FROM cluster_level c
+        LEFT JOIN (
+            SELECT cluster_id,
+                   MAX_BY(cluster_name, change_time) AS cluster_name
+            FROM system.compute.clusters
+            WHERE cluster_source IN ('UI', 'API')
+            GROUP BY cluster_id
+        ) cl ON c.cluster_id = cl.cluster_id
+        ORDER BY (c.total_cloud_cost + c.total_databricks_cost) DESC
+        LIMIT {limit}
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        clusters: List[GroupedAllPurposeCluster] = []
+        if response.result and response.result.data_array:
+            for row in response.result.data_array:
+                clusters.append(GroupedAllPurposeCluster(
+                    cluster_id=row[0],
+                    cluster_name=row[10],
+                    owner_user_id=row[1] or "__unknown__",
+                    data_security_mode=row[2],
+                    active_days=int(row[3]) if row[3] is not None else 0,
+                    total_cloud_cost=float(row[4]) if row[4] is not None else 0.0,
+                    total_databricks_cost=float(row[5]) if row[5] is not None else 0.0,
+                    total_compute_cost=float(row[6]) if row[6] is not None else None,
+                    total_storage_cost=float(row[7]) if row[7] is not None else None,
+                    total_network_cost=float(row[8]) if row[8] is not None else None,
+                    total_other_cost=float(row[9]) if row[9] is not None else None,
+                    users=[],
+                ))
+
+        return clusters
+
+    async def get_all_purpose_top_users(
+        self, start_date: date, end_date: date, limit: int = 5
+    ) -> List[GroupedAllPurposeUser]:
+        """Get top N most expensive all-purpose users (chargeback view).
+
+        User-grain analogue of `get_top_jobs`. Returns flat
+        `GroupedAllPurposeUser` rows with `clusters=[]` — same per-row
+        enrichment skip as `get_top_jobs`. `user_active_days` is computed
+        from the raw rows directly (not summed across clusters) for the
+        same correctness reason as `get_all_purpose_grouped_by_user`.
+        """
+        query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.all_purpose_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        user_cluster_level AS (
+            SELECT
+                user_id,
+                cluster_id,
+                SUM(cloud_cost)             AS cloud_cost,
+                SUM(databricks_cost)        AS databricks_cost,
+                SUM(compute_cost)           AS compute_cost,
+                SUM(storage_cost)           AS storage_cost,
+                SUM(network_cost)           AS network_cost,
+                SUM(other_cost)             AS other_cost
+            FROM filtered
+            GROUP BY user_id, cluster_id
+        ),
+        user_active_days AS (
+            SELECT user_id, COUNT(DISTINCT usage_date) AS active_days
+            FROM filtered
+            GROUP BY user_id
+        ),
+        user_level AS (
+            SELECT
+                ucl.user_id,
+                COUNT(DISTINCT ucl.cluster_id) AS cluster_count,
+                uad.active_days                AS user_active_days,
+                SUM(ucl.cloud_cost)            AS total_cloud_cost,
+                SUM(ucl.databricks_cost)       AS total_databricks_cost,
+                SUM(ucl.compute_cost)          AS total_compute_cost,
+                SUM(ucl.storage_cost)          AS total_storage_cost,
+                SUM(ucl.network_cost)          AS total_network_cost,
+                SUM(ucl.other_cost)            AS total_other_cost
+            FROM user_cluster_level ucl
+            JOIN user_active_days uad USING (user_id)
+            GROUP BY ucl.user_id, uad.active_days
+        )
+        SELECT
+            user_id,
+            cluster_count,
+            user_active_days,
+            total_cloud_cost,
+            total_databricks_cost,
+            total_compute_cost,
+            total_storage_cost,
+            total_network_cost,
+            total_other_cost
+        FROM user_level
+        ORDER BY (total_cloud_cost + total_databricks_cost) DESC
+        LIMIT {limit}
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        users: List[GroupedAllPurposeUser] = []
+        if response.result and response.result.data_array:
+            for row in response.result.data_array:
+                users.append(GroupedAllPurposeUser(
+                    user_id=row[0] or "__unknown__",
+                    cluster_count=int(row[1]) if row[1] is not None else 0,
+                    user_active_days=int(row[2]) if row[2] is not None else 0,
+                    total_cloud_cost=float(row[3]) if row[3] is not None else 0.0,
+                    total_databricks_cost=float(row[4]) if row[4] is not None else 0.0,
+                    total_compute_cost=float(row[5]) if row[5] is not None else None,
+                    total_storage_cost=float(row[6]) if row[6] is not None else None,
+                    total_network_cost=float(row[7]) if row[7] is not None else None,
+                    total_other_cost=float(row[8]) if row[8] is not None else None,
+                    clusters=[],
+                ))
+
+        return users
+
+    async def _get_batch_cluster_days(
+        self,
+        cluster_ids: List[str],
+        start_date: date,
+        end_date: date,
+        days_per_cluster: int = 30,
+    ) -> Dict[str, List[AllPurposeUserSpend]]:
+        """Fetch the top-N per-day rows for a batch of all-purpose clusters.
+
+        Parallel to `_get_batch_job_runs`: takes the page's `cluster_id`s
+        and returns up to `days_per_cluster` rows per cluster, ordered by
+        most-recent first then by cost. Each row is grain
+        `(cluster_id, user_id, usage_date)`; under v1 owner attribution
+        this is one row per active day.
+        """
+        if not cluster_ids:
+            return {}
+
+        escaped_ids = [cid.replace("'", "''") for cid in cluster_ids]
+        in_clause = ", ".join(f"'{cid}'" for cid in escaped_ids)
+
+        query = f"""
+        WITH ranked_days AS (
+            SELECT
+                cluster_id,
+                user_id,
+                usage_date,
+                SUM(cloud_cost)      AS cloud_cost,
+                SUM(databricks_cost) AS databricks_cost,
+                SUM(compute_cost)    AS compute_cost,
+                SUM(storage_cost)    AS storage_cost,
+                SUM(network_cost)    AS network_cost,
+                SUM(other_cost)      AS other_cost,
+                ROW_NUMBER() OVER (
+                    PARTITION BY cluster_id
+                    ORDER BY usage_date DESC,
+                             (SUM(cloud_cost) + SUM(databricks_cost)) DESC
+                ) AS rn
+            FROM {self.all_purpose_table_name}
+            WHERE cluster_id IN ({in_clause})
+              AND usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+            GROUP BY cluster_id, user_id, usage_date
+        )
+        SELECT
+            cluster_id, user_id, usage_date,
+            cloud_cost, databricks_cost,
+            compute_cost, storage_cost, network_cost, other_cost
+        FROM ranked_days
+        WHERE rn <= {days_per_cluster}
+        ORDER BY cluster_id, usage_date DESC
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        result: Dict[str, List[AllPurposeUserSpend]] = {}
+        if response.result and response.result.data_array:
+            for row in response.result.data_array:
+                cluster_id = row[0]
+                spend = AllPurposeUserSpend(
+                    cluster_id=cluster_id,
+                    user_id=row[1] or "__unknown__",
+                    usage_date=date.fromisoformat(row[2]),
+                    cloud_cost=float(row[3]) if row[3] is not None else 0.0,
+                    databricks_cost=float(row[4]) if row[4] is not None else 0.0,
+                    compute_cost=float(row[5]) if row[5] is not None else None,
+                    storage_cost=float(row[6]) if row[6] is not None else None,
+                    network_cost=float(row[7]) if row[7] is not None else None,
+                    other_cost=float(row[8]) if row[8] is not None else None,
+                )
+                result.setdefault(cluster_id, []).append(spend)
+
+        return result
+
+    async def _get_batch_user_clusters(
+        self,
+        user_ids: List[str],
+        start_date: date,
+        end_date: date,
+        clusters_per_user: int = 20,
+    ) -> Dict[str, List[AllPurposeClusterSpend]]:
+        """Fetch the top-N per-cluster rows for a batch of users.
+
+        Parallel to `_get_batch_cluster_days` but expanded to the per-cluster
+        grain for the By-User sub-tab. Joins back to
+        `system.compute.clusters` (collapsed via `MAX_BY`) for the cluster
+        name. `cluster_active_days` is `COUNT(DISTINCT usage_date)` for
+        each `(user_id, cluster_id)` pair. `data_security_mode` is taken
+        from the all-purpose table (which carries the SCD-collapsed value
+        from the upstream pipeline).
+        """
+        if not user_ids:
+            return {}
+
+        escaped_ids = [uid.replace("'", "''") for uid in user_ids]
+        in_clause = ", ".join(f"'{uid}'" for uid in escaped_ids)
+
+        query = f"""
+        WITH per_user_cluster AS (
+            SELECT
+                user_id,
+                cluster_id,
+                ANY_VALUE(data_security_mode) AS data_security_mode,
+                SUM(cloud_cost)               AS cloud_cost,
+                SUM(databricks_cost)          AS databricks_cost,
+                SUM(compute_cost)             AS compute_cost,
+                SUM(storage_cost)             AS storage_cost,
+                SUM(network_cost)             AS network_cost,
+                SUM(other_cost)               AS other_cost,
+                COUNT(DISTINCT usage_date)    AS cluster_active_days
+            FROM {self.all_purpose_table_name}
+            WHERE user_id IN ({in_clause})
+              AND usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+            GROUP BY user_id, cluster_id
+        ),
+        ranked AS (
+            SELECT
+                puc.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY user_id
+                    ORDER BY (cloud_cost + databricks_cost) DESC, cluster_id
+                ) AS rn
+            FROM per_user_cluster puc
+        )
+        SELECT
+            r.user_id,
+            r.cluster_id,
+            cl.cluster_name,
+            r.data_security_mode,
+            r.cluster_active_days,
+            r.cloud_cost,
+            r.databricks_cost,
+            r.compute_cost,
+            r.storage_cost,
+            r.network_cost,
+            r.other_cost
+        FROM ranked r
+        LEFT JOIN (
+            SELECT cluster_id,
+                   MAX_BY(cluster_name, change_time) AS cluster_name
+            FROM system.compute.clusters
+            WHERE cluster_source IN ('UI', 'API')
+            GROUP BY cluster_id
+        ) cl ON r.cluster_id = cl.cluster_id
+        WHERE r.rn <= {clusters_per_user}
+        ORDER BY r.user_id, (r.cloud_cost + r.databricks_cost) DESC
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        result: Dict[str, List[AllPurposeClusterSpend]] = {}
+        if response.result and response.result.data_array:
+            for row in response.result.data_array:
+                user_id = row[0] or "__unknown__"
+                spend = AllPurposeClusterSpend(
+                    cluster_id=row[1],
+                    cluster_name=row[2],
+                    user_id=user_id,
+                    data_security_mode=row[3],
+                    cluster_active_days=int(row[4]) if row[4] is not None else 0,
+                    cloud_cost=float(row[5]) if row[5] is not None else 0.0,
+                    databricks_cost=float(row[6]) if row[6] is not None else 0.0,
+                    compute_cost=float(row[7]) if row[7] is not None else None,
+                    storage_cost=float(row[8]) if row[8] is not None else None,
+                    network_cost=float(row[9]) if row[9] is not None else None,
+                    other_cost=float(row[10]) if row[10] is not None else None,
+                )
+                result.setdefault(user_id, []).append(spend)
+
+        return result

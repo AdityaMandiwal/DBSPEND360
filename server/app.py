@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from server.routers import router
+from server.routers.all_purpose import router as all_purpose_router
 from server.routers.dashboard import router as dashboard_router
 
 
@@ -53,6 +54,7 @@ app.add_middleware(
 
 app.include_router(router, prefix='/api', tags=['api'])
 app.include_router(dashboard_router)
+app.include_router(all_purpose_router)
 
 
 @app.get('/health')

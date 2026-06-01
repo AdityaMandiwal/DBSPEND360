@@ -19,6 +19,18 @@ resources:
           notebook_task:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/DBSpend360-app-v2/databricks_job_spends_app
             source: WORKSPACE
+        - task_key: Dbspend360_all_purpose_dbu_costs
+          depends_on:
+            - task_key: cloud_cost_explorer
+          notebook_task:
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/DBSpend360-app-v2/dbspend360_all_purpose_dbu_cost_app
+            source: WORKSPACE
+        - task_key: all_purpose_spends
+          depends_on:
+            - task_key: Dbspend360_all_purpose_dbu_costs
+          notebook_task:
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/DBSpend360-app-v2/all_purpose_spends_app
+            source: WORKSPACE
       queue:
         enabled: true
       parameters:

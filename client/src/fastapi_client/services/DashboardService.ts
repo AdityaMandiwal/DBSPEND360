@@ -299,18 +299,27 @@ export class DashboardService {
      *
      * Fetches cluster details and cost summary in parallel, then passes
      * all context to the LLM for grounded configuration analysis.
+     *
+     * ``cluster_kind`` threads through to ``get_cluster_cost_summary`` so the
+     * LLM's cost context comes from the rollup table that matches the cluster's
+     * source (job clusters vs all-purpose / interactive clusters).
      * @param clusterId
+     * @param clusterKind Which rollup table to pull the cluster's cost summary from. Defaults to 'job' so existing call sites are byte-identical; the All-Purpose tab passes 'all_purpose' to route to `dbspend360_total_all_purpose_spends` (see plan §6 / CP10).
      * @returns ClusterAnalysis Successful Response
      * @throws ApiError
      */
     public static analyzeClusterConfigurationApiClusterClusterIdAnalyzeGet(
         clusterId: string,
+        clusterKind: 'job' | 'all_purpose' = 'job',
     ): CancelablePromise<ClusterAnalysis> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/cluster/{cluster_id}/analyze',
             path: {
                 'cluster_id': clusterId,
+            },
+            query: {
+                'cluster_kind': clusterKind,
             },
             errors: {
                 422: `Validation Error`,

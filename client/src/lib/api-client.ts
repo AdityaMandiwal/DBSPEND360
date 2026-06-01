@@ -1,4 +1,12 @@
 import { SummaryMetrics, CostBreakdown, PaginatedJobSpends, DateRange, JobSpendFilter, DatePreset, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformConfig, OtherCostBreakdownResponse, CoverageTrendResponse, GroupedJob } from '@/types/job-spend';
+import {
+  AllPurposeFilter,
+  AllPurposeSummaryMetrics,
+  GroupedAllPurposeCluster,
+  GroupedAllPurposeUser,
+  PaginatedAllPurposeClusters,
+  PaginatedAllPurposeUsers,
+} from '@/types/all-purpose';
 import { API_BASE_URL } from '@/lib/api-config';
 
 class ApiClient {
@@ -57,8 +65,17 @@ class ApiClient {
     return this.fetchApi<ClusterDetails>(`/cluster/${clusterId}/details`);
   }
 
-  async getClusterAnalysis(clusterId: string): Promise<ClusterAnalysis> {
-    return this.fetchApi<ClusterAnalysis>(`/cluster/${clusterId}/analyze`);
+  async getClusterAnalysis(
+    clusterId: string,
+    clusterKind: 'job' | 'all_purpose' = 'job',
+  ): Promise<ClusterAnalysis> {
+    // Default to 'job' so existing call sites are byte-identical with the
+    // pre-CP10 signature; the All-Purpose tab passes 'all_purpose' to route
+    // the cost summary half of the analysis to the right rollup table.
+    const params = new URLSearchParams({ cluster_kind: clusterKind });
+    return this.fetchApi<ClusterAnalysis>(
+      `/cluster/${clusterId}/analyze?${params}`,
+    );
   }
 
   async getTopJobs(dateRange: DateRange, limit: number = 5): Promise<GroupedJob[]> {
@@ -100,6 +117,92 @@ class ApiClient {
 
   async healthCheck(): Promise<{ status: string; service: string }> {
     return this.fetchApi<{ status: string; service: string }>('/health');
+  }
+
+  // ---------------------------------------------------------------------
+  // All-Purpose Clusters tab
+  //
+  // Mirrors the job-cluster methods above; all under `/api/all-purpose/*`.
+  // See `server/routers/all_purpose.py` and plan §6
+  // (`docs/plan_all_purpose_clusters_tab.md`) for endpoint contracts.
+  // ---------------------------------------------------------------------
+
+  async getAllPurposeSummaryMetrics(
+    dateRange: DateRange,
+  ): Promise<AllPurposeSummaryMetrics> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+    });
+    return this.fetchApi<AllPurposeSummaryMetrics>(
+      `/all-purpose/summary?${params}`,
+    );
+  }
+
+  async getAllPurposeGroupedByCluster(
+    filter: AllPurposeFilter,
+  ): Promise<PaginatedAllPurposeClusters> {
+    const params = new URLSearchParams({
+      start_date: filter.start_date,
+      end_date: filter.end_date,
+      page: filter.page.toString(),
+      per_page: filter.per_page.toString(),
+    });
+
+    if (filter.search) {
+      params.append('search', filter.search);
+    }
+
+    return this.fetchApi<PaginatedAllPurposeClusters>(
+      `/all-purpose/grouped-by-cluster?${params}`,
+    );
+  }
+
+  async getAllPurposeGroupedByUser(
+    filter: AllPurposeFilter,
+  ): Promise<PaginatedAllPurposeUsers> {
+    const params = new URLSearchParams({
+      start_date: filter.start_date,
+      end_date: filter.end_date,
+      page: filter.page.toString(),
+      per_page: filter.per_page.toString(),
+    });
+
+    if (filter.search) {
+      params.append('search', filter.search);
+    }
+
+    return this.fetchApi<PaginatedAllPurposeUsers>(
+      `/all-purpose/grouped-by-user?${params}`,
+    );
+  }
+
+  async getAllPurposeTopClusters(
+    dateRange: DateRange,
+    limit: number = 5,
+  ): Promise<GroupedAllPurposeCluster[]> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+      limit: limit.toString(),
+    });
+    return this.fetchApi<GroupedAllPurposeCluster[]>(
+      `/all-purpose/top-clusters?${params}`,
+    );
+  }
+
+  async getAllPurposeTopUsers(
+    dateRange: DateRange,
+    limit: number = 5,
+  ): Promise<GroupedAllPurposeUser[]> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+      limit: limit.toString(),
+    });
+    return this.fetchApi<GroupedAllPurposeUser[]>(
+      `/all-purpose/top-users?${params}`,
+    );
   }
 }
 

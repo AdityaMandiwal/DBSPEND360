@@ -4,7 +4,13 @@
 /* eslint-disable */
 import type { JobRun } from './JobRun';
 /**
- * Grouped job data with aggregated costs and run details.
+ * Grouped job data with aggregated costs and (optional) run details.
+ *
+ * `runs` may be empty when the consumer only needs job-level totals (e.g. the
+ * "Top N Costliest Jobs" card on the dashboard, which renders a flat list and
+ * deliberately skips the per-run enrichment query to keep the endpoint cheap).
+ * Callers that need a per-run drill-down read from `runs`; callers that only
+ * care about totals can ignore it.
  */
 export type GroupedJob = {
     job_id: string;

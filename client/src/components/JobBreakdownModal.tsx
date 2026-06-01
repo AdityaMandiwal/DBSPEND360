@@ -26,6 +26,12 @@ interface ClusterDetailsModalProps {
   clusterId: string;
   isOpen: boolean;
   onClose: () => void;
+  // Routes the LLM cost-context half of the analysis to the matching
+  // rollup table. Defaults to 'job' for backwards compatibility — the
+  // All-Purpose tab passes 'all_purpose' so the analysis pulls from
+  // `dbspend360_total_all_purpose_spends` instead of the job rollup
+  // (see plan §6 / CP10).
+  clusterKind?: 'job' | 'all_purpose';
 }
 
 export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdownModalProps) => {
@@ -399,9 +405,14 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
   );
 };
 
-const ClusterDetailsModal = ({ clusterId, isOpen, onClose }: ClusterDetailsModalProps) => {
+export const ClusterDetailsModal = ({
+  clusterId,
+  isOpen,
+  onClose,
+  clusterKind = 'job',
+}: ClusterDetailsModalProps) => {
   const { data: clusterDetails, isLoading: detailsLoading, error: detailsError } = useClusterDetails(clusterId);
-  const { data: clusterAnalysis, isLoading: analysisLoading, error: analysisError } = useClusterAnalysis(clusterId);
+  const { data: clusterAnalysis, isLoading: analysisLoading, error: analysisError } = useClusterAnalysis(clusterId, clusterKind);
 
   const formatDate = (dateStr?: string) => {
     if (!dateStr) return 'N/A';

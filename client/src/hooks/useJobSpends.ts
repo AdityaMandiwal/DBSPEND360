@@ -47,10 +47,13 @@ export const useClusterDetails = (clusterId: string) => {
   });
 };
 
-export const useClusterAnalysis = (clusterId: string) => {
+export const useClusterAnalysis = (
+  clusterId: string,
+  clusterKind: 'job' | 'all_purpose' = 'job',
+) => {
   return useQuery({
-    queryKey: ['cluster-analysis', clusterId],
-    queryFn: () => apiClient.getClusterAnalysis(clusterId),
+    queryKey: ['cluster-analysis', clusterId, clusterKind],
+    queryFn: () => apiClient.getClusterAnalysis(clusterId, clusterKind),
     staleTime: 60 * 60 * 1000, // 1 hour - LLM analysis doesn't change frequently
     enabled: !!clusterId,
   });
