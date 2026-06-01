@@ -6,10 +6,18 @@ from typing import Dict, List, Optional, Tuple
 from databricks.sdk import WorkspaceClient
 
 from server.models.job_spend import (
-    JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends,
-    GroupedJob, JobRun, PaginatedGroupedJobs, ClusterDetails,
-    OtherCostBreakdownItem, OtherCostBreakdownResponse,
-    CoverageTrendPoint, CoverageTrendResponse,
+  JobSpend,
+  SummaryMetrics,
+  CostBreakdown,
+  PaginatedJobSpends,
+  GroupedJob,
+  JobRun,
+  PaginatedGroupedJobs,
+  ClusterDetails,
+  OtherCostBreakdownItem,
+  OtherCostBreakdownResponse,
+  CoverageTrendPoint,
+  CoverageTrendResponse,
 )
 from server.config.config_loader import app_config
 
@@ -19,77 +27,78 @@ LOOKBACK_DAYS = 180
 
 
 class DatabricksService:
-    """Service for interacting with Databricks SQL Warehouse."""
+  """Service for interacting with Databricks SQL Warehouse."""
 
-    def __init__(self):
-        # Check if we're running in Databricks Apps (OAuth available)
-        client_id = os.getenv("DATABRICKS_CLIENT_ID")
-        host = os.getenv("DATABRICKS_HOST")
-        token = os.getenv("DATABRICKS_TOKEN")
+  def __init__(self):
+    # Check if we're running in Databricks Apps (OAuth available)
+    client_id = os.getenv('DATABRICKS_CLIENT_ID')
+    host = os.getenv('DATABRICKS_HOST')
+    token = os.getenv('DATABRICKS_TOKEN')
 
-        if client_id:
-            # Running in Databricks Apps - use OAuth automatically
-            self.client = WorkspaceClient()
-        elif host and token:
-            # Running locally with PAT
-            self.client = WorkspaceClient(
-                host=host,
-                token=token
-            )
-        else:
-            raise ValueError("Either DATABRICKS_CLIENT_ID (for OAuth) or both DATABRICKS_HOST and DATABRICKS_TOKEN (for PAT) must be set")
+    if client_id:
+      # Running in Databricks Apps - use OAuth automatically
+      self.client = WorkspaceClient()
+    elif host and token:
+      # Running locally with PAT
+      self.client = WorkspaceClient(host=host, token=token)
+    else:
+      raise ValueError(
+        'Either DATABRICKS_CLIENT_ID (for OAuth) or both DATABRICKS_HOST and DATABRICKS_TOKEN (for PAT) must be set'
+      )
 
-        # Load configuration from environment-specific config files
-        self.warehouse_id = app_config.warehouse_id
-        self.table_name = app_config.table_name
-        self.query_timeout = app_config.query_timeout_seconds
-        self.job_name_cache: Dict[str, str] = {}  # Cache for job names
+    # Load configuration from environment-specific config files
+    self.warehouse_id = app_config.warehouse_id
+    self.table_name = app_config.table_name
+    self.query_timeout = app_config.query_timeout_seconds
+    self.job_name_cache: Dict[str, str] = {}  # Cache for job names
 
-    async def get_job_name(self, job_id: str) -> str:
-        """Get job name from Jobs API with caching."""
-        if job_id in self.job_name_cache:
-            return self.job_name_cache[job_id]
+  async def get_job_name(self, job_id: str) -> str:
+    """Get job name from Jobs API with caching."""
+    if job_id in self.job_name_cache:
+      return self.job_name_cache[job_id]
 
-        try:
-            # Try to get job details from Jobs API
-            job = self.client.jobs.get(job_id=int(job_id))
-            job_name = job.settings.name if job.settings and job.settings.name else f"Job {job_id}"
-            self.job_name_cache[job_id] = job_name
-            return job_name
-        except Exception as e:
-            # If job doesn't exist or we can't access it, return a default name
-            job_name = f"Job {job_id}"
-            self.job_name_cache[job_id] = job_name
-            return job_name
+    try:
+      # Try to get job details from Jobs API
+      job = self.client.jobs.get(job_id=int(job_id))
+      job_name = job.settings.name if job.settings and job.settings.name else f'Job {job_id}'
+      self.job_name_cache[job_id] = job_name
+      return job_name
+    except Exception as e:
+      # If job doesn't exist or we can't access it, return a default name
+      job_name = f'Job {job_id}'
+      self.job_name_cache[job_id] = job_name
+      return job_name
 
-    async def get_job_spends(
-        self,
-        start_date: date,
-        end_date: date,
-        job_name: Optional[str] = None,
-        limit: int = 50,
-        offset: int = 0
-    ) -> PaginatedJobSpends:
-        """Get paginated job spending data with optional job name filter."""
+  async def get_job_spends(
+    self,
+    start_date: date,
+    end_date: date,
+    job_name: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+  ) -> PaginatedJobSpends:
+    """Get paginated job spending data with optional job name filter."""
 
-        # Build the base query with direct string interpolation
-        where_clause = f"WHERE usage_date >= '{start_date.isoformat()}' AND usage_date <= '{end_date.isoformat()}'"
+    # Build the base query with direct string interpolation
+    where_clause = (
+      f"WHERE usage_date >= '{start_date.isoformat()}' AND usage_date <= '{end_date.isoformat()}'"
+    )
 
-        # Add job name filter if provided
-        if job_name:
-            # Escape single quotes in job_name to prevent SQL injection
-            escaped_job_name = job_name.replace("'", "''")
-            where_clause += f" AND job_id LIKE '%{escaped_job_name}%'"
+    # Add job name filter if provided
+    if job_name:
+      # Escape single quotes in job_name to prevent SQL injection
+      escaped_job_name = job_name.replace("'", "''")
+      where_clause += f" AND job_id LIKE '%{escaped_job_name}%'"
 
-        # Count query for pagination
-        count_query = f"""
+    # Count query for pagination
+    count_query = f"""
         SELECT COUNT(*) as total_count
         FROM {self.table_name}
         {where_clause}
         """
 
-        # Data query with pagination
-        data_query = f"""
+    # Data query with pagination
+    data_query = f"""
         SELECT
             a.cluster_id,
             a.cloud_cost,
@@ -117,60 +126,58 @@ class DatabricksService:
         LIMIT {limit} OFFSET {offset}
         """
 
-        # Execute count query
-        count_response = self.client.statement_execution.execute_statement(
-            warehouse_id=self.warehouse_id,
-            statement=count_query
+    # Execute count query
+    count_response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id, statement=count_query
+    )
+
+    total_count = 0
+    if count_response.result and count_response.result.data_array:
+      total_count = int(count_response.result.data_array[0][0])
+
+    # Execute data query
+    data_response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id, statement=data_query
+    )
+
+    job_spends = []
+    if data_response.result and data_response.result.data_array:
+      for row in data_response.result.data_array:
+        job_id = row[2]
+
+        job_spend = JobSpend(
+          cluster_id=row[0],
+          cloud_cost=float(row[1]),
+          job_id=job_id,
+          job_name=row[6],
+          run_id=row[3],
+          usage_date=date.fromisoformat(row[4]),
+          databricks_cost=float(row[5]),
+          compute_cost=float(row[7]) if row[7] is not None else None,
+          storage_cost=float(row[8]) if row[8] is not None else None,
+          network_cost=float(row[9]) if row[9] is not None else None,
+          other_cost=float(row[10]) if row[10] is not None else None,
         )
+        job_spends.append(job_spend)
 
-        total_count = 0
-        if count_response.result and count_response.result.data_array:
-            total_count = int(count_response.result.data_array[0][0])
+    # Calculate pagination info
+    total_pages = (total_count + limit - 1) // limit
+    current_page = (offset // limit) + 1
 
-        # Execute data query
-        data_response = self.client.statement_execution.execute_statement(
-            warehouse_id=self.warehouse_id,
-            statement=data_query
-        )
+    return PaginatedJobSpends(
+      data=job_spends,
+      total_count=total_count,
+      page=current_page,
+      per_page=limit,
+      total_pages=total_pages,
+      has_next=current_page < total_pages,
+      has_previous=current_page > 1,
+    )
 
-        job_spends = []
-        if data_response.result and data_response.result.data_array:
-            for row in data_response.result.data_array:
-                job_id = row[2]
+  async def get_summary_metrics(self, start_date: date, end_date: date) -> SummaryMetrics:
+    """Get summary metrics for the specified date range."""
 
-                job_spend = JobSpend(
-                    cluster_id=row[0],
-                    cloud_cost=float(row[1]),
-                    job_id=job_id,
-                    job_name=row[6],
-                    run_id=row[3],
-                    usage_date=date.fromisoformat(row[4]),
-                    databricks_cost=float(row[5]),
-                    compute_cost=float(row[7]) if row[7] is not None else None,
-                    storage_cost=float(row[8]) if row[8] is not None else None,
-                    network_cost=float(row[9]) if row[9] is not None else None,
-                    other_cost=float(row[10]) if row[10] is not None else None,
-                )
-                job_spends.append(job_spend)
-
-        # Calculate pagination info
-        total_pages = (total_count + limit - 1) // limit
-        current_page = (offset // limit) + 1
-
-        return PaginatedJobSpends(
-            data=job_spends,
-            total_count=total_count,
-            page=current_page,
-            per_page=limit,
-            total_pages=total_pages,
-            has_next=current_page < total_pages,
-            has_previous=current_page > 1
-        )
-
-    async def get_summary_metrics(self, start_date: date, end_date: date) -> SummaryMetrics:
-        """Get summary metrics for the specified date range."""
-
-        query = f"""
+    query = f"""
         SELECT
             COUNT(*) as total_jobs,
             SUM(cloud_cost + databricks_cost) as total_spend,
@@ -187,80 +194,78 @@ class DatabricksService:
         WHERE usage_date >= '{start_date.isoformat()}' AND usage_date <= '{end_date.isoformat()}'
         """
 
-        response = self.client.statement_execution.execute_statement(
-            warehouse_id=self.warehouse_id,
-            statement=query
-        )
+    response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id, statement=query
+    )
 
-        if response.result and response.result.data_array:
-            row = response.result.data_array[0]
-            date_range_days = (end_date - start_date).days + 1
+    if response.result and response.result.data_array:
+      row = response.result.data_array[0]
+      date_range_days = (end_date - start_date).days + 1
 
-            total_compute = float(row[7]) if row[7] is not None else None
-            total_storage = float(row[8]) if row[8] is not None else None
-            total_network = float(row[9]) if row[9] is not None else None
-            total_other = float(row[10]) if row[10] is not None else None
+      total_compute = float(row[7]) if row[7] is not None else None
+      total_storage = float(row[8]) if row[8] is not None else None
+      total_network = float(row[9]) if row[9] is not None else None
+      total_other = float(row[10]) if row[10] is not None else None
 
-            total_cloud = float(row[5]) if row[5] else 0.0
-            coverage_pct = None
-            if total_compute is not None and total_cloud > 0:
-                classified = (total_compute or 0) + (total_storage or 0) + (total_network or 0)
-                coverage_pct = (classified / total_cloud) * 100
+      total_cloud = float(row[5]) if row[5] else 0.0
+      coverage_pct = None
+      if total_compute is not None and total_cloud > 0:
+        classified = (total_compute or 0) + (total_storage or 0) + (total_network or 0)
+        coverage_pct = (classified / total_cloud) * 100
 
-            coverage_status = None
-            coverage_warning = None
-            if coverage_pct is not None:
-                if coverage_pct >= 95:
-                    coverage_status = "ok"
-                elif coverage_pct >= 80:
-                    coverage_status = "warning"
-                    coverage_warning = (
-                        "Moderate unclassified cost detected. "
-                        "Review the 'Other' category for potential classification improvements."
-                    )
-                else:
-                    coverage_status = "critical"
-                    coverage_warning = (
-                        "High unclassified cost detected. "
-                        "Investigate 'Other' category immediately."
-                    )
+      coverage_status = None
+      coverage_warning = None
+      if coverage_pct is not None:
+        if coverage_pct >= 95:
+          coverage_status = 'ok'
+        elif coverage_pct >= 80:
+          coverage_status = 'warning'
+          coverage_warning = (
+            'Moderate unclassified cost detected. '
+            "Review the 'Other' category for potential classification improvements."
+          )
+        else:
+          coverage_status = 'critical'
+          coverage_warning = (
+            "High unclassified cost detected. Investigate 'Other' category immediately."
+          )
 
-            return SummaryMetrics(
-                total_jobs=int(row[0]) if row[0] else 0,
-                total_spend=float(row[1]) if row[1] else 0.0,
-                average_cost=float(row[2]) if row[2] else 0.0,
-                max_cost=float(row[3]) if row[3] else 0.0,
-                min_cost=float(row[4]) if row[4] else 0.0,
-                total_cloud_cost=total_cloud,
-                total_databricks_cost=float(row[6]) if row[6] else 0.0,
-                total_compute_cost=total_compute,
-                total_storage_cost=total_storage,
-                total_network_cost=total_network,
-                total_other_cost=total_other,
-                classification_coverage_pct=coverage_pct,
-                coverage_status=coverage_status,
-                coverage_warning=coverage_warning,
-                date_range_days=date_range_days
-            )
+      return SummaryMetrics(
+        total_jobs=int(row[0]) if row[0] else 0,
+        total_spend=float(row[1]) if row[1] else 0.0,
+        average_cost=float(row[2]) if row[2] else 0.0,
+        max_cost=float(row[3]) if row[3] else 0.0,
+        min_cost=float(row[4]) if row[4] else 0.0,
+        total_cloud_cost=total_cloud,
+        total_databricks_cost=float(row[6]) if row[6] else 0.0,
+        total_compute_cost=total_compute,
+        total_storage_cost=total_storage,
+        total_network_cost=total_network,
+        total_other_cost=total_other,
+        classification_coverage_pct=coverage_pct,
+        coverage_status=coverage_status,
+        coverage_warning=coverage_warning,
+        date_range_days=date_range_days,
+      )
 
-        return SummaryMetrics(
-            total_jobs=0,
-            total_spend=0.0,
-            average_cost=0.0,
-            max_cost=0.0,
-            min_cost=0.0,
-            total_cloud_cost=0.0,
-            total_databricks_cost=0.0,
-            date_range_days=(end_date - start_date).days + 1
-        )
+    return SummaryMetrics(
+      total_jobs=0,
+      total_spend=0.0,
+      average_cost=0.0,
+      max_cost=0.0,
+      min_cost=0.0,
+      total_cloud_cost=0.0,
+      total_databricks_cost=0.0,
+      date_range_days=(end_date - start_date).days + 1,
+    )
 
-    async def get_job_cost_breakdown(self, job_id: str, run_id: str) -> Optional[CostBreakdown]:
-        """Get detailed cost breakdown for a specific job run, aggregated across all days."""
+  async def get_job_cost_breakdown(self, job_id: str, run_id: str) -> Optional[CostBreakdown]:
+    """Get detailed cost breakdown for a specific job run, aggregated across all days."""
 
-        escaped_job_id = job_id.replace("'", "''")
-        escaped_run_id = run_id.replace("'", "''")
+    escaped_job_id = job_id.replace("'", "''")
+    escaped_run_id = run_id.replace("'", "''")
 
-        query = f"""
+    query = f"""
         SELECT
             job_id,
             run_id,
@@ -278,50 +283,51 @@ class DatabricksService:
         GROUP BY job_id, run_id
         """
 
-        response = self.client.statement_execution.execute_statement(
-            warehouse_id=self.warehouse_id,
-            statement=query
-        )
+    response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id, statement=query
+    )
 
-        if response.result and response.result.data_array:
-            row = response.result.data_array[0]
-            cloud_cost = float(row[5])
-            databricks_cost = float(row[6])
-            start_date = date.fromisoformat(row[3])
-            end_date = date.fromisoformat(row[4])
+    if response.result and response.result.data_array:
+      row = response.result.data_array[0]
+      cloud_cost = float(row[5])
+      databricks_cost = float(row[6])
+      start_date = date.fromisoformat(row[3])
+      end_date = date.fromisoformat(row[4])
 
-            return CostBreakdown(
-                job_id=row[0],
-                run_id=row[1],
-                cluster_id=row[2],
-                usage_date=start_date,
-                end_date=end_date if end_date != start_date else None,
-                cloud_cost=cloud_cost,
-                databricks_cost=databricks_cost,
-                total_cost=cloud_cost + databricks_cost,
-                compute_cost=float(row[7]) if row[7] is not None else None,
-                storage_cost=float(row[8]) if row[8] is not None else None,
-                network_cost=float(row[9]) if row[9] is not None else None,
-                other_cost=float(row[10]) if row[10] is not None else None,
-            )
+      return CostBreakdown(
+        job_id=row[0],
+        run_id=row[1],
+        cluster_id=row[2],
+        usage_date=start_date,
+        end_date=end_date if end_date != start_date else None,
+        cloud_cost=cloud_cost,
+        databricks_cost=databricks_cost,
+        total_cost=cloud_cost + databricks_cost,
+        compute_cost=float(row[7]) if row[7] is not None else None,
+        storage_cost=float(row[8]) if row[8] is not None else None,
+        network_cost=float(row[9]) if row[9] is not None else None,
+        other_cost=float(row[10]) if row[10] is not None else None,
+      )
 
-        return None
+    return None
 
-    async def get_top_jobs(self, start_date: date, end_date: date, limit: int = 5) -> List[GroupedJob]:
-        """Get top N most expensive jobs (aggregated per job_id) for the date range.
+  async def get_top_jobs(
+    self, start_date: date, end_date: date, limit: int = 5
+  ) -> List[GroupedJob]:
+    """Get top N most expensive jobs (aggregated per job_id) for the date range.
 
-        Returns one row per `job_id` ranked by total `cloud_cost + databricks_cost`
-        across the window. Uses the same `filtered -> run_level -> job_level` CTE
-        chain as `get_grouped_job_spends()` so the "Top N Costliest Jobs" card and
-        the "Job Spending Details" table speak the exact same job-level model and
-        cannot disagree on what a job's total cost is.
+    Returns one row per `job_id` ranked by total `cloud_cost + databricks_cost`
+    across the window. Uses the same `filtered -> run_level -> job_level` CTE
+    chain as `get_grouped_job_spends()` so the "Top N Costliest Jobs" card and
+    the "Job Spending Details" table speak the exact same job-level model and
+    cannot disagree on what a job's total cost is.
 
-        The returned `GroupedJob` objects intentionally carry `runs=[]`: this
-        endpoint only powers a flat top-N card and skips the per-run enrichment
-        query for cost reasons. See the model docstring on `GroupedJob`.
-        """
+    The returned `GroupedJob` objects intentionally carry `runs=[]`: this
+    endpoint only powers a flat top-N card and skips the per-run enrichment
+    query for cost reasons. See the model docstring on `GroupedJob`.
+    """
 
-        query = f"""
+    query = f"""
         WITH filtered AS (
             SELECT *
             FROM {self.table_name}
@@ -377,49 +383,50 @@ class DatabricksService:
         LIMIT {limit}
         """
 
-        response = self.client.statement_execution.execute_statement(
-            warehouse_id=self.warehouse_id,
-            statement=query
+    response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id, statement=query
+    )
+
+    jobs: List[GroupedJob] = []
+    if response.result and response.result.data_array:
+      for row in response.result.data_array:
+        jobs.append(
+          GroupedJob(
+            job_id=row[0],
+            job_name=row[4],
+            run_count=int(row[3]),
+            total_cloud_cost=float(row[1]),
+            total_databricks_cost=float(row[2]),
+            total_compute_cost=float(row[5]) if row[5] is not None else None,
+            total_storage_cost=float(row[6]) if row[6] is not None else None,
+            total_network_cost=float(row[7]) if row[7] is not None else None,
+            total_other_cost=float(row[8]) if row[8] is not None else None,
+            runs=[],
+          )
         )
 
-        jobs: List[GroupedJob] = []
-        if response.result and response.result.data_array:
-            for row in response.result.data_array:
-                jobs.append(GroupedJob(
-                    job_id=row[0],
-                    job_name=row[4],
-                    run_count=int(row[3]),
-                    total_cloud_cost=float(row[1]),
-                    total_databricks_cost=float(row[2]),
-                    total_compute_cost=float(row[5]) if row[5] is not None else None,
-                    total_storage_cost=float(row[6]) if row[6] is not None else None,
-                    total_network_cost=float(row[7]) if row[7] is not None else None,
-                    total_other_cost=float(row[8]) if row[8] is not None else None,
-                    runs=[],
-                ))
+    return jobs
 
-        return jobs
+  async def get_grouped_job_spends(
+    self,
+    start_date: date,
+    end_date: date,
+    job_name: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+  ) -> PaginatedGroupedJobs:
+    """Get paginated job spending data grouped by job with run details.
 
-    async def get_grouped_job_spends(
-        self,
-        start_date: date,
-        end_date: date,
-        job_name: Optional[str] = None,
-        limit: int = 50,
-        offset: int = 0
-    ) -> PaginatedGroupedJobs:
-        """Get paginated job spending data grouped by job with run details.
+    The job_name parameter is used as a general search term that matches
+    against both job name (from system.lakeflow.jobs) and job ID.
+    """
 
-        The job_name parameter is used as a general search term that matches
-        against both job name (from system.lakeflow.jobs) and job ID.
-        """
+    escaped_search = job_name.replace("'", "''") if job_name else None
+    search_clause = ''
+    if escaped_search:
+      search_clause = f"WHERE (j.job_id LIKE '%{escaped_search}%' OR LOWER(COALESCE(lj.name, '')) LIKE LOWER('%{escaped_search}%'))"
 
-        escaped_search = job_name.replace("'", "''") if job_name else None
-        search_clause = ""
-        if escaped_search:
-            search_clause = f"WHERE (j.job_id LIKE '%{escaped_search}%' OR LOWER(COALESCE(lj.name, '')) LIKE LOWER('%{escaped_search}%'))"
-
-        base_cte = f"""
+    base_cte = f"""
         WITH filtered AS (
             SELECT *
             FROM {self.table_name}
@@ -453,7 +460,7 @@ class DatabricksService:
             GROUP BY job_id
         )"""
 
-        data_query = f"""
+    data_query = f"""
         {base_cte}
         SELECT
             j.job_id,
@@ -483,69 +490,64 @@ class DatabricksService:
         LIMIT {limit} OFFSET {offset}
         """
 
-        data_response = self.client.statement_execution.execute_statement(
-            warehouse_id=self.warehouse_id,
-            statement=data_query
+    data_response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id, statement=data_query
+    )
+
+    total_count = 0
+    if data_response.result and data_response.result.data_array:
+      total_count = int(data_response.result.data_array[0][5])
+
+    grouped_jobs = []
+    if data_response.result and data_response.result.data_array:
+      job_ids = [row[0] for row in data_response.result.data_array]
+      runs_by_job = await self._get_batch_job_runs(job_ids, start_date, end_date, runs_per_job=10)
+
+      for row in data_response.result.data_array:
+        job_id = row[0]
+        total_cloud_cost = float(row[1])
+        total_databricks_cost = float(row[2])
+        run_count = int(row[3])
+
+        grouped_job = GroupedJob(
+          job_id=job_id,
+          job_name=row[4],
+          run_count=run_count,
+          total_cloud_cost=total_cloud_cost,
+          total_databricks_cost=total_databricks_cost,
+          total_compute_cost=float(row[6]) if row[6] is not None else None,
+          total_storage_cost=float(row[7]) if row[7] is not None else None,
+          total_network_cost=float(row[8]) if row[8] is not None else None,
+          total_other_cost=float(row[9]) if row[9] is not None else None,
+          runs=runs_by_job.get(job_id, []),
         )
+        grouped_jobs.append(grouped_job)
 
-        total_count = 0
-        if data_response.result and data_response.result.data_array:
-            total_count = int(data_response.result.data_array[0][5])
+    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
+    current_page = (offset // limit) + 1
 
-        grouped_jobs = []
-        if data_response.result and data_response.result.data_array:
-            job_ids = [row[0] for row in data_response.result.data_array]
-            runs_by_job = await self._get_batch_job_runs(job_ids, start_date, end_date, runs_per_job=10)
+    return PaginatedGroupedJobs(
+      data=grouped_jobs,
+      total_count=total_count,
+      page=current_page,
+      per_page=limit,
+      total_pages=total_pages,
+      has_next=current_page < total_pages,
+      has_previous=current_page > 1,
+    )
 
-            for row in data_response.result.data_array:
-                job_id = row[0]
-                total_cloud_cost = float(row[1])
-                total_databricks_cost = float(row[2])
-                run_count = int(row[3])
+  async def _get_batch_job_runs(
+    self, job_ids: List[str], start_date: date, end_date: date, runs_per_job: int = 10
+  ) -> dict[str, List[JobRun]]:
+    """Fetch runs for multiple jobs in a single SQL query, returning at most runs_per_job per job."""
 
-                grouped_job = GroupedJob(
-                    job_id=job_id,
-                    job_name=row[4],
-                    run_count=run_count,
-                    total_cloud_cost=total_cloud_cost,
-                    total_databricks_cost=total_databricks_cost,
-                    total_compute_cost=float(row[6]) if row[6] is not None else None,
-                    total_storage_cost=float(row[7]) if row[7] is not None else None,
-                    total_network_cost=float(row[8]) if row[8] is not None else None,
-                    total_other_cost=float(row[9]) if row[9] is not None else None,
-                    runs=runs_by_job.get(job_id, [])
-                )
-                grouped_jobs.append(grouped_job)
+    if not job_ids:
+      return {}
 
-        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
-        current_page = (offset // limit) + 1
+    escaped_ids = [jid.replace("'", "''") for jid in job_ids]
+    in_clause = ', '.join(f"'{jid}'" for jid in escaped_ids)
 
-        return PaginatedGroupedJobs(
-            data=grouped_jobs,
-            total_count=total_count,
-            page=current_page,
-            per_page=limit,
-            total_pages=total_pages,
-            has_next=current_page < total_pages,
-            has_previous=current_page > 1
-        )
-
-    async def _get_batch_job_runs(
-        self,
-        job_ids: List[str],
-        start_date: date,
-        end_date: date,
-        runs_per_job: int = 10
-    ) -> dict[str, List[JobRun]]:
-        """Fetch runs for multiple jobs in a single SQL query, returning at most runs_per_job per job."""
-
-        if not job_ids:
-            return {}
-
-        escaped_ids = [jid.replace("'", "''") for jid in job_ids]
-        in_clause = ", ".join(f"'{jid}'" for jid in escaped_ids)
-
-        query = f"""
+    query = f"""
         WITH ranked_runs AS (
             SELECT
                 job_id,
@@ -578,38 +580,39 @@ class DatabricksService:
         ORDER BY job_id, end_date DESC, run_id DESC
         """
 
-        response = self.client.statement_execution.execute_statement(
-            warehouse_id=self.warehouse_id,
-            statement=query
+    response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id, statement=query
+    )
+
+    runs_by_job: dict[str, List[JobRun]] = {}
+    if response.result and response.result.data_array:
+      for row in response.result.data_array:
+        job_id = row[0]
+        run = JobRun(
+          run_id=row[1],
+          cluster_id=row[2],
+          start_date=date.fromisoformat(row[3]),
+          end_date=date.fromisoformat(row[4]),
+          cloud_cost=float(row[5]),
+          databricks_cost=float(row[6]),
+          compute_cost=float(row[7]) if row[7] is not None else None,
+          storage_cost=float(row[8]) if row[8] is not None else None,
+          network_cost=float(row[9]) if row[9] is not None else None,
+          other_cost=float(row[10]) if row[10] is not None else None,
         )
+        runs_by_job.setdefault(job_id, []).append(run)
 
-        runs_by_job: dict[str, List[JobRun]] = {}
-        if response.result and response.result.data_array:
-            for row in response.result.data_array:
-                job_id = row[0]
-                run = JobRun(
-                    run_id=row[1],
-                    cluster_id=row[2],
-                    start_date=date.fromisoformat(row[3]),
-                    end_date=date.fromisoformat(row[4]),
-                    cloud_cost=float(row[5]),
-                    databricks_cost=float(row[6]),
-                    compute_cost=float(row[7]) if row[7] is not None else None,
-                    storage_cost=float(row[8]) if row[8] is not None else None,
-                    network_cost=float(row[9]) if row[9] is not None else None,
-                    other_cost=float(row[10]) if row[10] is not None else None,
-                )
-                runs_by_job.setdefault(job_id, []).append(run)
+    return runs_by_job
 
-        return runs_by_job
+  async def get_job_runs(
+    self, job_id: str, start_date: date, end_date: date, limit: int = 10
+  ) -> List[JobRun]:
+    """Get recent runs for a specific job within date range, aggregated by run_id."""
 
-    async def get_job_runs(self, job_id: str, start_date: date, end_date: date, limit: int = 10) -> List[JobRun]:
-        """Get recent runs for a specific job within date range, aggregated by run_id."""
+    # Escape single quotes to prevent SQL injection
+    escaped_job_id = job_id.replace("'", "''")
 
-        # Escape single quotes to prevent SQL injection
-        escaped_job_id = job_id.replace("'", "''")
-
-        query = f"""
+    query = f"""
         SELECT
             run_id,
             cluster_id,
@@ -630,41 +633,40 @@ class DatabricksService:
         LIMIT {limit}
         """
 
-        response = self.client.statement_execution.execute_statement(
-            warehouse_id=self.warehouse_id,
-            statement=query
+    response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id, statement=query
+    )
+
+    runs = []
+    if response.result and response.result.data_array:
+      for row in response.result.data_array:
+        run = JobRun(
+          run_id=row[0],
+          cluster_id=row[1],
+          start_date=date.fromisoformat(row[2]),
+          end_date=date.fromisoformat(row[3]),
+          cloud_cost=float(row[4]),
+          databricks_cost=float(row[5]),
+          compute_cost=float(row[6]) if row[6] is not None else None,
+          storage_cost=float(row[7]) if row[7] is not None else None,
+          network_cost=float(row[8]) if row[8] is not None else None,
+          other_cost=float(row[9]) if row[9] is not None else None,
         )
+        runs.append(run)
 
-        runs = []
-        if response.result and response.result.data_array:
-            for row in response.result.data_array:
-                run = JobRun(
-                    run_id=row[0],
-                    cluster_id=row[1],
-                    start_date=date.fromisoformat(row[2]),
-                    end_date=date.fromisoformat(row[3]),
-                    cloud_cost=float(row[4]),
-                    databricks_cost=float(row[5]),
-                    compute_cost=float(row[6]) if row[6] is not None else None,
-                    storage_cost=float(row[7]) if row[7] is not None else None,
-                    network_cost=float(row[8]) if row[8] is not None else None,
-                    other_cost=float(row[9]) if row[9] is not None else None,
-                )
-                runs.append(run)
+    return runs
 
-        return runs
+  async def get_cluster_details(self, cluster_id: str) -> Optional[ClusterDetails]:
+    """Get cluster configuration details from system.compute.clusters."""
 
-    async def get_cluster_details(self, cluster_id: str) -> Optional[ClusterDetails]:
-        """Get cluster configuration details from system.compute.clusters."""
+    try:
+      # Escape single quotes to prevent SQL injection
+      escaped_cluster_id = cluster_id.replace("'", "''")
 
-        try:
-            # Escape single quotes to prevent SQL injection
-            escaped_cluster_id = cluster_id.replace("'", "''")
-
-            # Query the system.compute.clusters table for cluster details.
-            # `cluster_source` is read so we can distinguish JOB (ephemeral) from
-            # interactive clusters — auto-termination is N/A for JOB clusters.
-            query = f"""
+      # Query the system.compute.clusters table for cluster details.
+      # `cluster_source` is read so we can distinguish JOB (ephemeral) from
+      # interactive clusters — auto-termination is N/A for JOB clusters.
+      query = f"""
             SELECT
                 cluster_id,
                 owned_by,
@@ -689,175 +691,167 @@ class DatabricksService:
             LIMIT 1
             """
 
-            response = self.client.statement_execution.execute_statement(
-                warehouse_id=self.warehouse_id,
-                statement=query
-            )
+      response = self.client.statement_execution.execute_statement(
+        warehouse_id=self.warehouse_id, statement=query
+      )
 
-            if response.result and response.result.data_array and len(response.result.data_array) > 0:
-                row = response.result.data_array[0]
+      if response.result and response.result.data_array and len(response.result.data_array) > 0:
+        row = response.result.data_array[0]
 
-                # Parse tags and provider-specific attribute blocks as JSON if they exist
-                import json
-                tags = None
-                aws_attributes = None
-                azure_attributes = None
-                gcp_attributes = None
+        # Parse tags and provider-specific attribute blocks as JSON if they exist
+        import json
 
-                try:
-                    if row[10]:  # tags
-                        tags = json.loads(row[10])
-                except:
-                    tags = {"raw": row[10]} if row[10] else None
+        tags = None
+        aws_attributes = None
+        azure_attributes = None
+        gcp_attributes = None
 
-                try:
-                    if row[11]:  # aws_attributes
-                        aws_attributes = json.loads(row[11])
-                except:
-                    aws_attributes = {"raw": row[11]} if row[11] else None
-
-                try:
-                    if row[12]:  # azure_attributes
-                        azure_attributes = json.loads(row[12])
-                except:
-                    azure_attributes = {"raw": row[12]} if row[12] else None
-
-                try:
-                    if row[13]:  # gcp_attributes
-                        gcp_attributes = json.loads(row[13])
-                except:
-                    gcp_attributes = {"raw": row[13]} if row[13] else None
-
-                return ClusterDetails(
-                    cluster_id=row[0],
-                    owned_by=row[1],
-                    create_time=row[2],
-                    driver_node_type=row[3],
-                    worker_node_type=row[4],
-                    worker_count=int(row[5]) if row[5] is not None else None,
-                    min_autoscale_workers=int(row[6]) if row[6] is not None else None,
-                    max_autoscale_workers=int(row[7]) if row[7] is not None else None,
-                    auto_termination_minutes=int(row[8]) if row[8] is not None else None,
-                    enable_elastic_disk=bool(row[9]) if row[9] is not None else None,
-                    tags=tags,
-                    aws_attributes=aws_attributes,
-                    azure_attributes=azure_attributes,
-                    gcp_attributes=gcp_attributes,
-                    dbr_version=row[14],
-                    data_security_mode=row[15],
-                    cluster_source=row[16],
-                    cluster_name=row[17],
-                )
-
-            return None
-
-        except Exception as e:
-            logger.error("Error fetching cluster details for %s: %s", cluster_id, str(e))
-            return None
-
-    async def get_job_historical_stats(
-        self, job_id: str, current_run_id: str
-    ) -> Optional[dict]:
-        """Get historical cost statistics for a job, excluding the current run from baseline.
-
-        Joins `system.lakeflow.job_run_timeline` to filter the baseline to
-        SUCCEEDED runs only, so CANCELED / FAILED / TIMED_OUT runs do not
-        skew the trend. Falls back to an unfiltered baseline (with
-        `state_filter_applied=False`) when the timeline table grant is
-        unavailable.
-
-        Returns:
-            dict with baseline metrics and comparison, or None on failure.
-        """
-        filtered = await self._get_job_historical_stats_filtered(
-            job_id=job_id, current_run_id=current_run_id
-        )
-        if filtered is not None:
-            return filtered
-
-        return await self._get_job_historical_stats_unfiltered(
-            job_id=job_id, current_run_id=current_run_id
-        )
-
-    @staticmethod
-    def _confidence_tier(filtered_runs: int) -> str:
-        """Map filtered baseline size to a confidence label."""
-        if filtered_runs >= 20:
-            return "high"
-        if filtered_runs >= 10:
-            return "emerging"
-        if filtered_runs >= 3:
-            return "limited"
-        return "none"
-
-    @staticmethod
-    def _is_permission_error(exc: Exception) -> bool:
-        """Detect missing-grant errors so we can fall back gracefully."""
-        msg = str(exc).lower()
-        keywords = (
-            "permission denied",
-            "insufficient_permissions",
-            "insufficient permissions",
-            "table or view not found",
-            "table_or_view_not_found",
-            "does not have",
-            "access denied",
-        )
-        return any(k in msg for k in keywords)
-
-    @staticmethod
-    def _build_comparison(
-        current_cost: Optional[float],
-        reference_cost: Optional[float],
-        reference_label: str,
-        current_state: Optional[str],
-    ) -> Tuple[Optional[str], Optional[float]]:
-        """Build comparison string + pct, only for SUCCEEDED current runs."""
-        MIN_REFERENCE_THRESHOLD = 0.01
-        # Only compare when the current run actually completed successfully.
-        # Cancelled / failed / timed-out runs incur partial cost and aren't
-        # apples-to-apples with the baseline.
-        if current_state is not None and current_state != "SUCCEEDED":
-            return None, None
-        if (
-            current_cost is None
-            or reference_cost is None
-            or reference_cost <= MIN_REFERENCE_THRESHOLD
-        ):
-            return None, None
-
-        pct = ((current_cost - reference_cost) / reference_cost) * 100
-        if pct > 0:
-            text = f"+{pct:.1f}% above {reference_label}"
-        elif pct < 0:
-            text = f"{pct:.1f}% below {reference_label}"
-        else:
-            text = f"at {reference_label}"
-        return text, pct
-
-    async def _get_job_historical_stats_filtered(
-        self, job_id: str, current_run_id: str
-    ) -> Optional[dict]:
-        """Baseline filtered to SUCCEEDED runs via `system.lakeflow.job_run_timeline`.
-
-        Returns None if the timeline grant is missing (caller falls back to
-        the unfiltered legacy query) or on any other unexpected error.
-        """
         try:
-            escaped_job_id = job_id.replace("'", "''")
-            escaped_run_id = current_run_id.replace("'", "''")
-            lookback_date = (
-                date.today() - timedelta(days=LOOKBACK_DAYS)
-            ).isoformat()
+          if row[10]:  # tags
+            tags = json.loads(row[10])
+        except:
+          tags = {'raw': row[10]} if row[10] else None
 
-            # Notes:
-            # - system.lakeflow.job_run_timeline.run_id is BIGINT, but
-            #   dbspend360_total_job_spends.run_id is STRING. Cast on the
-            #   system side so the join works in either direction.
-            # - A run can appear in multiple timeline rows (one per snapshot
-            #   period). MAX_BY(result_state, period_end_time) collapses to
-            #   the final state per run.
-            query = f"""
+        try:
+          if row[11]:  # aws_attributes
+            aws_attributes = json.loads(row[11])
+        except:
+          aws_attributes = {'raw': row[11]} if row[11] else None
+
+        try:
+          if row[12]:  # azure_attributes
+            azure_attributes = json.loads(row[12])
+        except:
+          azure_attributes = {'raw': row[12]} if row[12] else None
+
+        try:
+          if row[13]:  # gcp_attributes
+            gcp_attributes = json.loads(row[13])
+        except:
+          gcp_attributes = {'raw': row[13]} if row[13] else None
+
+        return ClusterDetails(
+          cluster_id=row[0],
+          owned_by=row[1],
+          create_time=row[2],
+          driver_node_type=row[3],
+          worker_node_type=row[4],
+          worker_count=int(row[5]) if row[5] is not None else None,
+          min_autoscale_workers=int(row[6]) if row[6] is not None else None,
+          max_autoscale_workers=int(row[7]) if row[7] is not None else None,
+          auto_termination_minutes=int(row[8]) if row[8] is not None else None,
+          enable_elastic_disk=bool(row[9]) if row[9] is not None else None,
+          tags=tags,
+          aws_attributes=aws_attributes,
+          azure_attributes=azure_attributes,
+          gcp_attributes=gcp_attributes,
+          dbr_version=row[14],
+          data_security_mode=row[15],
+          cluster_source=row[16],
+          cluster_name=row[17],
+        )
+
+      return None
+
+    except Exception as e:
+      logger.error('Error fetching cluster details for %s: %s', cluster_id, str(e))
+      return None
+
+  async def get_job_historical_stats(self, job_id: str, current_run_id: str) -> Optional[dict]:
+    """Get historical cost statistics for a job, excluding the current run from baseline.
+
+    Joins `system.lakeflow.job_run_timeline` to filter the baseline to
+    SUCCEEDED runs only, so CANCELED / FAILED / TIMED_OUT runs do not
+    skew the trend. Falls back to an unfiltered baseline (with
+    `state_filter_applied=False`) when the timeline table grant is
+    unavailable.
+
+    Returns:
+        dict with baseline metrics and comparison, or None on failure.
+    """
+    filtered = await self._get_job_historical_stats_filtered(
+      job_id=job_id, current_run_id=current_run_id
+    )
+    if filtered is not None:
+      return filtered
+
+    return await self._get_job_historical_stats_unfiltered(
+      job_id=job_id, current_run_id=current_run_id
+    )
+
+  @staticmethod
+  def _confidence_tier(filtered_runs: int) -> str:
+    """Map filtered baseline size to a confidence label."""
+    if filtered_runs >= 20:
+      return 'high'
+    if filtered_runs >= 10:
+      return 'emerging'
+    if filtered_runs >= 3:
+      return 'limited'
+    return 'none'
+
+  @staticmethod
+  def _is_permission_error(exc: Exception) -> bool:
+    """Detect missing-grant errors so we can fall back gracefully."""
+    msg = str(exc).lower()
+    keywords = (
+      'permission denied',
+      'insufficient_permissions',
+      'insufficient permissions',
+      'table or view not found',
+      'table_or_view_not_found',
+      'does not have',
+      'access denied',
+    )
+    return any(k in msg for k in keywords)
+
+  @staticmethod
+  def _build_comparison(
+    current_cost: Optional[float],
+    reference_cost: Optional[float],
+    reference_label: str,
+    current_state: Optional[str],
+  ) -> Tuple[Optional[str], Optional[float]]:
+    """Build comparison string + pct, only for SUCCEEDED current runs."""
+    MIN_REFERENCE_THRESHOLD = 0.01
+    # Only compare when the current run actually completed successfully.
+    # Cancelled / failed / timed-out runs incur partial cost and aren't
+    # apples-to-apples with the baseline.
+    if current_state is not None and current_state != 'SUCCEEDED':
+      return None, None
+    if current_cost is None or reference_cost is None or reference_cost <= MIN_REFERENCE_THRESHOLD:
+      return None, None
+
+    pct = ((current_cost - reference_cost) / reference_cost) * 100
+    if pct > 0:
+      text = f'+{pct:.1f}% above {reference_label}'
+    elif pct < 0:
+      text = f'{pct:.1f}% below {reference_label}'
+    else:
+      text = f'at {reference_label}'
+    return text, pct
+
+  async def _get_job_historical_stats_filtered(
+    self, job_id: str, current_run_id: str
+  ) -> Optional[dict]:
+    """Baseline filtered to SUCCEEDED runs via `system.lakeflow.job_run_timeline`.
+
+    Returns None if the timeline grant is missing (caller falls back to
+    the unfiltered legacy query) or on any other unexpected error.
+    """
+    try:
+      escaped_job_id = job_id.replace("'", "''")
+      escaped_run_id = current_run_id.replace("'", "''")
+      lookback_date = (date.today() - timedelta(days=LOOKBACK_DAYS)).isoformat()
+
+      # Notes:
+      # - system.lakeflow.job_run_timeline.run_id is BIGINT, but
+      #   dbspend360_total_job_spends.run_id is STRING. Cast on the
+      #   system side so the join works in either direction.
+      # - A run can appear in multiple timeline rows (one per snapshot
+      #   period). MAX_BY(result_state, period_end_time) collapses to
+      #   the final state per run.
+      query = f"""
             WITH run_outcomes AS (
                 SELECT
                     CAST(run_id AS STRING) AS run_id,
@@ -948,145 +942,135 @@ class DatabricksService:
             LEFT JOIN baseline_unfiltered bu ON 1=1
             """
 
-            try:
-                response = self.client.statement_execution.execute_statement(
-                    warehouse_id=self.warehouse_id,
-                    statement=query,
-                )
-            except Exception as exc:
-                if self._is_permission_error(exc):
-                    logger.warning(
-                        "Falling back to unfiltered historical stats for job %s "
-                        "(system.lakeflow.job_run_timeline not accessible): %s",
-                        job_id, str(exc),
-                    )
-                    return None
-                raise
+      try:
+        response = self.client.statement_execution.execute_statement(
+          warehouse_id=self.warehouse_id,
+          statement=query,
+        )
+      except Exception as exc:
+        if self._is_permission_error(exc):
+          logger.warning(
+            'Falling back to unfiltered historical stats for job %s '
+            '(system.lakeflow.job_run_timeline not accessible): %s',
+            job_id,
+            str(exc),
+          )
+          return None
+        raise
 
-            # Statement may also fail server-side with status=FAILED.
-            status = getattr(response, "status", None)
-            if status is not None and getattr(status, "error", None) is not None:
-                err_msg = getattr(status.error, "message", "") or ""
-                if self._is_permission_error(Exception(err_msg)):
-                    logger.warning(
-                        "Falling back to unfiltered historical stats for job %s "
-                        "(system.lakeflow.job_run_timeline not accessible): %s",
-                        job_id, err_msg,
-                    )
-                    return None
+      # Statement may also fail server-side with status=FAILED.
+      status = getattr(response, 'status', None)
+      if status is not None and getattr(status, 'error', None) is not None:
+        err_msg = getattr(status.error, 'message', '') or ''
+        if self._is_permission_error(Exception(err_msg)):
+          logger.warning(
+            'Falling back to unfiltered historical stats for job %s '
+            '(system.lakeflow.job_run_timeline not accessible): %s',
+            job_id,
+            err_msg,
+          )
+          return None
 
-            if not response.result or not response.result.data_array:
-                return {
-                    "total_runs": 0,
-                    "limited_history": True,
-                    "confidence_tier": "none",
-                    "state_filter_applied": True,
-                    "current_run_state": None,
-                    "total_runs_unfiltered": 0,
-                }
+      if not response.result or not response.result.data_array:
+        return {
+          'total_runs': 0,
+          'limited_history': True,
+          'confidence_tier': 'none',
+          'state_filter_applied': True,
+          'current_run_state': None,
+          'total_runs_unfiltered': 0,
+        }
 
-            row = response.result.data_array[0]
-            total_runs = int(row[0]) if row[0] else 0
-            avg_cost = float(row[1]) if row[1] is not None else 0.0
-            current_cost = float(row[10]) if row[10] is not None else None
-            total_runs_unfiltered = (
-                int(row[14]) if row[14] is not None else 0
-            )
-            current_state = row[15] if row[15] is not None else None
+      row = response.result.data_array[0]
+      total_runs = int(row[0]) if row[0] else 0
+      avg_cost = float(row[1]) if row[1] is not None else 0.0
+      current_cost = float(row[10]) if row[10] is not None else None
+      total_runs_unfiltered = int(row[14]) if row[14] is not None else 0
+      current_state = row[15] if row[15] is not None else None
 
-            # Reference for comparison: prefer median (robust to outliers),
-            # fall back to avg only when median is unavailable (n < 3).
-            median_cost_raw = float(row[2]) if row[2] is not None else None
-            p90_cost_raw = float(row[3]) if row[3] is not None else None
-            stddev_cost_raw = float(row[6]) if row[6] is not None else None
+      # Reference for comparison: prefer median (robust to outliers),
+      # fall back to avg only when median is unavailable (n < 3).
+      median_cost_raw = float(row[2]) if row[2] is not None else None
+      p90_cost_raw = float(row[3]) if row[3] is not None else None
+      stddev_cost_raw = float(row[6]) if row[6] is not None else None
 
-            median_cost = median_cost_raw if total_runs >= 3 else None
-            p90_cost = p90_cost_raw if total_runs >= 3 else None
-            stddev_cost = stddev_cost_raw if total_runs >= 2 else None
+      median_cost = median_cost_raw if total_runs >= 3 else None
+      p90_cost = p90_cost_raw if total_runs >= 3 else None
+      stddev_cost = stddev_cost_raw if total_runs >= 2 else None
 
-            reference_cost = (
-                median_cost if median_cost is not None else avg_cost
-            )
-            reference_label = (
-                "median" if median_cost is not None else "average"
-            )
-            comparison, comparison_pct = self._build_comparison(
-                current_cost=current_cost,
-                reference_cost=reference_cost if total_runs > 0 else None,
-                reference_label=reference_label,
-                current_state=current_state,
-            )
+      reference_cost = median_cost if median_cost is not None else avg_cost
+      reference_label = 'median' if median_cost is not None else 'average'
+      comparison, comparison_pct = self._build_comparison(
+        current_cost=current_cost,
+        reference_cost=reference_cost if total_runs > 0 else None,
+        reference_label=reference_label,
+        current_state=current_state,
+      )
 
-            result: dict = {
-                "total_runs": total_runs,
-                "total_runs_unfiltered": total_runs_unfiltered,
-                "limited_history": total_runs < 3,
-                "confidence_tier": self._confidence_tier(total_runs),
-                "state_filter_applied": True,
-                "current_run_state": current_state,
-                "current_cost": current_cost,
-                "current_cloud_cost": (
-                    float(row[11]) if row[11] is not None else None
-                ),
-                "current_databricks_cost": (
-                    float(row[12]) if row[12] is not None else None
-                ),
-                "comparison": comparison,
-                "comparison_pct": comparison_pct,
-                "comparison_reference": (
-                    reference_label if comparison is not None else None
-                ),
-            }
+      result: dict = {
+        'total_runs': total_runs,
+        'total_runs_unfiltered': total_runs_unfiltered,
+        'limited_history': total_runs < 3,
+        'confidence_tier': self._confidence_tier(total_runs),
+        'state_filter_applied': True,
+        'current_run_state': current_state,
+        'current_cost': current_cost,
+        'current_cloud_cost': (float(row[11]) if row[11] is not None else None),
+        'current_databricks_cost': (float(row[12]) if row[12] is not None else None),
+        'comparison': comparison,
+        'comparison_pct': comparison_pct,
+        'comparison_reference': (reference_label if comparison is not None else None),
+      }
 
-            if total_runs > 0:
-                result.update({
-                    "avg_cost": avg_cost,
-                    "median_cost": median_cost,
-                    "p90_cost": p90_cost,
-                    "min_cost": float(row[4]) if row[4] is not None else 0.0,
-                    "max_cost": float(row[5]) if row[5] is not None else 0.0,
-                    "stddev_cost": stddev_cost,
-                    "avg_cloud_pct": float(row[7]) if row[7] is not None else 0.0,
-                    "data_start": row[8],
-                    "data_end": row[9],
-                    "last_run_cost": (
-                        float(row[13]) if row[13] is not None else None
-                    ),
-                })
+      if total_runs > 0:
+        result.update(
+          {
+            'avg_cost': avg_cost,
+            'median_cost': median_cost,
+            'p90_cost': p90_cost,
+            'min_cost': float(row[4]) if row[4] is not None else 0.0,
+            'max_cost': float(row[5]) if row[5] is not None else 0.0,
+            'stddev_cost': stddev_cost,
+            'avg_cloud_pct': float(row[7]) if row[7] is not None else 0.0,
+            'data_start': row[8],
+            'data_end': row[9],
+            'last_run_cost': (float(row[13]) if row[13] is not None else None),
+          }
+        )
 
-            return result
+      return result
 
-        except Exception as e:
-            if self._is_permission_error(e):
-                logger.warning(
-                    "Falling back to unfiltered historical stats for job %s "
-                    "(system.lakeflow.job_run_timeline not accessible): %s",
-                    job_id, str(e),
-                )
-                return None
-            logger.error(
-                "Error fetching filtered historical stats for job %s: %s",
-                job_id, str(e),
-            )
-            return None
+    except Exception as e:
+      if self._is_permission_error(e):
+        logger.warning(
+          'Falling back to unfiltered historical stats for job %s '
+          '(system.lakeflow.job_run_timeline not accessible): %s',
+          job_id,
+          str(e),
+        )
+        return None
+      logger.error(
+        'Error fetching filtered historical stats for job %s: %s',
+        job_id,
+        str(e),
+      )
+      return None
 
-    async def _get_job_historical_stats_unfiltered(
-        self, job_id: str, current_run_id: str
-    ) -> Optional[dict]:
-        """Legacy unfiltered baseline (all runs regardless of result_state).
+  async def _get_job_historical_stats_unfiltered(
+    self, job_id: str, current_run_id: str
+  ) -> Optional[dict]:
+    """Legacy unfiltered baseline (all runs regardless of result_state).
 
-        Used as a fallback when `system.lakeflow.job_run_timeline` is not
-        accessible. Stamps `state_filter_applied=False` so the LLM prompt
-        can disclose that cancelled/failed runs may be polluting the trend.
-        """
-        try:
-            escaped_job_id = job_id.replace("'", "''")
-            escaped_run_id = current_run_id.replace("'", "''")
-            lookback_date = (
-                date.today() - timedelta(days=LOOKBACK_DAYS)
-            ).isoformat()
+    Used as a fallback when `system.lakeflow.job_run_timeline` is not
+    accessible. Stamps `state_filter_applied=False` so the LLM prompt
+    can disclose that cancelled/failed runs may be polluting the trend.
+    """
+    try:
+      escaped_job_id = job_id.replace("'", "''")
+      escaped_run_id = current_run_id.replace("'", "''")
+      lookback_date = (date.today() - timedelta(days=LOOKBACK_DAYS)).isoformat()
 
-            query = f"""
+      query = f"""
             WITH run_costs AS (
                 SELECT
                     run_id,
@@ -1155,113 +1139,100 @@ class DatabricksService:
             LEFT JOIN last_run l ON 1=1
             """
 
-            response = self.client.statement_execution.execute_statement(
-                warehouse_id=self.warehouse_id,
-                statement=query,
-            )
+      response = self.client.statement_execution.execute_statement(
+        warehouse_id=self.warehouse_id,
+        statement=query,
+      )
 
-            if not response.result or not response.result.data_array:
-                return {
-                    "total_runs": 0,
-                    "limited_history": True,
-                    "confidence_tier": "none",
-                    "state_filter_applied": False,
-                    "current_run_state": None,
-                    "total_runs_unfiltered": 0,
-                }
+      if not response.result or not response.result.data_array:
+        return {
+          'total_runs': 0,
+          'limited_history': True,
+          'confidence_tier': 'none',
+          'state_filter_applied': False,
+          'current_run_state': None,
+          'total_runs_unfiltered': 0,
+        }
 
-            row = response.result.data_array[0]
-            total_runs = int(row[0]) if row[0] else 0
-            avg_cost = float(row[1]) if row[1] is not None else 0.0
-            current_cost = float(row[10]) if row[10] is not None else None
+      row = response.result.data_array[0]
+      total_runs = int(row[0]) if row[0] else 0
+      avg_cost = float(row[1]) if row[1] is not None else 0.0
+      current_cost = float(row[10]) if row[10] is not None else None
 
-            median_cost_raw = float(row[2]) if row[2] is not None else None
-            p90_cost_raw = float(row[3]) if row[3] is not None else None
-            stddev_cost_raw = float(row[6]) if row[6] is not None else None
+      median_cost_raw = float(row[2]) if row[2] is not None else None
+      p90_cost_raw = float(row[3]) if row[3] is not None else None
+      stddev_cost_raw = float(row[6]) if row[6] is not None else None
 
-            median_cost = median_cost_raw if total_runs >= 3 else None
-            p90_cost = p90_cost_raw if total_runs >= 3 else None
-            stddev_cost = stddev_cost_raw if total_runs >= 2 else None
+      median_cost = median_cost_raw if total_runs >= 3 else None
+      p90_cost = p90_cost_raw if total_runs >= 3 else None
+      stddev_cost = stddev_cost_raw if total_runs >= 2 else None
 
-            reference_cost = (
-                median_cost if median_cost is not None else avg_cost
-            )
-            reference_label = (
-                "median" if median_cost is not None else "average"
-            )
-            # Without the timeline join we can't know current run's state,
-            # so pass None and let _build_comparison treat it as comparable.
-            comparison, comparison_pct = self._build_comparison(
-                current_cost=current_cost,
-                reference_cost=reference_cost if total_runs > 0 else None,
-                reference_label=reference_label,
-                current_state=None,
-            )
+      reference_cost = median_cost if median_cost is not None else avg_cost
+      reference_label = 'median' if median_cost is not None else 'average'
+      # Without the timeline join we can't know current run's state,
+      # so pass None and let _build_comparison treat it as comparable.
+      comparison, comparison_pct = self._build_comparison(
+        current_cost=current_cost,
+        reference_cost=reference_cost if total_runs > 0 else None,
+        reference_label=reference_label,
+        current_state=None,
+      )
 
-            result: dict = {
-                "total_runs": total_runs,
-                "total_runs_unfiltered": total_runs,
-                "limited_history": total_runs < 3,
-                "confidence_tier": self._confidence_tier(total_runs),
-                "state_filter_applied": False,
-                "current_run_state": None,
-                "current_cost": current_cost,
-                "current_cloud_cost": (
-                    float(row[11]) if row[11] is not None else None
-                ),
-                "current_databricks_cost": (
-                    float(row[12]) if row[12] is not None else None
-                ),
-                "comparison": comparison,
-                "comparison_pct": comparison_pct,
-                "comparison_reference": (
-                    reference_label if comparison is not None else None
-                ),
-            }
+      result: dict = {
+        'total_runs': total_runs,
+        'total_runs_unfiltered': total_runs,
+        'limited_history': total_runs < 3,
+        'confidence_tier': self._confidence_tier(total_runs),
+        'state_filter_applied': False,
+        'current_run_state': None,
+        'current_cost': current_cost,
+        'current_cloud_cost': (float(row[11]) if row[11] is not None else None),
+        'current_databricks_cost': (float(row[12]) if row[12] is not None else None),
+        'comparison': comparison,
+        'comparison_pct': comparison_pct,
+        'comparison_reference': (reference_label if comparison is not None else None),
+      }
 
-            if total_runs > 0:
-                result.update({
-                    "avg_cost": avg_cost,
-                    "median_cost": median_cost,
-                    "p90_cost": p90_cost,
-                    "min_cost": float(row[4]) if row[4] is not None else 0.0,
-                    "max_cost": float(row[5]) if row[5] is not None else 0.0,
-                    "stddev_cost": stddev_cost,
-                    "avg_cloud_pct": float(row[7]) if row[7] is not None else 0.0,
-                    "data_start": row[8],
-                    "data_end": row[9],
-                    "last_run_cost": (
-                        float(row[13]) if row[13] is not None else None
-                    ),
-                })
+      if total_runs > 0:
+        result.update(
+          {
+            'avg_cost': avg_cost,
+            'median_cost': median_cost,
+            'p90_cost': p90_cost,
+            'min_cost': float(row[4]) if row[4] is not None else 0.0,
+            'max_cost': float(row[5]) if row[5] is not None else 0.0,
+            'stddev_cost': stddev_cost,
+            'avg_cloud_pct': float(row[7]) if row[7] is not None else 0.0,
+            'data_start': row[8],
+            'data_end': row[9],
+            'last_run_cost': (float(row[13]) if row[13] is not None else None),
+          }
+        )
 
-            return result
+      return result
 
-        except Exception as e:
-            logger.error(
-                "Error fetching unfiltered historical stats for job %s: %s",
-                job_id, str(e),
-            )
-            return None
+    except Exception as e:
+      logger.error(
+        'Error fetching unfiltered historical stats for job %s: %s',
+        job_id,
+        str(e),
+      )
+      return None
 
-    async def get_cluster_cost_summary(
-        self, cluster_id: str
-    ) -> Optional[dict]:
-        """Get aggregated cost summary for a cluster over the lookback window.
+  async def get_cluster_cost_summary(self, cluster_id: str) -> Optional[dict]:
+    """Get aggregated cost summary for a cluster over the lookback window.
 
-        Groups by (job_id, run_id) to avoid skewed aggregation from
-        multi-row runs, then computes totals, splits, and averages.
+    Groups by (job_id, run_id) to avoid skewed aggregation from
+    multi-row runs, then computes totals, splits, and averages.
 
-        Returns:
-            dict with cost breakdown, or None on failure.
-        """
-        try:
-            escaped_cluster_id = cluster_id.replace("'", "''")
-            lookback_date = (
-                date.today() - timedelta(days=LOOKBACK_DAYS)
-            ).isoformat()
+    Returns:
+        dict with cost breakdown, or None on failure.
+    """
+    try:
+      escaped_cluster_id = cluster_id.replace("'", "''")
+      lookback_date = (date.today() - timedelta(days=LOOKBACK_DAYS)).isoformat()
 
-            query = f"""
+      query = f"""
             WITH filtered AS (
                 SELECT *
                 FROM {self.table_name}
@@ -1306,89 +1277,86 @@ class DatabricksService:
             FROM agg a, date_range d
             """
 
-            response = self.client.statement_execution.execute_statement(
-                warehouse_id=self.warehouse_id,
-                statement=query,
-            )
+      response = self.client.statement_execution.execute_statement(
+        warehouse_id=self.warehouse_id,
+        statement=query,
+      )
 
-            if not response.result or not response.result.data_array:
-                return {
-                    "total_spend": 0.0,
-                    "total_cloud_cost": 0.0,
-                    "total_databricks_cost": 0.0,
-                    "cloud_pct": 0.0,
-                    "databricks_pct": 0.0,
-                    "distinct_job_count": 0,
-                    "total_run_count": 0,
-                    "avg_cost_per_run": 0.0,
-                    "first_active_date": None,
-                    "last_active_date": None,
-                    "limited_history": True,
-                }
+      if not response.result or not response.result.data_array:
+        return {
+          'total_spend': 0.0,
+          'total_cloud_cost': 0.0,
+          'total_databricks_cost': 0.0,
+          'cloud_pct': 0.0,
+          'databricks_pct': 0.0,
+          'distinct_job_count': 0,
+          'total_run_count': 0,
+          'avg_cost_per_run': 0.0,
+          'first_active_date': None,
+          'last_active_date': None,
+          'limited_history': True,
+        }
 
-            row = response.result.data_array[0]
-            total_cloud_cost = float(row[0])
-            total_databricks_cost = float(row[1])
-            total_spend = float(row[2])
-            cloud_pct = (
-                (total_cloud_cost / total_spend * 100)
-                if total_spend > 0 else 0.0
-            )
-            databricks_pct = (
-                (total_databricks_cost / total_spend * 100)
-                if total_spend > 0 else 0.0
-            )
+      row = response.result.data_array[0]
+      total_cloud_cost = float(row[0])
+      total_databricks_cost = float(row[1])
+      total_spend = float(row[2])
+      cloud_pct = (total_cloud_cost / total_spend * 100) if total_spend > 0 else 0.0
+      databricks_pct = (total_databricks_cost / total_spend * 100) if total_spend > 0 else 0.0
 
-            total_run_count = int(row[4])
-            return {
-                "total_spend": total_spend,
-                "total_cloud_cost": total_cloud_cost,
-                "total_databricks_cost": total_databricks_cost,
-                "cloud_pct": cloud_pct,
-                "databricks_pct": databricks_pct,
-                "distinct_job_count": int(row[3]),
-                "total_run_count": total_run_count,
-                "avg_cost_per_run": float(row[5]),
-                "first_active_date": row[6],
-                "last_active_date": row[7],
-                "limited_history": total_run_count < 3,
-            }
+      total_run_count = int(row[4])
+      return {
+        'total_spend': total_spend,
+        'total_cloud_cost': total_cloud_cost,
+        'total_databricks_cost': total_databricks_cost,
+        'cloud_pct': cloud_pct,
+        'databricks_pct': databricks_pct,
+        'distinct_job_count': int(row[3]),
+        'total_run_count': total_run_count,
+        'avg_cost_per_run': float(row[5]),
+        'first_active_date': row[6],
+        'last_active_date': row[7],
+        'limited_history': total_run_count < 3,
+      }
 
-        except Exception as e:
-            logger.error(
-                "Error fetching cluster cost summary for %s: %s",
-                cluster_id, str(e),
-            )
-            return None
+    except Exception as e:
+      logger.error(
+        'Error fetching cluster cost summary for %s: %s',
+        cluster_id,
+        str(e),
+      )
+      return None
 
-    async def get_other_cost_breakdown(
-        self,
-        start_date: date,
-        end_date: date,
-        cluster_id: Optional[str] = None,
-        limit: int = 15,
-    ) -> OtherCostBreakdownResponse:
-        """Get breakdown of other_cost by service_name for the given date range."""
-        schema_name = app_config.schema_name
-        if not schema_name:
-            return OtherCostBreakdownResponse(
-                items=[], total_other_cost=0.0,
-                start_date=start_date, end_date=end_date,
-            )
+  async def get_other_cost_breakdown(
+    self,
+    start_date: date,
+    end_date: date,
+    cluster_id: Optional[str] = None,
+    limit: int = 15,
+  ) -> OtherCostBreakdownResponse:
+    """Get breakdown of other_cost by service_name for the given date range."""
+    schema_name = app_config.schema_name
+    if not schema_name:
+      return OtherCostBreakdownResponse(
+        items=[],
+        total_other_cost=0.0,
+        start_date=start_date,
+        end_date=end_date,
+      )
 
-        breakdown_table = f"{schema_name}.dbspend360_other_cost_breakdown"
+    breakdown_table = f'{schema_name}.dbspend360_other_cost_breakdown'
 
-        where_parts = [
-            f"cost_incurred_date >= '{start_date.isoformat()}'",
-            f"cost_incurred_date <= '{end_date.isoformat()}'",
-        ]
-        if cluster_id:
-            escaped = cluster_id.replace("'", "''")
-            where_parts.append(f"cluster_id = '{escaped}'")
+    where_parts = [
+      f"cost_incurred_date >= '{start_date.isoformat()}'",
+      f"cost_incurred_date <= '{end_date.isoformat()}'",
+    ]
+    if cluster_id:
+      escaped = cluster_id.replace("'", "''")
+      where_parts.append(f"cluster_id = '{escaped}'")
 
-        where_clause = " AND ".join(where_parts)
+    where_clause = ' AND '.join(where_parts)
 
-        query = f"""
+    query = f"""
         WITH ranked AS (
             SELECT
                 service_name,
@@ -1423,58 +1391,63 @@ class DatabricksService:
         ORDER BY c.total_cost DESC
         """
 
-        try:
-            response = self.client.statement_execution.execute_statement(
-                warehouse_id=self.warehouse_id,
-                statement=query
+    try:
+      response = self.client.statement_execution.execute_statement(
+        warehouse_id=self.warehouse_id, statement=query
+      )
+
+      items: List[OtherCostBreakdownItem] = []
+      total_other_cost = 0.0
+
+      if response.result and response.result.data_array:
+        total_other_cost = (
+          float(response.result.data_array[0][3]) if response.result.data_array[0][3] else 0.0
+        )
+
+        for row in response.result.data_array:
+          cost = float(row[2]) if row[2] else 0.0
+          pct = (cost / total_other_cost * 100) if total_other_cost > 0 else 0.0
+          items.append(
+            OtherCostBreakdownItem(
+              service_name=row[0] or 'Unknown',
+              source_system=row[1] or 'Unknown',
+              cost=cost,
+              percentage=round(pct, 1),
             )
+          )
 
-            items: List[OtherCostBreakdownItem] = []
-            total_other_cost = 0.0
+      return OtherCostBreakdownResponse(
+        items=items,
+        total_other_cost=total_other_cost,
+        start_date=start_date,
+        end_date=end_date,
+      )
 
-            if response.result and response.result.data_array:
-                total_other_cost = float(response.result.data_array[0][3]) if response.result.data_array[0][3] else 0.0
+    except Exception as e:
+      logger.error('Error fetching other cost breakdown: %s', str(e))
+      return OtherCostBreakdownResponse(
+        items=[],
+        total_other_cost=0.0,
+        start_date=start_date,
+        end_date=end_date,
+      )
 
-                for row in response.result.data_array:
-                    cost = float(row[2]) if row[2] else 0.0
-                    pct = (cost / total_other_cost * 100) if total_other_cost > 0 else 0.0
-                    items.append(OtherCostBreakdownItem(
-                        service_name=row[0] or "Unknown",
-                        source_system=row[1] or "Unknown",
-                        cost=cost,
-                        percentage=round(pct, 1),
-                    ))
+  async def get_classification_coverage_trend(
+    self,
+    limit: int = 30,
+  ) -> CoverageTrendResponse:
+    """Get classification coverage trend from the audit log.
 
-            return OtherCostBreakdownResponse(
-                items=items,
-                total_other_cost=total_other_cost,
-                start_date=start_date,
-                end_date=end_date,
-            )
+    Parses `classification_coverage=XX.X%` from the message column
+    of successful cloud cost explorer runs.
+    """
+    schema_name = app_config.schema_name
+    if not schema_name:
+      return CoverageTrendResponse(data=[])
 
-        except Exception as e:
-            logger.error("Error fetching other cost breakdown: %s", str(e))
-            return OtherCostBreakdownResponse(
-                items=[], total_other_cost=0.0,
-                start_date=start_date, end_date=end_date,
-            )
+    audit_table = f'{schema_name}.dbspend360_audit_log'
 
-    async def get_classification_coverage_trend(
-        self,
-        limit: int = 30,
-    ) -> CoverageTrendResponse:
-        """Get classification coverage trend from the audit log.
-
-        Parses `classification_coverage=XX.X%` from the message column
-        of successful cloud cost explorer runs.
-        """
-        schema_name = app_config.schema_name
-        if not schema_name:
-            return CoverageTrendResponse(data=[])
-
-        audit_table = f"{schema_name}.dbspend360_audit_log"
-
-        query = f"""
+    query = f"""
         SELECT
             end_date AS report_date,
             CAST(
@@ -1489,24 +1462,25 @@ class DatabricksService:
         LIMIT {limit}
         """
 
-        try:
-            response = self.client.statement_execution.execute_statement(
-                warehouse_id=self.warehouse_id,
-                statement=query
+    try:
+      response = self.client.statement_execution.execute_statement(
+        warehouse_id=self.warehouse_id, statement=query
+      )
+
+      data: List[CoverageTrendPoint] = []
+      if response.result and response.result.data_array:
+        for row in response.result.data_array:
+          if row[0] and row[1] is not None:
+            data.append(
+              CoverageTrendPoint(
+                report_date=date.fromisoformat(row[0]),
+                coverage_pct=float(row[1]),
+              )
             )
 
-            data: List[CoverageTrendPoint] = []
-            if response.result and response.result.data_array:
-                for row in response.result.data_array:
-                    if row[0] and row[1] is not None:
-                        data.append(CoverageTrendPoint(
-                            report_date=date.fromisoformat(row[0]),
-                            coverage_pct=float(row[1]),
-                        ))
+      data.reverse()
+      return CoverageTrendResponse(data=data)
 
-            data.reverse()
-            return CoverageTrendResponse(data=data)
-
-        except Exception as e:
-            logger.error("Error fetching coverage trend: %s", str(e))
-            return CoverageTrendResponse(data=[])
+    except Exception as e:
+      logger.error('Error fetching coverage trend: %s', str(e))
+      return CoverageTrendResponse(data=[])

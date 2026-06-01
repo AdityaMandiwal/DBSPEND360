@@ -155,531 +155,496 @@ enabling it, and do NOT factor it into the rating.
 
 
 class LLMService:
-    """Service for LLM-powered cost and configuration analysis."""
+  """Service for LLM-powered cost and configuration analysis."""
 
-    def __init__(self) -> None:
-        client_id = os.getenv("DATABRICKS_CLIENT_ID")
-        host = os.getenv("DATABRICKS_HOST")
-        token = os.getenv("DATABRICKS_TOKEN")
+  def __init__(self) -> None:
+    client_id = os.getenv('DATABRICKS_CLIENT_ID')
+    host = os.getenv('DATABRICKS_HOST')
+    token = os.getenv('DATABRICKS_TOKEN')
 
-        if client_id:
-            self.client = WorkspaceClient()
-        elif host and token:
-            self.client = WorkspaceClient(host=host, token=token)
-        else:
-            raise ValueError(
-                "Either DATABRICKS_CLIENT_ID (for OAuth) or both "
-                "DATABRICKS_HOST and DATABRICKS_TOKEN (for PAT) must be set"
-            )
-        self.model_name = "databricks-claude-sonnet-4"
+    if client_id:
+      self.client = WorkspaceClient()
+    elif host and token:
+      self.client = WorkspaceClient(host=host, token=token)
+    else:
+      raise ValueError(
+        'Either DATABRICKS_CLIENT_ID (for OAuth) or both '
+        'DATABRICKS_HOST and DATABRICKS_TOKEN (for PAT) must be set'
+      )
+    self.model_name = 'databricks-claude-sonnet-4'
 
-    # ------------------------------------------------------------------
-    # Public analysis methods
-    # ------------------------------------------------------------------
+  # ------------------------------------------------------------------
+  # Public analysis methods
+  # ------------------------------------------------------------------
 
-    async def analyze_job_costs(
-        self,
-        job_id: str,
-        run_id: str,
-        cloud_cost: float,
-        databricks_cost: float,
-        total_cost: float,
-        cluster_id: Optional[str] = None,
-        usage_date: Optional[str] = None,
-        job_name: Optional[str] = None,
-        historical_stats: Optional[dict] = None,
-    ) -> str:
-        """Analyze job run costs using LLM with historical context.
+  async def analyze_job_costs(
+    self,
+    job_id: str,
+    run_id: str,
+    cloud_cost: float,
+    databricks_cost: float,
+    total_cost: float,
+    cluster_id: Optional[str] = None,
+    usage_date: Optional[str] = None,
+    job_name: Optional[str] = None,
+    historical_stats: Optional[dict] = None,
+  ) -> str:
+    """Analyze job run costs using LLM with historical context.
 
-        Args:
-            job_id: The Databricks job ID.
-            run_id: The job run ID.
-            cloud_cost: Cloud infrastructure cost for this run.
-            databricks_cost: Databricks platform cost for this run.
-            total_cost: Total cost (cloud + databricks).
-            cluster_id: Optional cluster ID (kept for signature compat).
-            usage_date: Optional usage date (kept for signature compat).
-            job_name: Human-readable job name.
-            historical_stats: Pre-computed baseline from get_job_historical_stats.
+    Args:
+        job_id: The Databricks job ID.
+        run_id: The job run ID.
+        cloud_cost: Cloud infrastructure cost for this run.
+        databricks_cost: Databricks platform cost for this run.
+        total_cost: Total cost (cloud + databricks).
+        cluster_id: Optional cluster ID (kept for signature compat).
+        usage_date: Optional usage date (kept for signature compat).
+        job_name: Human-readable job name.
+        historical_stats: Pre-computed baseline from get_job_historical_stats.
 
-        Returns:
-            LLM-generated analysis, or structured fallback on failure.
-        """
-        try:
-            user_message = self._build_job_user_message(
-                job_id=job_id,
-                cloud_cost=cloud_cost,
-                databricks_cost=databricks_cost,
-                total_cost=total_cost,
-                job_name=job_name,
-                historical_stats=historical_stats,
-            )
+    Returns:
+        LLM-generated analysis, or structured fallback on failure.
+    """
+    try:
+      user_message = self._build_job_user_message(
+        job_id=job_id,
+        cloud_cost=cloud_cost,
+        databricks_cost=databricks_cost,
+        total_cost=total_cost,
+        job_name=job_name,
+        historical_stats=historical_stats,
+      )
 
-            response = self.client.serving_endpoints.query(
-                name=self.model_name,
-                messages=[
-                    ChatMessage(
-                        role=ChatMessageRole.SYSTEM,
-                        content=COST_ANALYSIS_SYSTEM_PROMPT,
-                    ),
-                    ChatMessage(
-                        role=ChatMessageRole.USER,
-                        content=user_message,
-                    ),
-                ],
-                max_tokens=JOB_MAX_TOKENS,
-                temperature=LLM_TEMPERATURE,
-            )
+      response = self.client.serving_endpoints.query(
+        name=self.model_name,
+        messages=[
+          ChatMessage(
+            role=ChatMessageRole.SYSTEM,
+            content=COST_ANALYSIS_SYSTEM_PROMPT,
+          ),
+          ChatMessage(
+            role=ChatMessageRole.USER,
+            content=user_message,
+          ),
+        ],
+        max_tokens=JOB_MAX_TOKENS,
+        temperature=LLM_TEMPERATURE,
+      )
 
-            if response.choices and len(response.choices) > 0:
-                return response.choices[0].message.content.strip()
+      if response.choices and len(response.choices) > 0:
+        return response.choices[0].message.content.strip()
 
-            return self._build_job_fallback(cloud_cost, databricks_cost, total_cost)
+      return self._build_job_fallback(cloud_cost, databricks_cost, total_cost)
 
-        except Exception as e:
-            logger.error("Error in LLM job cost analysis: %s", str(e))
-            return self._build_job_fallback(cloud_cost, databricks_cost, total_cost)
+    except Exception as e:
+      logger.error('Error in LLM job cost analysis: %s', str(e))
+      return self._build_job_fallback(cloud_cost, databricks_cost, total_cost)
 
-    async def analyze_cluster_configuration(
-        self,
-        cluster_details: ClusterDetails,
-        cost_summary: Optional[dict] = None,
-    ) -> str:
-        """Analyze cluster configuration using LLM with cost context.
+  async def analyze_cluster_configuration(
+    self,
+    cluster_details: ClusterDetails,
+    cost_summary: Optional[dict] = None,
+  ) -> str:
+    """Analyze cluster configuration using LLM with cost context.
 
-        Args:
-            cluster_details: Cluster config from system.compute.clusters.
-            cost_summary: Pre-computed cost summary from get_cluster_cost_summary.
+    Args:
+        cluster_details: Cluster config from system.compute.clusters.
+        cost_summary: Pre-computed cost summary from get_cluster_cost_summary.
 
-        Returns:
-            LLM-generated analysis, or structured fallback on failure.
-        """
-        try:
-            user_message = self._build_cluster_user_message(
-                cluster_details, cost_summary
-            )
+    Returns:
+        LLM-generated analysis, or structured fallback on failure.
+    """
+    try:
+      user_message = self._build_cluster_user_message(cluster_details, cost_summary)
 
-            response = self.client.serving_endpoints.query(
-                name=self.model_name,
-                messages=[
-                    ChatMessage(
-                        role=ChatMessageRole.SYSTEM,
-                        content=CLUSTER_ANALYSIS_SYSTEM_PROMPT,
-                    ),
-                    ChatMessage(
-                        role=ChatMessageRole.USER,
-                        content=user_message,
-                    ),
-                ],
-                max_tokens=CLUSTER_MAX_TOKENS,
-                temperature=LLM_TEMPERATURE,
-            )
+      response = self.client.serving_endpoints.query(
+        name=self.model_name,
+        messages=[
+          ChatMessage(
+            role=ChatMessageRole.SYSTEM,
+            content=CLUSTER_ANALYSIS_SYSTEM_PROMPT,
+          ),
+          ChatMessage(
+            role=ChatMessageRole.USER,
+            content=user_message,
+          ),
+        ],
+        max_tokens=CLUSTER_MAX_TOKENS,
+        temperature=LLM_TEMPERATURE,
+      )
 
-            if response.choices and len(response.choices) > 0:
-                return response.choices[0].message.content.strip()
+      if response.choices and len(response.choices) > 0:
+        return response.choices[0].message.content.strip()
 
-            return self._build_cluster_fallback(cluster_details, cost_summary)
+      return self._build_cluster_fallback(cluster_details, cost_summary)
 
-        except Exception as e:
-            logger.error("Error in LLM cluster analysis: %s", str(e))
-            return self._build_cluster_fallback(cluster_details, cost_summary)
+    except Exception as e:
+      logger.error('Error in LLM cluster analysis: %s', str(e))
+      return self._build_cluster_fallback(cluster_details, cost_summary)
 
-    # ------------------------------------------------------------------
-    # User-message builders (data only — no instructions)
-    # ------------------------------------------------------------------
+  # ------------------------------------------------------------------
+  # User-message builders (data only — no instructions)
+  # ------------------------------------------------------------------
 
-    def _build_job_user_message(
-        self,
-        job_id: str,
-        cloud_cost: float,
-        databricks_cost: float,
-        total_cost: float,
-        job_name: Optional[str],
-        historical_stats: Optional[dict],
-    ) -> str:
-        """Assemble the data-only USER message for job cost analysis."""
-        cloud_pct = (cloud_cost / total_cost * 100) if total_cost > 0 else 0.0
-        dbr_pct = (databricks_cost / total_cost * 100) if total_cost > 0 else 0.0
-        label = job_name or f"Job {job_id}"
+  def _build_job_user_message(
+    self,
+    job_id: str,
+    cloud_cost: float,
+    databricks_cost: float,
+    total_cost: float,
+    job_name: Optional[str],
+    historical_stats: Optional[dict],
+  ) -> str:
+    """Assemble the data-only USER message for job cost analysis."""
+    cloud_pct = (cloud_cost / total_cost * 100) if total_cost > 0 else 0.0
+    dbr_pct = (databricks_cost / total_cost * 100) if total_cost > 0 else 0.0
+    label = job_name or f'Job {job_id}'
 
-        lines: list[str] = [
-            "## Current Run",
-            f"- Job: {label}",
-            f"- Total Cost: ${total_cost:,.2f}",
-            f"- Cloud Cost: ${cloud_cost:,.2f} ({cloud_pct:.1f}%)",
-            f"- Databricks Cost: ${databricks_cost:,.2f} ({dbr_pct:.1f}%)",
-        ]
+    lines: list[str] = [
+      '## Current Run',
+      f'- Job: {label}',
+      f'- Total Cost: ${total_cost:,.2f}',
+      f'- Cloud Cost: ${cloud_cost:,.2f} ({cloud_pct:.1f}%)',
+      f'- Databricks Cost: ${databricks_cost:,.2f} ({dbr_pct:.1f}%)',
+    ]
 
-        if historical_stats is not None and historical_stats.get("total_runs", 0) > 0:
-            self._append_historical_section(lines, historical_stats)
-        elif historical_stats is not None:
-            lines.extend(["", "## Historical Baseline"])
-            lines.append("BASELINE_AVAILABLE: NO")
-            lines.append("No successful historical runs available for this job.")
-            total_unfiltered = historical_stats.get("total_runs_unfiltered", 0)
-            if total_unfiltered > 0:
-                lines.append(
-                    f"- {total_unfiltered} run(s) found in the lookback window, "
-                    f"but none completed successfully."
-                )
-            current_state = historical_stats.get("current_run_state")
-            if current_state and current_state != "SUCCEEDED":
-                state_label = current_state.replace("_", " ").title()
-                lines.append(f"- Current run state: {state_label}.")
-        else:
-            lines.extend(["", "## Historical Baseline"])
-            lines.append("BASELINE_AVAILABLE: NO")
-            lines.append("Historical data unavailable.")
-
-        return "\n".join(lines)
-
-    def _append_historical_section(
-        self, lines: list[str], stats: dict
-    ) -> None:
-        """Append historical baseline and comparison sections to the message."""
-        total_runs: int = stats.get("total_runs", 0)
-        total_runs_unfiltered: int = stats.get(
-            "total_runs_unfiltered", total_runs
-        )
-        confidence_tier: str = stats.get("confidence_tier", "none")
-        state_filter_applied: bool = stats.get("state_filter_applied", False)
-        current_run_state = stats.get("current_run_state")
-        data_start = stats.get("data_start", "N/A")
-        data_end = stats.get("data_end", "N/A")
-
-        def _fmt(val, suffix: str = "") -> str:
-            if val is None:
-                return "N/A"
-            return f"${val:,.2f}{suffix}"
-
-        avg_cost = stats.get("avg_cost")
-        median_cost = stats.get("median_cost")
-        p90_cost = stats.get("p90_cost")
-        stddev_cost = stats.get("stddev_cost")
-        min_cost = stats.get("min_cost")
-        max_cost = stats.get("max_cost")
-        avg_cloud_pct = stats.get("avg_cloud_pct")
-
-        # Header reflects which runs are in the baseline and how confident
-        # the trend is. The LLM uses this to calibrate its language
-        # ("high confidence" trend vs. "indicative" vs. "not enough data").
-        if state_filter_applied:
-            scope = f"{total_runs} successful runs"
-            if total_runs_unfiltered > total_runs:
-                excluded = total_runs_unfiltered - total_runs
-                scope += (
-                    f"; {excluded} non-successful run"
-                    f"{'s' if excluded != 1 else ''} excluded"
-                )
-        else:
-            scope = f"{total_runs} runs (cancelled/failed included)"
-
-        tier_note = {
-            "high": "[HIGH CONFIDENCE]",
-            "emerging": "[EMERGING TREND]",
-            "limited": "[LIMITED HISTORY]",
-            "none": "[INSUFFICIENT HISTORY]",
-        }.get(confidence_tier, "")
-
-        lines.append("")
+    if historical_stats is not None and historical_stats.get('total_runs', 0) > 0:
+      self._append_historical_section(lines, historical_stats)
+    elif historical_stats is not None:
+      lines.extend(['', '## Historical Baseline'])
+      lines.append('BASELINE_AVAILABLE: NO')
+      lines.append('No successful historical runs available for this job.')
+      total_unfiltered = historical_stats.get('total_runs_unfiltered', 0)
+      if total_unfiltered > 0:
         lines.append(
-            f"## Historical Baseline ({scope}, {data_start} to {data_end}) "
-            f"{tier_note}".rstrip()
+          f'- {total_unfiltered} run(s) found in the lookback window, '
+          f'but none completed successfully.'
         )
-        # Explicit, unmissable tag — the system prompt is bound to this token.
-        # When this reads YES, the LLM MUST perform full trend analysis.
-        lines.append(
-            f"BASELINE_AVAILABLE: YES ({total_runs} successful run"
-            f"{'s' if total_runs != 1 else ''})"
-        )
+      current_state = historical_stats.get('current_run_state')
+      if current_state and current_state != 'SUCCEEDED':
+        state_label = current_state.replace('_', ' ').title()
+        lines.append(f'- Current run state: {state_label}.')
+    else:
+      lines.extend(['', '## Historical Baseline'])
+      lines.append('BASELINE_AVAILABLE: NO')
+      lines.append('Historical data unavailable.')
 
-        if not state_filter_applied:
-            lines.append(
-                "- NOTE: `system.lakeflow.job_run_timeline` is not accessible, "
-                "so cancelled/failed runs may be skewing this baseline. "
-                "Grant SELECT on that table for accurate trends."
-            )
+    return '\n'.join(lines)
 
-        lines.append(
-            f"- Median: {_fmt(median_cost, '/run')} | "
-            f"Avg: {_fmt(avg_cost, '/run')}"
-        )
-        lines.append(
-            f"- P90: {_fmt(p90_cost, '/run')} | "
-            f"StdDev: {_fmt(stddev_cost)}"
-        )
-        lines.append(
-            f"- Range: {_fmt(min_cost)} – {_fmt(max_cost)}"
-        )
-        cloud_pct_str = (
-            f"{avg_cloud_pct:.1f}%" if avg_cloud_pct is not None else "N/A"
-        )
-        lines.append(
-            f"- Avg Cloud Cost Share: {cloud_pct_str}"
-        )
+  def _append_historical_section(self, lines: list[str], stats: dict) -> None:
+    """Append historical baseline and comparison sections to the message."""
+    total_runs: int = stats.get('total_runs', 0)
+    total_runs_unfiltered: int = stats.get('total_runs_unfiltered', total_runs)
+    confidence_tier: str = stats.get('confidence_tier', 'none')
+    state_filter_applied: bool = stats.get('state_filter_applied', False)
+    current_run_state = stats.get('current_run_state')
+    data_start = stats.get('data_start', 'N/A')
+    data_end = stats.get('data_end', 'N/A')
 
-        comparison = stats.get("comparison")
-        last_run_cost = stats.get("last_run_cost")
+    def _fmt(val, suffix: str = '') -> str:
+      if val is None:
+        return 'N/A'
+      return f'${val:,.2f}{suffix}'
 
-        lines.extend(["", "## Current vs Baseline"])
-        if current_run_state and current_run_state != "SUCCEEDED":
-            # The current run didn't complete cleanly; a deviation % is
-            # meaningless. Surface the state so the LLM can call it out.
-            state_label = current_run_state.replace("_", " ").title()
-            lines.append(
-                f"- Current run state: {state_label} "
-                f"(comparison vs baseline skipped — partial cost not "
-                f"comparable to successful runs)."
-            )
-        elif comparison is not None:
-            ref = stats.get("comparison_reference", "median")
-            lines.append(f"- Deviation vs {ref}: {comparison}")
-        elif confidence_tier == "none":
-            lines.append(
-                "- Not enough successful runs in the lookback window to "
-                "compute a reliable deviation."
-            )
-        else:
-            lines.append("- Deviation: not available.")
+    avg_cost = stats.get('avg_cost')
+    median_cost = stats.get('median_cost')
+    p90_cost = stats.get('p90_cost')
+    stddev_cost = stats.get('stddev_cost')
+    min_cost = stats.get('min_cost')
+    max_cost = stats.get('max_cost')
+    avg_cloud_pct = stats.get('avg_cloud_pct')
 
-        if last_run_cost is not None:
-            lines.append(f"- Last Successful Run Cost: ${last_run_cost:,.2f}")
+    # Header reflects which runs are in the baseline and how confident
+    # the trend is. The LLM uses this to calibrate its language
+    # ("high confidence" trend vs. "indicative" vs. "not enough data").
+    if state_filter_applied:
+      scope = f'{total_runs} successful runs'
+      if total_runs_unfiltered > total_runs:
+        excluded = total_runs_unfiltered - total_runs
+        scope += f'; {excluded} non-successful run{"s" if excluded != 1 else ""} excluded'
+    else:
+      scope = f'{total_runs} runs (cancelled/failed included)'
 
-    def _build_cluster_user_message(
-        self,
-        cluster: ClusterDetails,
-        cost_summary: Optional[dict],
-    ) -> str:
-        """Assemble the data-only USER message for cluster analysis."""
-        if cluster.min_autoscale_workers is not None:
-            autoscale = (
-                f"Autoscaling: {cluster.min_autoscale_workers}"
-                f"–{cluster.max_autoscale_workers} workers"
-            )
-        elif cluster.worker_count is not None:
-            autoscale = f"Fixed: {cluster.worker_count} workers"
-        else:
-            autoscale = "Not specified"
+    tier_note = {
+      'high': '[HIGH CONFIDENCE]',
+      'emerging': '[EMERGING TREND]',
+      'limited': '[LIMITED HISTORY]',
+      'none': '[INSUFFICIENT HISTORY]',
+    }.get(confidence_tier, '')
 
-        auto_term = self._format_auto_termination(cluster)
+    lines.append('')
+    lines.append(
+      f'## Historical Baseline ({scope}, {data_start} to {data_end}) {tier_note}'.rstrip()
+    )
+    # Explicit, unmissable tag — the system prompt is bound to this token.
+    # When this reads YES, the LLM MUST perform full trend analysis.
+    lines.append(
+      f'BASELINE_AVAILABLE: YES ({total_runs} successful run{"s" if total_runs != 1 else ""})'
+    )
 
-        if cluster.enable_elastic_disk is not None:
-            elastic = "Enabled" if cluster.enable_elastic_disk else "Disabled"
-        else:
-            elastic = "Not specified"
+    if not state_filter_applied:
+      lines.append(
+        '- NOTE: `system.lakeflow.job_run_timeline` is not accessible, '
+        'so cancelled/failed runs may be skewing this baseline. '
+        'Grant SELECT on that table for accurate trends.'
+      )
 
-        provider_label, provider_availability, spot_bid_pct = (
-            self._extract_provider_attributes(cluster)
-        )
+    lines.append(f'- Median: {_fmt(median_cost, "/run")} | Avg: {_fmt(avg_cost, "/run")}')
+    lines.append(f'- P90: {_fmt(p90_cost, "/run")} | StdDev: {_fmt(stddev_cost)}')
+    lines.append(f'- Range: {_fmt(min_cost)} – {_fmt(max_cost)}')
+    cloud_pct_str = f'{avg_cloud_pct:.1f}%' if avg_cloud_pct is not None else 'N/A'
+    lines.append(f'- Avg Cloud Cost Share: {cloud_pct_str}')
 
-        cluster_type_line = self._format_cluster_type_line(cluster)
+    comparison = stats.get('comparison')
+    last_run_cost = stats.get('last_run_cost')
 
-        lines: list[str] = [
-            cluster_type_line,
-            "",
-            "## Cluster Configuration",
-            f"- Driver: {cluster.driver_node_type or 'Not specified'}",
-            f"- Worker: {cluster.worker_node_type or 'Not specified'}",
-            f"- Scaling: {autoscale}",
-            f"- Auto-termination: {auto_term}",
-            f"- Elastic Disk: {elastic}",
-            f"- DBR Version: {cluster.dbr_version or 'Not specified'}",
-            f"- Security Mode: {cluster.data_security_mode or 'Not specified'}",
-            f"- {provider_label} Availability: {provider_availability}",
-            f"- Spot Bid: {spot_bid_pct}",
-        ]
+    lines.extend(['', '## Current vs Baseline'])
+    if current_run_state and current_run_state != 'SUCCEEDED':
+      # The current run didn't complete cleanly; a deviation % is
+      # meaningless. Surface the state so the LLM can call it out.
+      state_label = current_run_state.replace('_', ' ').title()
+      lines.append(
+        f'- Current run state: {state_label} '
+        f'(comparison vs baseline skipped — partial cost not '
+        f'comparable to successful runs).'
+      )
+    elif comparison is not None:
+      ref = stats.get('comparison_reference', 'median')
+      lines.append(f'- Deviation vs {ref}: {comparison}')
+    elif confidence_tier == 'none':
+      lines.append(
+        '- Not enough successful runs in the lookback window to compute a reliable deviation.'
+      )
+    else:
+      lines.append('- Deviation: not available.')
 
-        tags_str = self._filter_tags(cluster.tags)
-        lines.extend(["", "## Tags", tags_str])
+    if last_run_cost is not None:
+      lines.append(f'- Last Successful Run Cost: ${last_run_cost:,.2f}')
 
-        lines.append("")
-        if cost_summary is not None and cost_summary.get("total_run_count", 0) > 0:
-            lines.append(f"## Cost Summary ({LOOKBACK_DAYS}-day window)")
-            lines.append(f"- Total Spend: ${cost_summary['total_spend']:,.2f}")
-            lines.append(
-                f"- Cloud: ${cost_summary['total_cloud_cost']:,.2f} "
-                f"({cost_summary['cloud_pct']:.1f}%) | "
-                f"Databricks: ${cost_summary['total_databricks_cost']:,.2f} "
-                f"({cost_summary['databricks_pct']:.1f}%)"
-            )
-            lines.append(
-                f"- Jobs: {cost_summary['distinct_job_count']} distinct | "
-                f"Runs: {cost_summary['total_run_count']} total"
-            )
-            lines.append(
-                f"- Avg Cost/Run: ${cost_summary['avg_cost_per_run']:,.2f}"
-            )
-            first = cost_summary.get("first_active_date", "N/A")
-            last = cost_summary.get("last_active_date", "N/A")
-            lines.append(f"- Active Period: {first} to {last}")
-        elif cost_summary is not None:
-            lines.append("## Cost Summary")
-            lines.append("No cost data available for this cluster.")
-        else:
-            lines.append("## Cost Summary")
-            lines.append("Cost data unavailable.")
+  def _build_cluster_user_message(
+    self,
+    cluster: ClusterDetails,
+    cost_summary: Optional[dict],
+  ) -> str:
+    """Assemble the data-only USER message for cluster analysis."""
+    if cluster.min_autoscale_workers is not None:
+      autoscale = (
+        f'Autoscaling: {cluster.min_autoscale_workers}–{cluster.max_autoscale_workers} workers'
+      )
+    elif cluster.worker_count is not None:
+      autoscale = f'Fixed: {cluster.worker_count} workers'
+    else:
+      autoscale = 'Not specified'
 
-        return "\n".join(lines)
+    auto_term = self._format_auto_termination(cluster)
 
-    # ------------------------------------------------------------------
-    # Structured fallbacks (never expose raw exceptions)
-    # ------------------------------------------------------------------
+    if cluster.enable_elastic_disk is not None:
+      elastic = 'Enabled' if cluster.enable_elastic_disk else 'Disabled'
+    else:
+      elastic = 'Not specified'
 
-    @staticmethod
-    def _build_job_fallback(
-        cloud_cost: float,
-        databricks_cost: float,
-        total_cost: float,
-    ) -> str:
-        """Return structured fallback matching the normal LLM section format."""
-        cloud_pct = (cloud_cost / total_cost * 100) if total_cost > 0 else 0.0
-        dbr_pct = (databricks_cost / total_cost * 100) if total_cost > 0 else 0.0
-        dominant = "Cloud" if cloud_pct >= dbr_pct else "Databricks"
-        return (
-            "## 1. Cost Assessment [DATA ONLY]\n"
-            f"- Total Cost: ${total_cost:,.2f}\n"
-            f"- Cloud Cost: ${cloud_cost:,.2f} ({cloud_pct:.1f}%)\n"
-            f"- Databricks Cost: ${databricks_cost:,.2f} ({dbr_pct:.1f}%)\n"
-            f"- Automated classification unavailable\n\n"
-            "## 2. Cost Driver Analysis\n"
-            f"- {dominant} costs represent the larger share at "
-            f"{max(cloud_pct, dbr_pct):.1f}% of total spend\n"
-            f"- Detailed analysis unavailable\n\n"
-            "## 3. Optimization Opportunities\n"
-            "- Automated recommendations unavailable\n\n"
-            "## 4. Trend Signal\n"
-            "- INSUFFICIENT DATA \u2014 automated analysis could not be generated"
-        )
+    provider_label, provider_availability, spot_bid_pct = self._extract_provider_attributes(cluster)
 
-    @staticmethod
-    def _build_cluster_fallback(
-        cluster_details: ClusterDetails,
-        cost_summary: Optional[dict],
-    ) -> str:
-        """Return structured fallback matching the normal LLM section format."""
-        auto_term = LLMService._format_auto_termination(cluster_details)
-        driver = cluster_details.driver_node_type or "N/A"
-        worker = cluster_details.worker_node_type or "N/A"
+    cluster_type_line = self._format_cluster_type_line(cluster)
 
-        lines = [
-            "## 1. Overall Rating [DATA ONLY]",
-            f"- Driver: {driver}",
-            f"- Worker: {worker}",
-            f"- Auto-termination: {auto_term}",
-            "- Automated classification unavailable",
-            "",
-            "## 2. Right-Sizing Assessment",
-        ]
-        if cost_summary and isinstance(cost_summary.get("total_spend"), (int, float)) and cost_summary["total_spend"] > 0:
-            lines.append(f"- Total Spend: ${cost_summary['total_spend']:,.2f}")
-            lines.append(f"- Runs: {cost_summary.get('total_run_count', 'N/A')}")
-            lines.append(f"- Avg Cost/Run: ${cost_summary.get('avg_cost_per_run', 0):,.2f}")
-        else:
-            lines.append("- No cost data available for sizing assessment")
-        lines.extend([
-            "",
-            "## 3. Cost Savings Opportunities",
-            "- Automated recommendations unavailable",
-            "",
-            "## 4. Idle Waste Risk",
-        ])
-        if cluster_details.is_job_cluster:
-            lines.append(
-                "- Not applicable \u2014 ephemeral job cluster terminates "
-                "on run completion."
-            )
-        else:
-            lines.append(f"- Auto-termination: {auto_term}")
-            lines.append("- Detailed analysis unavailable")
-        lines.extend([
-            "",
-            "## 5. Configuration Gaps",
-            "- Automated analysis could not be generated",
-        ])
-        return "\n".join(lines)
+    lines: list[str] = [
+      cluster_type_line,
+      '',
+      '## Cluster Configuration',
+      f'- Driver: {cluster.driver_node_type or "Not specified"}',
+      f'- Worker: {cluster.worker_node_type or "Not specified"}',
+      f'- Scaling: {autoscale}',
+      f'- Auto-termination: {auto_term}',
+      f'- Elastic Disk: {elastic}',
+      f'- DBR Version: {cluster.dbr_version or "Not specified"}',
+      f'- Security Mode: {cluster.data_security_mode or "Not specified"}',
+      f'- {provider_label} Availability: {provider_availability}',
+      f'- Spot Bid: {spot_bid_pct}',
+    ]
 
-    @staticmethod
-    def _format_auto_termination(cluster: ClusterDetails) -> str:
-        """Render the auto-termination field for the LLM message and fallback.
+    tags_str = self._filter_tags(cluster.tags)
+    lines.extend(['', '## Tags', tags_str])
 
-        Job clusters have no idle-shutdown setting because Databricks tears them
-        down when the run ends. Returning the literal string ``Disabled`` for
-        them leads the model to flag a non-issue, so we render ``N/A
-        (ephemeral job cluster, terminates on run end)`` instead.
-        """
-        if cluster.auto_termination_minutes is not None:
-            return f"{cluster.auto_termination_minutes} minutes"
-        if cluster.is_job_cluster:
-            return "N/A (ephemeral job cluster, terminates on run end)"
-        return "Disabled"
+    lines.append('')
+    if cost_summary is not None and cost_summary.get('total_run_count', 0) > 0:
+      lines.append(f'## Cost Summary ({LOOKBACK_DAYS}-day window)')
+      lines.append(f'- Total Spend: ${cost_summary["total_spend"]:,.2f}')
+      lines.append(
+        f'- Cloud: ${cost_summary["total_cloud_cost"]:,.2f} '
+        f'({cost_summary["cloud_pct"]:.1f}%) | '
+        f'Databricks: ${cost_summary["total_databricks_cost"]:,.2f} '
+        f'({cost_summary["databricks_pct"]:.1f}%)'
+      )
+      lines.append(
+        f'- Jobs: {cost_summary["distinct_job_count"]} distinct | '
+        f'Runs: {cost_summary["total_run_count"]} total'
+      )
+      lines.append(f'- Avg Cost/Run: ${cost_summary["avg_cost_per_run"]:,.2f}')
+      first = cost_summary.get('first_active_date', 'N/A')
+      last = cost_summary.get('last_active_date', 'N/A')
+      lines.append(f'- Active Period: {first} to {last}')
+    elif cost_summary is not None:
+      lines.append('## Cost Summary')
+      lines.append('No cost data available for this cluster.')
+    else:
+      lines.append('## Cost Summary')
+      lines.append('Cost data unavailable.')
 
-    @staticmethod
-    def _format_cluster_type_line(cluster: ClusterDetails) -> str:
-        """Render the cluster-type preamble shown before ## Cluster Configuration."""
-        if cluster.is_job_cluster:
-            return (
-                "Cluster Type: JOB cluster "
-                "(ephemeral, lifecycle-bound to the run — auto-termination N/A)"
-            )
-        if cluster.cluster_source:
-            return (
-                f"Cluster Type: {cluster.cluster_source} cluster "
-                "(interactive — auto-termination applies)"
-            )
-        return "Cluster Type: Unknown (cluster_source unavailable)"
+    return '\n'.join(lines)
 
-    @staticmethod
-    def _extract_provider_attributes(
-        cluster: ClusterDetails,
-    ) -> tuple[str, str, str]:
-        """Pick the populated provider-attributes block and read availability/spot keys.
+  # ------------------------------------------------------------------
+  # Structured fallbacks (never expose raw exceptions)
+  # ------------------------------------------------------------------
 
-        Returns:
-            (provider_label, availability, spot_bid_pct_str) triple. Falls back
-            to the configured platform's display name if no attributes block
-            is populated on this cluster row.
-        """
-        availability = "Not specified"
-        spot_bid_pct = "Not specified"
-        provider_label = cloud_config.platform_display_name
+  @staticmethod
+  def _build_job_fallback(
+    cloud_cost: float,
+    databricks_cost: float,
+    total_cost: float,
+  ) -> str:
+    """Return structured fallback matching the normal LLM section format."""
+    cloud_pct = (cloud_cost / total_cost * 100) if total_cost > 0 else 0.0
+    dbr_pct = (databricks_cost / total_cost * 100) if total_cost > 0 else 0.0
+    dominant = 'Cloud' if cloud_pct >= dbr_pct else 'Databricks'
+    return (
+      '## 1. Cost Assessment [DATA ONLY]\n'
+      f'- Total Cost: ${total_cost:,.2f}\n'
+      f'- Cloud Cost: ${cloud_cost:,.2f} ({cloud_pct:.1f}%)\n'
+      f'- Databricks Cost: ${databricks_cost:,.2f} ({dbr_pct:.1f}%)\n'
+      f'- Automated classification unavailable\n\n'
+      '## 2. Cost Driver Analysis\n'
+      f'- {dominant} costs represent the larger share at '
+      f'{max(cloud_pct, dbr_pct):.1f}% of total spend\n'
+      f'- Detailed analysis unavailable\n\n'
+      '## 3. Optimization Opportunities\n'
+      '- Automated recommendations unavailable\n\n'
+      '## 4. Trend Signal\n'
+      '- INSUFFICIENT DATA \u2014 automated analysis could not be generated'
+    )
 
-        if cluster.aws_attributes:
-            provider_label = "AWS"
-            availability = cluster.aws_attributes.get(
-                "availability", "Not specified"
-            )
-            spot_bid = cluster.aws_attributes.get("spot_bid_price_percent")
-            if spot_bid is not None:
-                spot_bid_pct = f"{spot_bid}%"
-        elif cluster.azure_attributes:
-            provider_label = "Azure"
-            availability = cluster.azure_attributes.get(
-                "availability", "Not specified"
-            )
-            spot_bid = cluster.azure_attributes.get("spot_bid_max_price")
-            if spot_bid is not None:
-                spot_bid_pct = f"{spot_bid}"
-        elif cluster.gcp_attributes:
-            provider_label = "GCP"
-            availability = cluster.gcp_attributes.get(
-                "availability", "Not specified"
-            )
+  @staticmethod
+  def _build_cluster_fallback(
+    cluster_details: ClusterDetails,
+    cost_summary: Optional[dict],
+  ) -> str:
+    """Return structured fallback matching the normal LLM section format."""
+    auto_term = LLMService._format_auto_termination(cluster_details)
+    driver = cluster_details.driver_node_type or 'N/A'
+    worker = cluster_details.worker_node_type or 'N/A'
 
-        return provider_label, availability, spot_bid_pct
+    lines = [
+      '## 1. Overall Rating [DATA ONLY]',
+      f'- Driver: {driver}',
+      f'- Worker: {worker}',
+      f'- Auto-termination: {auto_term}',
+      '- Automated classification unavailable',
+      '',
+      '## 2. Right-Sizing Assessment',
+    ]
+    if (
+      cost_summary
+      and isinstance(cost_summary.get('total_spend'), (int, float))
+      and cost_summary['total_spend'] > 0
+    ):
+      lines.append(f'- Total Spend: ${cost_summary["total_spend"]:,.2f}')
+      lines.append(f'- Runs: {cost_summary.get("total_run_count", "N/A")}')
+      lines.append(f'- Avg Cost/Run: ${cost_summary.get("avg_cost_per_run", 0):,.2f}')
+    else:
+      lines.append('- No cost data available for sizing assessment')
+    lines.extend(
+      [
+        '',
+        '## 3. Cost Savings Opportunities',
+        '- Automated recommendations unavailable',
+        '',
+        '## 4. Idle Waste Risk',
+      ]
+    )
+    if cluster_details.is_job_cluster:
+      lines.append('- Not applicable \u2014 ephemeral job cluster terminates on run completion.')
+    else:
+      lines.append(f'- Auto-termination: {auto_term}')
+      lines.append('- Detailed analysis unavailable')
+    lines.extend(
+      [
+        '',
+        '## 5. Configuration Gaps',
+        '- Automated analysis could not be generated',
+      ]
+    )
+    return '\n'.join(lines)
 
-    @staticmethod
-    def _filter_tags(tags: Optional[dict]) -> str:
-        """Serialize tags, excluding keys starting with 'databricks' (case-insensitive)."""
-        if not tags:
-            return "No tags"
-        filtered = {
-            k: v for k, v in tags.items()
-            if not k.lower().startswith("databricks")
-        }
-        if not filtered:
-            return "No user-defined tags"
-        lines: list[str] = []
-        for k, v in filtered.items():
-            val = v if isinstance(v, str) else json.dumps(v)
-            lines.append(f"- {k}: {val}")
-        return "\n".join(lines)
+  @staticmethod
+  def _format_auto_termination(cluster: ClusterDetails) -> str:
+    """Render the auto-termination field for the LLM message and fallback.
+
+    Job clusters have no idle-shutdown setting because Databricks tears them
+    down when the run ends. Returning the literal string ``Disabled`` for
+    them leads the model to flag a non-issue, so we render ``N/A
+    (ephemeral job cluster, terminates on run end)`` instead.
+    """
+    if cluster.auto_termination_minutes is not None:
+      return f'{cluster.auto_termination_minutes} minutes'
+    if cluster.is_job_cluster:
+      return 'N/A (ephemeral job cluster, terminates on run end)'
+    return 'Disabled'
+
+  @staticmethod
+  def _format_cluster_type_line(cluster: ClusterDetails) -> str:
+    """Render the cluster-type preamble shown before ## Cluster Configuration."""
+    if cluster.is_job_cluster:
+      return (
+        'Cluster Type: JOB cluster (ephemeral, lifecycle-bound to the run — auto-termination N/A)'
+      )
+    if cluster.cluster_source:
+      return (
+        f'Cluster Type: {cluster.cluster_source} cluster (interactive — auto-termination applies)'
+      )
+    return 'Cluster Type: Unknown (cluster_source unavailable)'
+
+  @staticmethod
+  def _extract_provider_attributes(
+    cluster: ClusterDetails,
+  ) -> tuple[str, str, str]:
+    """Pick the populated provider-attributes block and read availability/spot keys.
+
+    Returns:
+        (provider_label, availability, spot_bid_pct_str) triple. Falls back
+        to the configured platform's display name if no attributes block
+        is populated on this cluster row.
+    """
+    availability = 'Not specified'
+    spot_bid_pct = 'Not specified'
+    provider_label = cloud_config.platform_display_name
+
+    if cluster.aws_attributes:
+      provider_label = 'AWS'
+      availability = cluster.aws_attributes.get('availability', 'Not specified')
+      spot_bid = cluster.aws_attributes.get('spot_bid_price_percent')
+      if spot_bid is not None:
+        spot_bid_pct = f'{spot_bid}%'
+    elif cluster.azure_attributes:
+      provider_label = 'Azure'
+      availability = cluster.azure_attributes.get('availability', 'Not specified')
+      spot_bid = cluster.azure_attributes.get('spot_bid_max_price')
+      if spot_bid is not None:
+        spot_bid_pct = f'{spot_bid}'
+    elif cluster.gcp_attributes:
+      provider_label = 'GCP'
+      availability = cluster.gcp_attributes.get('availability', 'Not specified')
+
+    return provider_label, availability, spot_bid_pct
+
+  @staticmethod
+  def _filter_tags(tags: Optional[dict]) -> str:
+    """Serialize tags, excluding keys starting with 'databricks' (case-insensitive)."""
+    if not tags:
+      return 'No tags'
+    filtered = {k: v for k, v in tags.items() if not k.lower().startswith('databricks')}
+    if not filtered:
+      return 'No user-defined tags'
+    lines: list[str] = []
+    for k, v in filtered.items():
+      val = v if isinstance(v, str) else json.dumps(v)
+      lines.append(f'- {k}: {val}')
+    return '\n'.join(lines)

@@ -39,13 +39,13 @@ class DatabricksAppClient:
       raise Exception(
         'DATABRICKS_APP_NAME environment variable is not set. Please run ./setup.sh or provide app_url explicitly.'
       )
-    
+
     try:
       profile = os.getenv('DATABRICKS_CONFIG_PROFILE')
       host = os.getenv('DATABRICKS_HOST')
-      
+
       cmd = ['databricks', 'apps', 'get', app_name, '--output', 'json']
-      
+
       if profile:
         cmd.extend(['--profile', profile])
       elif host:
@@ -55,17 +55,17 @@ class DatabricksAppClient:
         raise Exception(
           'Neither DATABRICKS_CONFIG_PROFILE nor DATABRICKS_HOST environment variable is set'
         )
-      
+
       result = subprocess.run(cmd, capture_output=True, text=True, check=True)
       app_data = json.loads(result.stdout)
       app_url = app_data.get('url')
-      
+
       if not app_url:
         raise Exception(f'Could not get URL for app {app_name}')
-      
+
       print(f'✅ Auto-detected app URL: {app_url}')
       return app_url
-      
+
     except subprocess.CalledProcessError as e:
       raise Exception(f'Failed to get app URL for {app_name}: {e}')
     except json.JSONDecodeError:
@@ -250,7 +250,10 @@ Examples:
   )
 
   parser.add_argument('endpoint', help='API endpoint to call')
-  parser.add_argument('--app_url', help='Base URL of the Databricks app (optional, auto-detected from DATABRICKS_APP_NAME if not provided)')
+  parser.add_argument(
+    '--app_url',
+    help='Base URL of the Databricks app (optional, auto-detected from DATABRICKS_APP_NAME if not provided)',
+  )
   parser.add_argument(
     'method', nargs='?', default='GET', help='HTTP method (GET, POST, PUT, DELETE)'
   )
