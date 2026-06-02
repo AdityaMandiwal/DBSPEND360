@@ -3,8 +3,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ThemeToggle } from './ThemeToggle';
 import JobClustersDashboard from './JobClustersDashboard';
 import AllPurposeDashboard from './AllPurposeDashboard';
+import InstancePoolsDashboard from './InstancePoolsDashboard';
 
-const VALID_TABS = ['job-clusters', 'all-purpose'] as const;
+const VALID_TABS = ['job-clusters', 'all-purpose', 'instance-pools'] as const;
 type TabValue = (typeof VALID_TABS)[number];
 const DEFAULT_TAB: TabValue = 'job-clusters';
 
@@ -47,7 +48,7 @@ const Dashboard = () => {
           <div className="flex flex-col space-y-2">
             <h1 className="text-3xl font-bold text-foreground">DBSpend360</h1>
             <p className="text-muted-foreground">
-              Databricks Job Cost Analytics Dashboard
+              Databricks Cost Analytics Dashboard
             </p>
           </div>
           <ThemeToggle />
@@ -58,6 +59,7 @@ const Dashboard = () => {
           <TabsList>
             <TabsTrigger value="job-clusters">Job Clusters</TabsTrigger>
             <TabsTrigger value="all-purpose">All-Purpose Clusters</TabsTrigger>
+            <TabsTrigger value="instance-pools">Instance Pools</TabsTrigger>
           </TabsList>
 
           <TabsContent value="job-clusters" className="mt-0">
@@ -66,6 +68,10 @@ const Dashboard = () => {
 
           <TabsContent value="all-purpose" className="mt-0">
             <AllPurposeDashboard />
+          </TabsContent>
+
+          <TabsContent value="instance-pools" className="mt-0">
+            <InstancePoolsDashboard />
           </TabsContent>
         </Tabs>
       </div>

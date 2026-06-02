@@ -49,10 +49,14 @@ export const useClusterDetails = (clusterId: string) => {
 
 export const useClusterAnalysis = (
   clusterId: string,
-  clusterKind: 'job' | 'all_purpose' = 'job',
+  clusterKind?: 'job' | 'all_purpose',
 ) => {
   return useQuery({
-    queryKey: ['cluster-analysis', clusterId, clusterKind],
+    // `clusterKind ?? 'auto'` keeps the React Query cache key stable
+    // for the auto-detect path (Instance Pools drill-down) so two
+    // pool clusters with different resolved kinds don't collide on
+    // an `undefined` cache slot.
+    queryKey: ['cluster-analysis', clusterId, clusterKind ?? 'auto'],
     queryFn: () => apiClient.getClusterAnalysis(clusterId, clusterKind),
     staleTime: 60 * 60 * 1000, // 1 hour - LLM analysis doesn't change frequently
     enabled: !!clusterId,

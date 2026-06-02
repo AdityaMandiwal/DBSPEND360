@@ -7,6 +7,14 @@ import {
   PaginatedAllPurposeClusters,
   PaginatedAllPurposeUsers,
 } from '@/types/all-purpose';
+import {
+  GroupedInstancePool,
+  InstancePoolAnalysis,
+  InstancePoolDetails,
+  InstancePoolFilter,
+  InstancePoolSummaryMetrics,
+  PaginatedInstancePools,
+} from '@/types/instance-pool';
 import { API_BASE_URL } from '@/lib/api-config';
 
 class ApiClient {
@@ -67,14 +75,19 @@ class ApiClient {
 
   async getClusterAnalysis(
     clusterId: string,
-    clusterKind: 'job' | 'all_purpose' = 'job',
+    clusterKind?: 'job' | 'all_purpose',
   ): Promise<ClusterAnalysis> {
-    // Default to 'job' so existing call sites are byte-identical with the
-    // pre-CP10 signature; the All-Purpose tab passes 'all_purpose' to route
-    // the cost summary half of the analysis to the right rollup table.
-    const params = new URLSearchParams({ cluster_kind: clusterKind });
+    // Pass `clusterKind` explicitly from a tab that knows the source
+    // (Job-tab / All-Purpose tab). Leave it undefined from the Instance
+    // Pools drill-down — the pool rollup row doesn't carry
+    // `cluster_source`, so the backend probes
+    // `system.compute.clusters.cluster_source` to pick the right rollup
+    // (see plan CP10 review #2).
+    const params = new URLSearchParams();
+    if (clusterKind) params.set('cluster_kind', clusterKind);
+    const qs = params.toString();
     return this.fetchApi<ClusterAnalysis>(
-      `/cluster/${clusterId}/analyze?${params}`,
+      `/cluster/${clusterId}/analyze${qs ? `?${qs}` : ''}`,
     );
   }
 
@@ -202,6 +215,82 @@ class ApiClient {
     });
     return this.fetchApi<GroupedAllPurposeUser[]>(
       `/all-purpose/top-users?${params}`,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Instance Pools tab
+  //
+  // Mirrors the all-purpose surface above; all under `/api/instance-pools/*`.
+  // See `server/routers/instance_pools.py` and plan §6 / CP9
+  // (`docs/plan_instance_pools_tab.md`) for endpoint contracts.
+  //
+  // The list endpoint deliberately does NOT enrich each row with the
+  // REST-resolved creator GUID (plan §3.4 / §4.1 — the
+  // `system.compute.instance_pools.tags` source column excludes default
+  // tags, so the creator tag is REST-only; fanning out one REST call per
+  // row would defeat the table's caching story). Creator info is
+  // populated only on `/details` and `/analyze`.
+  // ---------------------------------------------------------------------
+
+  async getInstancePoolSummary(
+    dateRange: DateRange,
+  ): Promise<InstancePoolSummaryMetrics> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+    });
+    return this.fetchApi<InstancePoolSummaryMetrics>(
+      `/instance-pools/summary?${params}`,
+    );
+  }
+
+  async getInstancePools(
+    filter: InstancePoolFilter,
+  ): Promise<PaginatedInstancePools> {
+    const params = new URLSearchParams({
+      start_date: filter.start_date,
+      end_date: filter.end_date,
+      page: filter.page.toString(),
+      per_page: filter.per_page.toString(),
+    });
+
+    if (filter.search) {
+      params.append('search', filter.search);
+    }
+
+    return this.fetchApi<PaginatedInstancePools>(
+      `/instance-pools/grouped?${params}`,
+    );
+  }
+
+  async getTopInstancePools(
+    dateRange: DateRange,
+    limit: number = 5,
+  ): Promise<GroupedInstancePool[]> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+      limit: limit.toString(),
+    });
+    return this.fetchApi<GroupedInstancePool[]>(
+      `/instance-pools/top-pools?${params}`,
+    );
+  }
+
+  async getInstancePoolDetails(
+    poolId: string,
+  ): Promise<InstancePoolDetails> {
+    return this.fetchApi<InstancePoolDetails>(
+      `/instance-pools/${encodeURIComponent(poolId)}/details`,
+    );
+  }
+
+  async getInstancePoolAnalysis(
+    poolId: string,
+  ): Promise<InstancePoolAnalysis> {
+    return this.fetchApi<InstancePoolAnalysis>(
+      `/instance-pools/${encodeURIComponent(poolId)}/analyze`,
     );
   }
 }

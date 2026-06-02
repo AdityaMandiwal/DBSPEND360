@@ -14,6 +14,9 @@ from server.models.job_spend import (
     GroupedAllPurposeCluster, GroupedAllPurposeUser,
     AllPurposeSummaryMetrics,
     PaginatedAllPurposeClusters, PaginatedAllPurposeUsers,
+    GroupedInstancePool, InstancePoolDailySpend, InstancePoolClusterSpend,
+    InstancePoolSummaryMetrics, InstancePoolDetails,
+    PaginatedInstancePools,
 )
 from server.config.config_loader import app_config
 
@@ -47,8 +50,17 @@ class DatabricksService:
         self.warehouse_id = app_config.warehouse_id
         self.table_name = app_config.table_name
         self.all_purpose_table_name = app_config.all_purpose_table_name
+        self.pool_table_name = app_config.pool_table_name
         self.query_timeout = app_config.query_timeout_seconds
         self.job_name_cache: Dict[str, str] = {}  # Cache for job names
+        # Lazy cache for pool name + creator GUID resolved per-request via
+        # WorkspaceClient.instance_pools.get(...). Plan §3.4 / §4.1 / CP6:
+        # the system table's `tags` column excludes default tags so the
+        # auto-applied `DatabricksInstancePoolCreatorId` is not visible there;
+        # we resolve the GUID per-request and cache the (name, guid) tuple.
+        # Failure tuples (f"Pool {id}", None) are cached too so a flaky or
+        # nonexistent pool ID does not re-issue the REST API on every render.
+        self.pool_metadata_cache: Dict[str, Tuple[str, Optional[str]]] = {}
 
     async def get_job_name(self, job_id: str) -> str:
         """Get job name from Jobs API with caching."""
@@ -782,7 +794,7 @@ class DatabricksService:
                     min_autoscale_workers=int(row[6]) if row[6] is not None else None,
                     max_autoscale_workers=int(row[7]) if row[7] is not None else None,
                     auto_termination_minutes=int(row[8]) if row[8] is not None else None,
-                    enable_elastic_disk=bool(row[9]) if row[9] is not None else None,
+                    enable_elastic_disk=self._parse_bool(row[9]),
                     tags=tags,
                     aws_attributes=aws_attributes,
                     azure_attributes=azure_attributes,
@@ -1291,17 +1303,23 @@ class DatabricksService:
     async def get_cluster_cost_summary(
         self,
         cluster_id: str,
-        cluster_kind: Literal["job", "all_purpose"] = "job",
+        cluster_kind: Optional[Literal["job", "all_purpose"]] = None,
     ) -> Optional[dict]:
         """Get aggregated cost summary for a cluster over the lookback window.
 
-        For ``cluster_kind="job"`` (default) groups by ``(job_id, run_id)``
-        against ``dbspend360_total_job_spends`` — the existing job-cluster
-        path. The default value preserves every existing call site
-        byte-identically; do not change it without auditing them.
+        When ``cluster_kind`` is omitted (``None``) the source is
+        auto-detected via ``_detect_cluster_kind`` — a small SELECT
+        against ``system.compute.clusters.cluster_source``. This is
+        required for the Instance Pools drill-down (CP10 review #2):
+        a pool can carry both job and all-purpose clusters, and
+        defaulting to ``"job"`` routed the cost-summary half of the
+        LLM analysis at the wrong rollup table for all-purpose
+        clusters.
 
-        For ``cluster_kind="all_purpose"`` groups by ``(user_id, usage_date)``
-        against ``dbspend360_total_all_purpose_spends`` — the natural grain
+        For ``cluster_kind="job"`` groups by ``(job_id, run_id)`` against
+        ``dbspend360_total_job_spends``. For ``cluster_kind="all_purpose"``
+        groups by ``(user_id, usage_date)`` against
+        ``dbspend360_total_all_purpose_spends`` — the natural grain
         for an interactive cluster, where there is no job/run concept. The
         returned dict keeps the same shape as the job path so downstream LLM
         prompt builders (`llm_service._build_cluster_user_message`) work
@@ -1319,9 +1337,50 @@ class DatabricksService:
         Returns:
             dict with cost breakdown, or None on failure.
         """
+        if cluster_kind is None:
+            cluster_kind = await self._detect_cluster_kind(cluster_id)
         if cluster_kind == "all_purpose":
             return await self._get_cluster_cost_summary_all_purpose(cluster_id)
         return await self._get_cluster_cost_summary_job(cluster_id)
+
+    async def _detect_cluster_kind(
+        self, cluster_id: str
+    ) -> Literal["job", "all_purpose"]:
+        """Probe ``system.compute.clusters`` for ``cluster_source``.
+
+        Returns ``"job"`` when ``cluster_source = 'JOB'`` (an ephemeral
+        cluster spun up by the Jobs runtime), else ``"all_purpose"``
+        (the ``UI`` / ``API`` interactive shapes already filtered to in
+        the All-Purpose queries). Falls back to ``"job"`` on lookup
+        failure so behavior matches the historical default rather than
+        surprising a known caller — the caller can always pass an
+        explicit ``cluster_kind`` to bypass detection.
+        """
+        escaped_cluster_id = cluster_id.replace("'", "''")
+        query = (
+            "SELECT cluster_source FROM system.compute.clusters "
+            f"WHERE cluster_id = '{escaped_cluster_id}' LIMIT 1"
+        )
+        try:
+            response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=query,
+            )
+            if (
+                response.result
+                and response.result.data_array
+                and response.result.data_array[0]
+                and response.result.data_array[0][0]
+            ):
+                source = str(response.result.data_array[0][0]).upper()
+                return "job" if source == "JOB" else "all_purpose"
+        except Exception as exc:
+            logger.warning(
+                "cluster_kind auto-detect failed for %s: %s",
+                cluster_id,
+                str(exc),
+            )
+        return "job"
 
     async def _get_cluster_cost_summary_job(
         self, cluster_id: str
@@ -2410,3 +2469,828 @@ class DatabricksService:
                 result.setdefault(user_id, []).append(spend)
 
         return result
+
+    # ------------------------------------------------------------------
+    # Instance Pool queries
+    #
+    # Source table: `dbspend360_total_pool_spends`, keyed
+    # `(instance_pool_id, cluster_id, usage_date)`. Two-level drill-down
+    # (plan §3.3, §5.2): the pool list endpoint enriches each row with the
+    # nested `days[].clusters[]` shape via a single finest-grain batch
+    # query rolled up in Python — `_get_batch_pool_days_and_clusters` —
+    # so the §9 "per-day total equals per-cluster sum" invariant is
+    # structural rather than asserted across two warehouse round-trips.
+    #
+    # v1 cost model is DBU-only (plan §3.2). `cloud_cost` is reserved on
+    # every row but always NULL until v2 lights up the cloud-cost-explorer
+    # pool join; service-layer methods plumb the column through as None
+    # rather than coalescing to 0 so the wire-level shape stays honest.
+    #
+    # Creator info is not denormalized on the rollup table (plan §3.4 /
+    # §4.1 — `system.compute.instance_pools.tags` excludes default tags so
+    # the auto-applied `DatabricksInstancePoolCreatorId` is not visible
+    # from the system table). It is resolved per-request in the pool
+    # details modal via `get_pool_metadata` → `client.instance_pools.get`
+    # → `default_tags['DatabricksInstancePoolCreatorId']`.
+    # ------------------------------------------------------------------
+
+    async def get_pool_metadata(
+        self, pool_id: str
+    ) -> Tuple[str, Optional[str]]:
+        """Resolve pool display name + creator GUID via the Instance Pools REST API.
+
+        Mirrors `get_job_name`'s caching shape but returns a `(pool_name,
+        pool_creator_id)` tuple. The creator GUID is the value of
+        `default_tags['DatabricksInstancePoolCreatorId']` on the SDK's
+        `GetInstancePool` response — the only place that tag is visible
+        (the system table's `tags` column excludes default tags per
+        plan §10).
+
+        Failure tuples `(f"Pool {pool_id}", None)` are cached as well so
+        a flaky or nonexistent pool ID does not re-issue the REST API on
+        every render. The SDK call itself is synchronous; this method
+        follows `get_job_name`'s `async def` / sync-body pattern so callers
+        can `await` it uniformly.
+
+        v1 stops at the GUID; GUID -> email resolution is a v2 follow-up
+        (plan §13) that adds a second `client.users.get(<guid>)` hop.
+        """
+        if pool_id in self.pool_metadata_cache:
+            return self.pool_metadata_cache[pool_id]
+
+        try:
+            pool_info = self.client.instance_pools.get(instance_pool_id=pool_id)
+            pool_name = pool_info.instance_pool_name or f"Pool {pool_id}"
+            default_tags = pool_info.default_tags or {}
+            creator_id = default_tags.get("DatabricksInstancePoolCreatorId")
+            metadata = (pool_name, creator_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to resolve pool metadata for %s via REST API: %s",
+                pool_id,
+                str(exc),
+            )
+            metadata = (f"Pool {pool_id}", None)
+
+        self.pool_metadata_cache[pool_id] = metadata
+        return metadata
+
+    async def get_instance_pool_summary_metrics(
+        self, start_date: date, end_date: date
+    ) -> InstancePoolSummaryMetrics:
+        """Get summary metrics for the Instance Pools tab KPI strip.
+
+        Implements plan §5.3. Aggregates at the `(instance_pool_id,
+        usage_date)` grain so `avg/max/min_cost_per_pool_day` reads as
+        "what does a single day on a single pool cost on average".
+        `orphaned_pools` counts distinct pools with
+        `pool_snapshot_missing = TRUE` — surfaced as a KPI so operators
+        can spot lost-metadata churn at a glance (plan §10 risk row).
+
+        `total_cloud_cost` is intentionally omitted from the SELECT in v1:
+        every row has `cloud_cost = NULL` so `SUM(...)` is always 0 and
+        the KPI would be misleading. The Pydantic field is `Optional` so
+        v2 can populate it without a wire-shape change.
+        """
+        # `pool_snapshot_state` aggregates pool_snapshot_missing to one
+        # row per pool via BOOL_AND so the orphan KPI counts only pools
+        # where EVERY row in the window is snapshot-missing. The earlier
+        # shape (`COUNT(DISTINCT instance_pool_id) ... WHERE
+        # pool_snapshot_missing = TRUE`) over-counted whenever CP3
+        # wrote heterogeneous rows for one pool — see the parallel fix
+        # in `get_instance_pools_grouped` for the underlying mechanism
+        # and the §13 follow-up that moves snapshot-state to a live
+        # read against system.compute.instance_pools.
+        query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.pool_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        pool_day_level AS (
+            SELECT
+                instance_pool_id,
+                usage_date,
+                SUM(databricks_cost) AS databricks_cost,
+                SUM(total_cost)      AS total_cost
+            FROM filtered
+            GROUP BY instance_pool_id, usage_date
+        ),
+        pool_snapshot_state AS (
+            SELECT instance_pool_id,
+                   BOOL_AND(pool_snapshot_missing) AS pool_uniformly_orphaned
+            FROM filtered
+            GROUP BY instance_pool_id
+        )
+        SELECT
+            (SELECT COUNT(DISTINCT instance_pool_id) FROM filtered)            AS total_pools,
+            (SELECT COUNT(DISTINCT cluster_id)       FROM filtered)            AS total_clusters,
+            (SELECT COUNT(*) FROM pool_snapshot_state
+                WHERE pool_uniformly_orphaned)                                 AS orphaned_pools,
+            COALESCE(SUM(total_cost), 0)       AS total_spend,
+            COALESCE(AVG(total_cost), 0)       AS avg_cost_per_pool_day,
+            COALESCE(MAX(total_cost), 0)       AS max_cost_per_pool_day,
+            COALESCE(MIN(total_cost), 0)       AS min_cost_per_pool_day,
+            COALESCE(SUM(databricks_cost), 0)  AS total_databricks_cost
+        FROM pool_day_level
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        date_range_days = (end_date - start_date).days + 1
+
+        if response.result and response.result.data_array:
+            row = response.result.data_array[0]
+            return InstancePoolSummaryMetrics(
+                total_pools=int(row[0]) if row[0] is not None else 0,
+                total_clusters=int(row[1]) if row[1] is not None else 0,
+                orphaned_pools=int(row[2]) if row[2] is not None else 0,
+                total_spend=float(row[3]) if row[3] is not None else 0.0,
+                avg_cost_per_pool_day=float(row[4]) if row[4] is not None else 0.0,
+                max_cost_per_pool_day=float(row[5]) if row[5] is not None else 0.0,
+                min_cost_per_pool_day=float(row[6]) if row[6] is not None else 0.0,
+                total_databricks_cost=float(row[7]) if row[7] is not None else 0.0,
+                total_cloud_cost=None,
+                date_range_days=date_range_days,
+            )
+
+        return InstancePoolSummaryMetrics(
+            total_pools=0,
+            total_clusters=0,
+            orphaned_pools=0,
+            total_spend=0.0,
+            avg_cost_per_pool_day=0.0,
+            max_cost_per_pool_day=0.0,
+            min_cost_per_pool_day=0.0,
+            total_databricks_cost=0.0,
+            total_cloud_cost=None,
+            date_range_days=date_range_days,
+        )
+
+    async def get_instance_pools_grouped(
+        self,
+        start_date: date,
+        end_date: date,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> PaginatedInstancePools:
+        """Paginated By-Pool rollup for the Instance Pools tab.
+
+        Implements plan §5.1. One row per pool in the window. Pool
+        metadata is already denormalized on the rollup table by
+        `pool_spends_app.ipynb`, so no live join to
+        `system.compute.instance_pools` is needed at query time.
+
+        `search` matches case-insensitively against `pool_name` and
+        exactly against `instance_pool_id`; per plan §5.1, the cluster_id
+        branch uses a subquery back into `filtered` because `cluster_id`
+        is not projected through `pool_level` (it has been aggregated into
+        `COUNT(DISTINCT cluster_id)`), and predicating on it directly
+        would fail with "column not found".
+
+        `days` (per-day + per-cluster expansion) is enriched via
+        `_get_batch_pool_days_and_clusters` — a single finest-grain
+        statement rolled up in Python so the §9 per-day-total invariant
+        is structural rather than asserted (plan §5.2). The list
+        endpoint deliberately does **not** call the Instance Pools REST
+        API (creator enrichment lives in the modal path only — plan §4.1
+        regression-guarded by CP10).
+        """
+        escaped_search = search.replace("'", "''") if search else None
+        search_clause = ""
+        if escaped_search:
+            search_clause = (
+                "WHERE ("
+                f"LOWER(COALESCE(pool_name, '')) LIKE LOWER('%{escaped_search}%') "
+                f"OR instance_pool_id = '{escaped_search}' "
+                f"OR instance_pool_id IN ("
+                f"    SELECT DISTINCT instance_pool_id"
+                f"    FROM filtered"
+                f"    WHERE cluster_id = '{escaped_search}'"
+                f"))"
+            )
+
+        # The pool_meta_ranked / pool_agg split below replaces the earlier
+        # single-CTE `ANY_VALUE(...)` rollup. ANY_VALUE is per-column
+        # non-deterministic and produced the "Snapshot missing badge on a
+        # pool that clearly has a real name + node_type" artifact called
+        # out in the CP10 review: when the underlying rollup carries
+        # heterogeneous rows for one pool (some pool_snapshot_missing=TRUE
+        # with NULL metadata, some FALSE with real metadata — typically
+        # from CP3's first-touch lag on system.compute.instance_pools or
+        # from older rows that fell outside CP3's `overlap_days` refresh
+        # window), the engine could pick `pool_name` from a "good" row
+        # while picking `pool_snapshot_missing` from a "bad" row.
+        #
+        # Two-CTE shape:
+        #   * pool_meta_ranked picks ONE representative row per pool to
+        #     source name + node_type + config from. ORDER BY
+        #     pool_snapshot_missing ASC, usage_date DESC prefers a row
+        #     where the snapshot was present, breaking ties by recency.
+        #   * pool_agg computes the cost/cluster aggregates and uses
+        #     BOOL_AND for the snapshot flag — a pool is reported as
+        #     "snapshot missing" only when EVERY row in the window says
+        #     so, matching the §3.5 badge intent.
+        #
+        # Plan §13 follow-up: replace the denormalized columns entirely
+        # with a live join to a freshly-SCD-collapsed
+        # system.compute.instance_pools (the shape /details already uses)
+        # so staleness can't accrue in the rollup at all.
+        data_query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.pool_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        pool_meta_ranked AS (
+            SELECT
+                instance_pool_id,
+                pool_name,
+                node_type,
+                min_idle_instances,
+                max_capacity,
+                idle_instance_autotermination_minutes,
+                pool_deleted_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY instance_pool_id
+                    ORDER BY pool_snapshot_missing ASC, usage_date DESC
+                ) AS rn
+            FROM filtered
+        ),
+        pool_meta AS (
+            SELECT instance_pool_id, pool_name, node_type,
+                   min_idle_instances, max_capacity,
+                   idle_instance_autotermination_minutes, pool_deleted_at
+            FROM pool_meta_ranked
+            WHERE rn = 1
+        ),
+        pool_agg AS (
+            SELECT
+                instance_pool_id,
+                BOOL_AND(pool_snapshot_missing)                   AS pool_snapshot_missing,
+                COUNT(DISTINCT cluster_id)                        AS cluster_count,
+                COUNT(DISTINCT usage_date)                        AS active_days,
+                SUM(databricks_cost)                              AS total_databricks_cost,
+                SUM(total_cost)                                   AS total_cost
+            FROM filtered
+            GROUP BY instance_pool_id
+        ),
+        pool_level AS (
+            SELECT
+                a.instance_pool_id,
+                m.pool_name,
+                m.node_type,
+                m.min_idle_instances,
+                m.max_capacity,
+                m.idle_instance_autotermination_minutes,
+                a.pool_snapshot_missing,
+                m.pool_deleted_at,
+                a.cluster_count,
+                a.active_days,
+                a.total_databricks_cost,
+                a.total_cost
+            FROM pool_agg a
+            JOIN pool_meta m USING (instance_pool_id)
+        )
+        SELECT
+            instance_pool_id, pool_name, node_type,
+            min_idle_instances, max_capacity,
+            idle_instance_autotermination_minutes,
+            pool_snapshot_missing, pool_deleted_at,
+            cluster_count, active_days,
+            total_databricks_cost, total_cost,
+            COUNT(*) OVER() AS total_matching
+        FROM pool_level
+        {search_clause}
+        ORDER BY total_cost DESC
+        LIMIT {limit} OFFSET {offset}
+        """
+
+        data_response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=data_query,
+        )
+
+        total_count = 0
+        if data_response.result and data_response.result.data_array:
+            total_count = int(data_response.result.data_array[0][12])
+
+        grouped: List[GroupedInstancePool] = []
+        if data_response.result and data_response.result.data_array:
+            pool_ids = [row[0] for row in data_response.result.data_array]
+            days_by_pool = await self._get_batch_pool_days_and_clusters(
+                pool_ids, start_date, end_date
+            )
+
+            for row in data_response.result.data_array:
+                pool_id = row[0]
+                grouped.append(GroupedInstancePool(
+                    instance_pool_id=pool_id,
+                    pool_name=row[1],
+                    node_type=row[2],
+                    min_idle_instances=int(row[3]) if row[3] is not None else None,
+                    max_capacity=int(row[4]) if row[4] is not None else None,
+                    idle_instance_autotermination_minutes=int(row[5]) if row[5] is not None else None,
+                    pool_snapshot_missing=self._parse_bool(row[6]) or False,
+                    pool_deleted_at=self._parse_timestamp(row[7]),
+                    cluster_count=int(row[8]) if row[8] is not None else 0,
+                    active_days=int(row[9]) if row[9] is not None else 0,
+                    total_databricks_cost=float(row[10]) if row[10] is not None else 0.0,
+                    total_cloud_cost=None,
+                    total_cost=float(row[11]) if row[11] is not None else 0.0,
+                    days=days_by_pool.get(pool_id, []),
+                ))
+
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
+        current_page = (offset // limit) + 1
+
+        return PaginatedInstancePools(
+            data=grouped,
+            total_count=total_count,
+            page=current_page,
+            per_page=limit,
+            total_pages=total_pages,
+            has_next=current_page < total_pages,
+            has_previous=current_page > 1,
+        )
+
+    async def _get_batch_pool_days_and_clusters(
+        self,
+        pool_ids: List[str],
+        start_date: date,
+        end_date: date,
+    ) -> Dict[str, List[InstancePoolDailySpend]]:
+        """Fetch the per-day + per-cluster expansion for a batch of pools.
+
+        Implements plan §5.2. A single `execute_statement` returns rows at
+        the finest natural grain `(instance_pool_id, usage_date,
+        cluster_id)` — the Statement Execution API only accepts one
+        statement per request, so the "two result sets in one round-trip"
+        framing in earlier draft notes was structurally wrong. The
+        service-layer rollup folds the rows into the nested
+        `GroupedInstancePool.days[].clusters[]` shape; the per-day
+        `total_cost` is summed from the same cluster rows the
+        per-cluster array exposes so the §9 invariant is structural.
+
+        Per-cluster rows arrive sorted DESC by `total_cost` (per the
+        ORDER BY below), so the CP10 UI can `slice(0, 25)` + roll the
+        long tail without resorting.
+
+        Sizing note (plan §5.2): on workspaces that share pools as
+        job-cluster substrate, a single shared pool can attach hundreds
+        of distinct clusters per day. A 50-pool / 30-day page that
+        includes such a pool can land in the 20–40k row region, still
+        well under the 25 MiB INLINE payload limit. Revisit if a 30-day
+        page warm-fetches > 50k rows in practice.
+        """
+        if not pool_ids:
+            return {}
+
+        escaped_ids = [pid.replace("'", "''") for pid in pool_ids]
+        in_clause = ", ".join(f"'{pid}'" for pid in escaped_ids)
+
+        query = f"""
+        SELECT
+            instance_pool_id,
+            usage_date,
+            cluster_id,
+            SUM(databricks_cost)        AS databricks_cost,
+            SUM(COALESCE(cloud_cost,0)) AS cloud_cost,
+            SUM(total_cost)             AS total_cost
+        FROM {self.pool_table_name}
+        WHERE instance_pool_id IN ({in_clause})
+          AND usage_date >= '{start_date.isoformat()}'
+          AND usage_date <= '{end_date.isoformat()}'
+        GROUP BY instance_pool_id, usage_date, cluster_id
+        ORDER BY instance_pool_id, usage_date, total_cost DESC
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        # Two-level dict so we can attach per-cluster rows to the right
+        # `(pool, day)` bucket as we stream the result set. The Python
+        # rollup mirrors plan §5.2's sketch.
+        days_by_pool: Dict[str, Dict[date, InstancePoolDailySpend]] = {}
+        if response.result and response.result.data_array:
+            for row in response.result.data_array:
+                pool_id = row[0]
+                usage_date = date.fromisoformat(row[1])
+                cluster_id = row[2]
+                dbx = float(row[3]) if row[3] is not None else 0.0
+                total = float(row[5]) if row[5] is not None else 0.0
+
+                pool_days = days_by_pool.setdefault(pool_id, {})
+                day = pool_days.get(usage_date)
+                if day is None:
+                    day = InstancePoolDailySpend(
+                        usage_date=usage_date,
+                        cluster_count_on_day=0,
+                        databricks_cost=0.0,
+                        cloud_cost=None,
+                        total_cost=0.0,
+                        clusters=[],
+                    )
+                    pool_days[usage_date] = day
+
+                day.databricks_cost += dbx
+                day.total_cost += total
+                day.clusters.append(InstancePoolClusterSpend(
+                    cluster_id=cluster_id,
+                    databricks_cost=dbx,
+                    cloud_cost=None,
+                    total_cost=total,
+                ))
+
+        result: Dict[str, List[InstancePoolDailySpend]] = {}
+        for pool_id, pool_days in days_by_pool.items():
+            ordered_days = sorted(pool_days.values(), key=lambda d: d.usage_date)
+            for day in ordered_days:
+                day.cluster_count_on_day = len(day.clusters)
+            result[pool_id] = ordered_days
+
+        return result
+
+    async def get_top_instance_pools(
+        self, start_date: date, end_date: date, limit: int = 5
+    ) -> List[GroupedInstancePool]:
+        """Get top N most expensive instance pools in the window.
+
+        Pool-grain analogue of `get_top_jobs` / `get_all_purpose_top_clusters`.
+        Returns flat `GroupedInstancePool` rows with `days=[]` — this
+        endpoint powers a top-N card and intentionally skips the
+        per-day + per-cluster enrichment query for cost reasons (mirrors
+        the existing top-N endpoints' `runs=[]` / `users=[]` pattern;
+        see the model docstring on `GroupedJob`).
+        """
+        # Same `pool_meta_ranked` + BOOL_AND shape as
+        # `get_instance_pools_grouped` — see that function's docstring
+        # for the rationale (ANY_VALUE across heterogeneous rows was
+        # non-deterministic and surfaced misleading "Snapshot missing"
+        # badges on pools that have a real snapshot).
+        query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.pool_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        pool_meta_ranked AS (
+            SELECT
+                instance_pool_id,
+                pool_name,
+                node_type,
+                min_idle_instances,
+                max_capacity,
+                idle_instance_autotermination_minutes,
+                pool_deleted_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY instance_pool_id
+                    ORDER BY pool_snapshot_missing ASC, usage_date DESC
+                ) AS rn
+            FROM filtered
+        ),
+        pool_meta AS (
+            SELECT instance_pool_id, pool_name, node_type,
+                   min_idle_instances, max_capacity,
+                   idle_instance_autotermination_minutes, pool_deleted_at
+            FROM pool_meta_ranked
+            WHERE rn = 1
+        ),
+        pool_agg AS (
+            SELECT
+                instance_pool_id,
+                BOOL_AND(pool_snapshot_missing)                   AS pool_snapshot_missing,
+                COUNT(DISTINCT cluster_id)                        AS cluster_count,
+                COUNT(DISTINCT usage_date)                        AS active_days,
+                SUM(databricks_cost)                              AS total_databricks_cost,
+                SUM(total_cost)                                   AS total_cost
+            FROM filtered
+            GROUP BY instance_pool_id
+        ),
+        pool_level AS (
+            SELECT
+                a.instance_pool_id,
+                m.pool_name,
+                m.node_type,
+                m.min_idle_instances,
+                m.max_capacity,
+                m.idle_instance_autotermination_minutes,
+                a.pool_snapshot_missing,
+                m.pool_deleted_at,
+                a.cluster_count,
+                a.active_days,
+                a.total_databricks_cost,
+                a.total_cost
+            FROM pool_agg a
+            JOIN pool_meta m USING (instance_pool_id)
+        )
+        SELECT
+            instance_pool_id, pool_name, node_type,
+            min_idle_instances, max_capacity,
+            idle_instance_autotermination_minutes,
+            pool_snapshot_missing, pool_deleted_at,
+            cluster_count, active_days,
+            total_databricks_cost, total_cost
+        FROM pool_level
+        ORDER BY total_cost DESC
+        LIMIT {limit}
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        pools: List[GroupedInstancePool] = []
+        if response.result and response.result.data_array:
+            for row in response.result.data_array:
+                pools.append(GroupedInstancePool(
+                    instance_pool_id=row[0],
+                    pool_name=row[1],
+                    node_type=row[2],
+                    min_idle_instances=int(row[3]) if row[3] is not None else None,
+                    max_capacity=int(row[4]) if row[4] is not None else None,
+                    idle_instance_autotermination_minutes=int(row[5]) if row[5] is not None else None,
+                    pool_snapshot_missing=self._parse_bool(row[6]) or False,
+                    pool_deleted_at=self._parse_timestamp(row[7]),
+                    cluster_count=int(row[8]) if row[8] is not None else 0,
+                    active_days=int(row[9]) if row[9] is not None else 0,
+                    total_databricks_cost=float(row[10]) if row[10] is not None else 0.0,
+                    total_cloud_cost=None,
+                    total_cost=float(row[11]) if row[11] is not None else 0.0,
+                    days=[],
+                ))
+
+        return pools
+
+    async def get_instance_pool_details(
+        self, pool_id: str
+    ) -> InstancePoolDetails:
+        """Get pool configuration details for the pool details modal.
+
+        Reads from `system.compute.instance_pools` (most-recent SCD
+        snapshot via `max_by(col, change_time)` per field — plan §5.5 /
+        CP6). The system table column is `node_type` (NOT `node_type_id`
+        — see plan §10) and `preloaded_spark_version` is singular.
+        The query intentionally does NOT read `tags['DatabricksInstancePoolCreatorId']`
+        because `system.compute.instance_pools.tags` is documented as
+        "user-defined tags ... does not include default tags", so the
+        auto-applied creator tag is never present there — it would
+        return NULL on every row. Creator info is enriched per-request
+        via `get_pool_metadata` which calls the Instance Pools REST API.
+
+        When no system-table snapshot exists, returns a sentinel with
+        `pool_snapshot_missing=True` and falls back to the REST API for
+        name + creator GUID so a deleted-but-still-tracked pool can
+        still surface in the modal.
+        """
+        escaped_pool_id = pool_id.replace("'", "''")
+
+        snapshot_query = f"""
+        SELECT
+            instance_pool_id,
+            max_by(instance_pool_name,                  change_time) AS pool_name,
+            max_by(node_type,                           change_time) AS node_type,
+            max_by(min_idle_instances,                  change_time) AS min_idle_instances,
+            max_by(max_capacity,                        change_time) AS max_capacity,
+            max_by(idle_instance_autotermination_minutes, change_time)
+                                                                    AS idle_instance_autotermination_minutes,
+            max_by(preloaded_spark_version,             change_time) AS preloaded_spark_version,
+            max_by(tags,                                change_time) AS custom_tags,
+            max_by(delete_time,                         change_time) AS pool_deleted_at
+        FROM system.compute.instance_pools
+        WHERE instance_pool_id = '{escaped_pool_id}'
+        GROUP BY instance_pool_id
+        """
+
+        snapshot_row = None
+        try:
+            response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=snapshot_query,
+            )
+            if (
+                response.result
+                and response.result.data_array
+                and len(response.result.data_array) > 0
+            ):
+                snapshot_row = response.result.data_array[0]
+        except Exception as exc:
+            logger.error(
+                "Error fetching pool snapshot for %s: %s", pool_id, str(exc)
+            )
+
+        # Always attempt REST API enrichment — even when the system-table
+        # snapshot is missing, a deleted-but-still-tracked pool can
+        # surface name + creator GUID through the Instance Pools API
+        # (plan CP6 implementation notes).
+        rest_pool_name, creator_id = await self.get_pool_metadata(pool_id)
+
+        if snapshot_row is None:
+            return InstancePoolDetails(
+                instance_pool_id=pool_id,
+                pool_name=rest_pool_name,
+                pool_creator_id=creator_id,
+                pool_snapshot_missing=True,
+            )
+
+        custom_tags = self._parse_tags(snapshot_row[7])
+        # Prefer the system-table snapshot for the display name (it's the
+        # SCD-collapsed source of truth for the rollup pipeline), and
+        # fall back to the REST name when the snapshot row carries NULL.
+        pool_name = snapshot_row[1] or rest_pool_name
+
+        return InstancePoolDetails(
+            instance_pool_id=snapshot_row[0],
+            pool_name=pool_name,
+            pool_creator_id=creator_id,
+            node_type=snapshot_row[2],
+            min_idle_instances=int(snapshot_row[3]) if snapshot_row[3] is not None else None,
+            max_capacity=int(snapshot_row[4]) if snapshot_row[4] is not None else None,
+            idle_instance_autotermination_minutes=int(snapshot_row[5]) if snapshot_row[5] is not None else None,
+            preloaded_spark_version=snapshot_row[6],
+            custom_tags=custom_tags,
+            pool_snapshot_missing=False,
+            pool_deleted_at=self._parse_timestamp(snapshot_row[8]),
+        )
+
+    async def get_pool_cost_summary(
+        self, pool_id: str
+    ) -> Optional[dict]:
+        """Aggregated cost summary for a single pool over the lookback window.
+
+        Feeds the LLM analyze endpoint (`/api/instance-pools/{id}/analyze`)
+        with the pool-specific context plan §CP7 calls out: idle config
+        vs observed peak concurrent attached clusters, ratio of distinct
+        clusters to active days, and dollar context for the
+        recommendations. v1 reports only DBU spend — every row in the
+        underlying rollup has `cloud_cost = NULL` (plan §3.2), so the
+        cloud-cost slot is reserved with `None` and the LLM prompt's
+        cloud-cost caveat covers the gap.
+
+        Returns ``None`` only on query failure; an empty-window pool
+        returns a zero-valued dict (with `limited_history=True`) so the
+        LLM still gets enough scaffolding to produce a structured
+        response rather than throwing.
+        """
+        try:
+            escaped_pool_id = pool_id.replace("'", "''")
+            lookback_date = (
+                date.today() - timedelta(days=LOOKBACK_DAYS)
+            ).isoformat()
+
+            query = f"""
+            WITH filtered AS (
+                SELECT *
+                FROM {self.pool_table_name}
+                WHERE instance_pool_id = '{escaped_pool_id}'
+                  AND usage_date >= '{lookback_date}'
+            ),
+            day_level AS (
+                SELECT
+                    usage_date,
+                    COUNT(DISTINCT cluster_id) AS clusters_on_day,
+                    SUM(databricks_cost)       AS day_databricks_cost,
+                    SUM(total_cost)            AS day_total_cost
+                FROM filtered
+                GROUP BY usage_date
+            )
+            SELECT
+                COALESCE(SUM(day_total_cost), 0)       AS total_spend,
+                COALESCE(SUM(day_databricks_cost), 0)  AS total_databricks_cost,
+                (SELECT COUNT(DISTINCT cluster_id)
+                   FROM filtered)                      AS distinct_cluster_count,
+                COUNT(*)                               AS active_days,
+                COALESCE(MAX(clusters_on_day), 0)      AS peak_concurrent_clusters,
+                COALESCE(AVG(day_total_cost), 0)       AS avg_cost_per_pool_day,
+                MIN(usage_date)                        AS first_active_date,
+                MAX(usage_date)                        AS last_active_date,
+                (SELECT COUNT(*) FROM filtered
+                   WHERE cluster_id = '__pool_overhead__') AS pool_overhead_rows
+            FROM day_level
+            """
+
+            response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=query,
+            )
+
+            if not response.result or not response.result.data_array:
+                return {
+                    "total_spend": 0.0,
+                    "total_databricks_cost": 0.0,
+                    "distinct_cluster_count": 0,
+                    "active_days": 0,
+                    "peak_concurrent_clusters": 0,
+                    "avg_cost_per_pool_day": 0.0,
+                    "first_active_date": None,
+                    "last_active_date": None,
+                    "pool_overhead_rows": 0,
+                    "lookback_days": LOOKBACK_DAYS,
+                    "limited_history": True,
+                }
+
+            row = response.result.data_array[0]
+            total_spend = float(row[0]) if row[0] is not None else 0.0
+            total_databricks_cost = float(row[1]) if row[1] is not None else 0.0
+            distinct_cluster_count = int(row[2]) if row[2] is not None else 0
+            active_days = int(row[3]) if row[3] is not None else 0
+
+            return {
+                "total_spend": total_spend,
+                "total_databricks_cost": total_databricks_cost,
+                "distinct_cluster_count": distinct_cluster_count,
+                "active_days": active_days,
+                "peak_concurrent_clusters": int(row[4]) if row[4] is not None else 0,
+                "avg_cost_per_pool_day": float(row[5]) if row[5] is not None else 0.0,
+                "first_active_date": row[6],
+                "last_active_date": row[7],
+                "pool_overhead_rows": int(row[8]) if row[8] is not None else 0,
+                "lookback_days": LOOKBACK_DAYS,
+                "limited_history": active_days < 3,
+            }
+        except Exception as exc:
+            logger.error(
+                "Error fetching pool cost summary for %s: %s",
+                pool_id,
+                str(exc),
+            )
+            return None
+
+    @staticmethod
+    def _parse_bool(raw):
+        """Parse a Spark BOOLEAN value returned by Statement Execution.
+
+        CRITICAL: the Statement Execution API serializes BOOLEAN columns
+        as the string literals ``'true'`` / ``'false'`` inside
+        ``result.data_array``. The earlier ``bool(row[i])`` cast was a
+        latent bug — Python's ``bool('false')`` is ``True`` because any
+        non-empty string is truthy. That bug surfaced as the CP10 review's
+        item #1: ``pool_snapshot_missing`` flipped to TRUE for every row
+        whose actual rollup value was ``false``, making /grouped disagree
+        with /details and over-counting the orphan KPI.
+
+        Accepts the SQL-string shape (``'true'`` / ``'false'`` /
+        ``'TRUE'`` / ``'FALSE'``), already-decoded ``bool``, numeric 0/1,
+        and ``None``. Returns ``None`` only when the raw value is
+        ``None`` so the caller can preserve nullable semantics.
+        """
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        if isinstance(raw, str):
+            return raw.strip().lower() == "true"
+        return bool(raw)
+
+    @staticmethod
+    def _parse_timestamp(raw: Optional[str]):
+        """Parse a Spark TIMESTAMP value returned by Statement Execution.
+
+        The Statement Execution API serializes TIMESTAMP columns as ISO
+        strings; pydantic's `datetime` field would accept the string but
+        normalizing here keeps the wire shape predictable across callers
+        and matches what `pool_deleted_at` consumers expect.
+        """
+        if raw is None or raw == "":
+            return None
+        from datetime import datetime
+        try:
+            normalized = raw.replace(" ", "T") if "T" not in raw else raw
+            return datetime.fromisoformat(normalized)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_tags(raw):
+        """Best-effort parse for a Spark MAP<STRING,STRING> column.
+
+        Statement Execution may return MAP columns as JSON-encoded strings
+        or, depending on protocol negotiation, as already-decoded dicts.
+        Mirrors the defensive parsing in `get_cluster_details` and falls
+        back to `{"raw": value}` so the modal can still surface the raw
+        payload when the encoding shape changes.
+        """
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, dict):
+            return raw
+        import json
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"raw": raw}
+        except Exception:
+            return {"raw": raw}

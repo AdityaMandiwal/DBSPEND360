@@ -129,6 +129,32 @@ class AppConfig:
             )
         return f"{schema}.dbspend360_total_all_purpose_spends"
 
+    @property
+    def pool_table_name(self) -> str:
+        """Get the instance-pool spends table name.
+
+        Defaults to `<schema_name>.dbspend360_total_pool_spends` derived from
+        the configured `[databricks] schema_name` when not explicitly set.
+        Source for the Instance Pools tab; written by
+        `jobs/notebooks/pool_spends_app.ipynb`. Same loud-failure semantics
+        as `all_purpose_table_name` — neither key set raises
+        ConfigurationError so the Instance Pools tab fails fast on
+        misconfiguration rather than silently querying a non-existent table.
+        """
+        explicit = self.config.get(
+            "databricks", "pool_table_name", fallback=None
+        )
+        if explicit:
+            return explicit
+        schema = self.schema_name
+        if not schema:
+            raise ConfigurationError(
+                "Cannot resolve pool_table_name: neither "
+                "[databricks] pool_table_name nor [databricks] "
+                "schema_name is set. Set one in the active app config."
+            )
+        return f"{schema}.dbspend360_total_pool_spends"
+
     # Feature Flags
     @property
     def enable_cost_analysis(self) -> bool:
@@ -245,7 +271,8 @@ class AppConfig:
                 "warehouse_id": self.warehouse_id,
                 "table_name": self.table_name,
                 "schema_name": self.schema_name,
-                "all_purpose_table_name": self.all_purpose_table_name
+                "all_purpose_table_name": self.all_purpose_table_name,
+                "pool_table_name": self.pool_table_name
             },
             "features": {
                 "enable_cost_analysis": self.enable_cost_analysis,

@@ -540,13 +540,15 @@ async def get_cluster_details(cluster_id: str):
 @router.get("/cluster/{cluster_id}/analyze", response_model=ClusterAnalysis)
 async def analyze_cluster_configuration(
     cluster_id: str,
-    cluster_kind: Literal["job", "all_purpose"] = Query(
-        "job",
+    cluster_kind: Optional[Literal["job", "all_purpose"]] = Query(
+        None,
         description=(
             "Which rollup table to pull the cluster's cost summary from. "
-            "Defaults to 'job' so existing call sites are byte-identical; "
-            "the All-Purpose tab passes 'all_purpose' to route to "
-            "`dbspend360_total_all_purpose_spends` (see plan §6 / CP10)."
+            "Omit to auto-detect from `system.compute.clusters.cluster_source` "
+            "— required for the Instance Pools drill-down where the cluster's "
+            "source isn't known client-side. Job-tab and All-Purpose-tab "
+            "callers still pass 'job' / 'all_purpose' explicitly to skip the "
+            "detection round-trip (see plan §6 / CP10 review #2)."
         ),
     ),
 ):
@@ -558,7 +560,9 @@ async def analyze_cluster_configuration(
 
     ``cluster_kind`` threads through to ``get_cluster_cost_summary`` so the
     LLM's cost context comes from the rollup table that matches the cluster's
-    source (job clusters vs all-purpose / interactive clusters).
+    source (job clusters vs all-purpose / interactive clusters). When
+    ``cluster_kind`` is omitted the service layer probes
+    ``system.compute.clusters.cluster_source`` to pick the right rollup.
     """
     try:
         service = get_databricks_service()

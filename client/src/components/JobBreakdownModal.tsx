@@ -27,10 +27,12 @@ interface ClusterDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
   // Routes the LLM cost-context half of the analysis to the matching
-  // rollup table. Defaults to 'job' for backwards compatibility — the
-  // All-Purpose tab passes 'all_purpose' so the analysis pulls from
-  // `dbspend360_total_all_purpose_spends` instead of the job rollup
-  // (see plan §6 / CP10).
+  // rollup table. Pass 'job' or 'all_purpose' from a tab that knows the
+  // cluster's source. Leave undefined from the Instance Pools drill-down
+  // — the backend probes `system.compute.clusters.cluster_source` to
+  // pick the right rollup, so the modal works for both job-cluster and
+  // all-purpose attachments without the caller knowing which (plan §6
+  // / CP10 review #2).
   clusterKind?: 'job' | 'all_purpose';
 }
 
@@ -388,6 +390,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
               clusterId={breakdown.cluster_id}
               isOpen={isClusterDetailsOpen}
               onClose={() => setIsClusterDetailsOpen(false)}
+              clusterKind="job"
             />
             <OtherCostBreakdownModal
               dateRange={{
@@ -409,7 +412,7 @@ export const ClusterDetailsModal = ({
   clusterId,
   isOpen,
   onClose,
-  clusterKind = 'job',
+  clusterKind,
 }: ClusterDetailsModalProps) => {
   const { data: clusterDetails, isLoading: detailsLoading, error: detailsError } = useClusterDetails(clusterId);
   const { data: clusterAnalysis, isLoading: analysisLoading, error: analysisError } = useClusterAnalysis(clusterId, clusterKind);
