@@ -1,36 +1,43 @@
-import { useState } from 'react';
-import { format, subDays } from 'date-fns';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { SummaryCards } from './SummaryCards';
-import { FilterControls } from './FilterControls';
-import { GroupedJobTable } from './GroupedJobTable';
-import { JobBreakdownModal } from './JobBreakdownModal';
+import { useEffect, useState } from 'react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ThemeToggle } from './ThemeToggle';
-import { DateRange, JobRun } from '@/types/job-spend';
+import JobClustersDashboard from './JobClustersDashboard';
+import AllPurposeDashboard from './AllPurposeDashboard';
+import InstancePoolsDashboard from './InstancePoolsDashboard';
+
+const VALID_TABS = ['job-clusters', 'all-purpose', 'instance-pools'] as const;
+type TabValue = (typeof VALID_TABS)[number];
+const DEFAULT_TAB: TabValue = 'job-clusters';
+
+const readTabFromUrl = (): TabValue => {
+  if (typeof window === 'undefined') return DEFAULT_TAB;
+  const params = new URLSearchParams(window.location.search);
+  const candidate = params.get('tab');
+  return (VALID_TABS as readonly string[]).includes(candidate ?? '')
+    ? (candidate as TabValue)
+    : DEFAULT_TAB;
+};
 
 const Dashboard = () => {
-  // Default to last 30 days as specified in requirements
-  const defaultDateRange: DateRange = {
-    start_date: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
-    end_date: format(new Date(), 'yyyy-MM-dd'),
-  };
+  const [activeTab, setActiveTab] = useState<TabValue>(DEFAULT_TAB);
 
-  const [dateRange, setDateRange] = useState<DateRange>(defaultDateRange);
-  const [jobFilter, setJobFilter] = useState<string>('');
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [selectedRun, setSelectedRun] = useState<JobRun | null>(null);
-  const [isBreakdownModalOpen, setIsBreakdownModalOpen] = useState(false);
+  useEffect(() => {
+    setActiveTab(readTabFromUrl());
+  }, []);
 
-  const handleRunClick = (jobId: string, run: JobRun) => {
-    setSelectedJobId(jobId);
-    setSelectedRun(run);
-    setIsBreakdownModalOpen(true);
-  };
-
-  const handleModalClose = () => {
-    setIsBreakdownModalOpen(false);
-    setSelectedJobId(null);
-    setSelectedRun(null);
+  const handleTabChange = (value: string) => {
+    if (!(VALID_TABS as readonly string[]).includes(value)) return;
+    const next = value as TabValue;
+    setActiveTab(next);
+    const params = new URLSearchParams(window.location.search);
+    if (next === DEFAULT_TAB) {
+      params.delete('tab');
+    } else {
+      params.set('tab', next);
+    }
+    const query = params.toString();
+    const url = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
+    window.history.replaceState(null, '', url);
   };
 
   return (
@@ -39,61 +46,34 @@ const Dashboard = () => {
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div className="flex flex-col space-y-2">
-            <h1 className="text-3xl font-bold text-foreground">
-              DBSpend360
-            </h1>
+            <h1 className="text-3xl font-bold text-foreground">DBSpend360</h1>
             <p className="text-muted-foreground">
-              Databricks Job Cost Analytics Dashboard
+              Databricks Cost Analytics Dashboard
             </p>
           </div>
           <ThemeToggle />
         </div>
 
-        {/* Summary Cards */}
-        <SummaryCards dateRange={dateRange} />
+        {/* Top-level tabs */}
+        <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
+          <TabsList>
+            <TabsTrigger value="job-clusters">Job Clusters</TabsTrigger>
+            <TabsTrigger value="all-purpose">All-Purpose Clusters</TabsTrigger>
+            <TabsTrigger value="instance-pools">Instance Pools</TabsTrigger>
+          </TabsList>
 
-        {/* Filter Controls */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Filters & Controls</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <FilterControls
-              dateRange={dateRange}
-              onDateRangeChange={setDateRange}
-              jobFilter={jobFilter}
-              onJobFilterChange={setJobFilter}
-            />
-          </CardContent>
-        </Card>
+          <TabsContent value="job-clusters" className="mt-0">
+            <JobClustersDashboard />
+          </TabsContent>
 
-        {/* Job Spend Table */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Job Spending Details</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              Jobs are grouped by Job ID. Click the arrow to expand and see individual runs.
-              Click on a run to see detailed cost breakdown.
-            </p>
-          </CardHeader>
-          <CardContent>
-            <GroupedJobTable
-              dateRange={dateRange}
-              jobFilter={jobFilter}
-              onRunClick={handleRunClick}
-            />
-          </CardContent>
-        </Card>
+          <TabsContent value="all-purpose" className="mt-0">
+            <AllPurposeDashboard />
+          </TabsContent>
 
-        {/* Drill-down Modal */}
-        {selectedJobId && selectedRun && (
-          <JobBreakdownModal
-            jobId={selectedJobId}
-            runId={selectedRun.run_id}
-            isOpen={isBreakdownModalOpen}
-            onClose={handleModalClose}
-          />
-        )}
+          <TabsContent value="instance-pools" className="mt-0">
+            <InstancePoolsDashboard />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

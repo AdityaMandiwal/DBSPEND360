@@ -1,0 +1,53 @@
+---
+description: Databricks workspace deployment paths for notebooks (DABs notebook_path values)
+alwaysApply: true
+---
+
+# Databricks notebook deployment paths
+
+When wiring Databricks notebook tasks in `jobs/resource_templates/*.yaml` (or any
+new DAB resource file) and when deploying notebooks to the workspace, mirror the
+in-repo `jobs/` tree under this workspace root:
+
+```
+/Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/
+```
+
+The space in `deployed from cursor` is intentional and supported by the
+Databricks Workspace API and DABs `notebook_path` field — keep it literal, no
+URL-encoding, no quoting beyond the YAML scalar.
+
+## Path mapping
+
+| Repo file | Workspace `notebook_path` |
+|---|---|
+| `jobs/notebooks/<name>.ipynb` | `/Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/<name>` |
+| `jobs/ddls/<name>.ipynb`      | `/Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/ddls/<name>` |
+
+The trailing `.ipynb` is dropped in `notebook_path` (Databricks resolves the
+extension itself).
+
+## Examples
+
+```yaml
+# notebook source
+- task_key: pool_spends
+  notebook_task:
+    notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/pool_spends_app
+    source: WORKSPACE
+
+# DDL source
+- task_key: create_pool_tables
+  notebook_task:
+    notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/ddls/dbspend360_total_pool_spends
+    source: WORKSPACE
+```
+
+## Do not
+
+- Do NOT use the legacy `DBSpend360-app-v2/` workspace folder. It has been
+  retired; all new and migrated tasks must use the `deployed from cursor/`
+  root above.
+- Do NOT flatten the `jobs/notebooks/` or `jobs/ddls/` subpath under the
+  workspace root — the repo tree must mirror so name collisions stay
+  impossible.

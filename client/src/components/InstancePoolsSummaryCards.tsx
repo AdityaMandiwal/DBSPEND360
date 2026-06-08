@@ -1,0 +1,311 @@
+// KPI strip + top-5 pools highlight for the Instance Pools tab.
+//
+// Parallels `AllPurposeSummaryCards.tsx`, but tuned to the pool data
+// model (plan §4.1, CP10):
+//
+//   - Pool DBU spend ONLY in v1 — `total_cloud_cost` is always null
+//     because pool idle/active cloud cost lives outside
+//     `system.billing.usage` and is deferred to v2 (plan §3.2). The
+//     KPI strip surfaces "Total DBU Spend" instead of the multi-line
+//     cloud/DBU split that the all-purpose tab carries.
+//   - Distinct pool count + distinct cluster count are both first-class
+//     KPIs (plan §4.1) — the "cluster count" half is the closest lens on
+//     "how many workloads are this pool serving" that v1 has, given
+//     pools are inherently multi-tenant (plan §3.4).
+//   - Orphan pool KPI (`pool_snapshot_missing = TRUE`) surfaces lost
+//     metadata churn (cross-region or pre-Oct-2023 deleted-pool
+//     retention; plan §3.5 / §10). Surfaced as its own card so
+//     operators can spot the §3.5 three-state UX in aggregate.
+//
+// See plan §4.1 / CP10 (`docs/plan_instance_pools_tab.md`).
+
+import {
+  Activity,
+  AlertTriangle,
+  BarChart3,
+  DollarSign,
+  Layers,
+  Server,
+} from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  useInstancePoolSummary,
+  useTopInstancePools,
+} from '@/hooks/useInstancePools';
+import type { DateRange } from '@/types/job-spend';
+
+interface InstancePoolsSummaryCardsProps {
+  dateRange: DateRange;
+}
+
+// `Intl.NumberFormat` is hoisted out of the component so it isn't
+// reconstructed on every render (matches the pattern in
+// `AllPurposeSummaryCards` / `SummaryCards`).
+const currencyFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const integerFormatter = new Intl.NumberFormat('en-US');
+const formatCurrency = (amount: number) => currencyFormatter.format(amount);
+const formatNumber = (n: number) => integerFormatter.format(n);
+
+export const InstancePoolsSummaryCards = ({
+  dateRange,
+}: InstancePoolsSummaryCardsProps) => {
+  const { data: metrics, isLoading: isMetricsLoading } =
+    useInstancePoolSummary(dateRange);
+  const { data: topPools, isLoading: isTopPoolsLoading } = useTopInstancePools(
+    dateRange,
+    5,
+  );
+
+  if (isMetricsLoading) {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {[...Array(4)].map((_, i) => (
+          <Card key={i}>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <Skeleton className="h-4 w-[100px]" />
+              <Skeleton className="h-4 w-4" />
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-8 w-[120px] mb-2" />
+              <Skeleton className="h-3 w-[80px]" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
+  if (!metrics) {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <Card>
+          <CardContent className="p-6">
+            <div className="text-center text-muted-foreground">
+              No instance pool data available for the selected date range
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const dailyAverageSpend =
+    metrics.total_spend / Math.max(metrics.date_range_days, 1);
+  const hasOrphanedPools = metrics.orphaned_pools > 0;
+
+  return (
+    <div className="space-y-6">
+      {/* KPI cards: Total DBU Spend / Active Pools / Active Clusters / Avg per pool-day */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Total DBU Spend
+            </CardTitle>
+            <DollarSign className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-red-600">
+              {formatCurrency(metrics.total_databricks_cost)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {metrics.date_range_days} day
+              {metrics.date_range_days !== 1 ? 's' : ''} period · v1: DBU only
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Active Pools</CardTitle>
+            <Layers className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-blue-600">
+              {formatNumber(metrics.total_pools)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {formatCurrency(dailyAverageSpend)}/day avg
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Active Clusters
+            </CardTitle>
+            <Server className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-green-600">
+              {formatNumber(metrics.total_clusters)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              distinct clusters attached
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Avg per Pool-Day
+            </CardTitle>
+            <BarChart3 className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-amber-600">
+              {formatCurrency(metrics.avg_cost_per_pool_day)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              max {formatCurrency(metrics.max_cost_per_pool_day)}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Bottom strip: orphan pools card (left) + top-5 pools card (right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Orphan / metadata-state card — surfaces §3.5 three-state UX
+            at the aggregate level. */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <AlertTriangle
+                className={`h-5 w-5 ${
+                  hasOrphanedPools
+                    ? 'text-amber-500'
+                    : 'text-muted-foreground'
+                }`}
+              />
+              Pool Metadata
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-muted-foreground">
+                  Orphaned pools
+                </div>
+                <div className="text-right">
+                  <div
+                    className={`text-2xl font-bold ${
+                      hasOrphanedPools
+                        ? 'text-amber-600'
+                        : 'text-muted-foreground'
+                    }`}
+                    title="Pools with billing rows but no row in system.compute.instance_pools — typically deleted before retention or located in another region"
+                  >
+                    {formatNumber(metrics.orphaned_pools)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    of {formatNumber(metrics.total_pools)} pool
+                    {metrics.total_pools === 1 ? '' : 's'}
+                  </div>
+                </div>
+              </div>
+              <div className="text-xs text-muted-foreground border-t pt-3">
+                {hasOrphanedPools ? (
+                  <>
+                    Cost data is still accurate for orphaned pools — only the
+                    pool config is missing. Most common cause: deleted before
+                    Oct 2023, or pool snapshot lives in another region.
+                  </>
+                ) : (
+                  <>
+                    All pools have current metadata in
+                    {' '}<span className="font-mono">system.compute.instance_pools</span>.
+                  </>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Top 5 Costliest Pools */}
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle className="text-lg">Top 5 Costliest Pools</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {isTopPoolsLoading ? (
+              <TopListSkeleton />
+            ) : topPools && topPools.length > 0 ? (
+              <div className="space-y-3">
+                {topPools.map((pool, index) => {
+                  const hasName =
+                    !!pool.pool_name && pool.pool_name.trim().length > 0;
+                  const label = hasName
+                    ? pool.pool_name!
+                    : `Pool ${pool.instance_pool_id}`;
+                  return (
+                    <div
+                      key={pool.instance_pool_id}
+                      className="flex justify-between items-center"
+                    >
+                      <div className="flex items-center space-x-2 min-w-0">
+                        <span className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded">
+                          #{index + 1}
+                        </span>
+                        <span
+                          className={`text-sm font-medium truncate ${
+                            hasName ? '' : 'font-mono text-muted-foreground'
+                          }`}
+                          title={
+                            hasName
+                              ? `${label} — ${pool.instance_pool_id}`
+                              : `Unnamed — ${pool.instance_pool_id}`
+                          }
+                        >
+                          {label}
+                        </span>
+                      </div>
+                      <div className="text-right shrink-0 ml-2">
+                        <div className="text-sm font-semibold">
+                          {formatCurrency(pool.total_cost)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {pool.cluster_count} cluster
+                          {pool.cluster_count === 1 ? '' : 's'} ·{' '}
+                          {pool.active_days} day
+                          {pool.active_days === 1 ? '' : 's'}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <EmptyTopList label="No pools found for this period" />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+const TopListSkeleton = () => (
+  <div className="space-y-3">
+    {[...Array(5)].map((_, i) => (
+      <div key={i} className="flex justify-between items-center">
+        <Skeleton className="h-4 w-[160px]" />
+        <Skeleton className="h-4 w-[100px]" />
+      </div>
+    ))}
+  </div>
+);
+
+const EmptyTopList = ({ label }: { label: string }) => (
+  <div className="text-center text-muted-foreground py-4 flex items-center justify-center gap-2">
+    <Activity className="h-4 w-4" />
+    <span className="text-sm">{label}</span>
+  </div>
+);

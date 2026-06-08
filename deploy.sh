@@ -238,11 +238,31 @@ fi
 echo "✅ Workspace directory created"
 
 echo "📤 Syncing source code to workspace..."
-# Use databricks sync to properly update all files including requirements.txt
+# Use databricks sync to properly update all files including requirements.txt.
+# Exclude frontend source (already built into client/build) and root-level
+# package.json files so the Databricks Apps platform does not attempt to run
+# `npm install` (which times out against the internal npm proxy).
+SYNC_EXCLUDES=(
+  --exclude "package.json"
+  --exclude "package-lock.json"
+  --exclude "client/package.json"
+  --exclude "client/package-lock.json"
+  --exclude "client/src"
+  --exclude "client/node_modules"
+  --exclude "client/vite.config.ts"
+  --exclude "client/tsconfig.json"
+  --exclude "client/tsconfig.app.json"
+  --exclude "client/tsconfig.node.json"
+  --exclude "client/components.json"
+  --exclude "client/index.html"
+  --exclude "client/postcss.config.js"
+  --exclude "client/tailwind.config.js"
+  --exclude "client/eslint.config.js"
+)
 if [ "$DATABRICKS_AUTH_TYPE" = "databricks-cli" ]; then
-  databricks sync . "$DBA_SOURCE_CODE_PATH" --profile "$DATABRICKS_CONFIG_PROFILE"
+  databricks sync . "$DBA_SOURCE_CODE_PATH" "${SYNC_EXCLUDES[@]}" --profile "$DATABRICKS_CONFIG_PROFILE"
 else
-  databricks sync . "$DBA_SOURCE_CODE_PATH"
+  databricks sync . "$DBA_SOURCE_CODE_PATH" "${SYNC_EXCLUDES[@]}"
 fi
 echo "✅ Source code uploaded"
 print_timing "Workspace setup completed"

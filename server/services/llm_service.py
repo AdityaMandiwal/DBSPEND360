@@ -7,7 +7,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
 from server.config.cloud_platform import cloud_config
-from server.models.job_spend import ClusterDetails
+from server.models.job_spend import ClusterDetails, InstancePoolDetails
 from server.services.databricks_service import LOOKBACK_DAYS
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 LLM_TEMPERATURE = 0.2
 JOB_MAX_TOKENS = 600
 CLUSTER_MAX_TOKENS = 700
+INSTANCE_POOL_MAX_TOKENS = 800
 
 # ---------------------------------------------------------------------------
 # System prompts — stable instruction sets, never change per request.
@@ -153,6 +154,101 @@ enabling it, and do NOT factor it into the rating.
 - Always include units ($/run, % of total, $/month)
 - 2-4 bullet points per section"""
 
+INSTANCE_POOL_ANALYSIS_PROMPT = """\
+You are a senior FinOps analyst specializing in Databricks instance-pool \
+optimization. You are analytical, precise, and produce zero fluff. Every word \
+must earn its place.
+
+## Strict Rules
+
+1. Every cost-related claim MUST cite a specific number from the input data.
+2. Configuration observations may be qualitative but must be directly supported by input data.
+3. Do NOT infer, estimate, or assume values not present in the data.
+4. If data is insufficient for an assessment, state: "Insufficient data for this assessment"
+5. If no optimization exists, state: "No actionable optimizations identified" and briefly explain why.
+6. NEVER fabricate cost estimates or reference external benchmarks.
+7. **v1 cloud-cost caveat (MANDATORY).** Idle and active cloud VM cost is
+   structurally invisible to this v1 analysis — pool DBU consumption only
+   appears in `system.billing.usage` when a cluster is actively attached,
+   and warm-but-idle pool capacity emits zero usage rows. Your
+   recommendations MUST be qualified accordingly and all dollar-impact
+   estimates MUST use DBU cost only. You MUST include the exact phrase
+   "cloud VM cost (including idle capacity) is not visible in v1" at
+   least once in your output, as a standalone caveat bullet under
+   Configuration Gaps or as a parenthetical inside any recommendation
+   that touches idle capacity. Do not invent idle-VM savings figures.
+
+## Classification Rubric
+
+Evaluate based on idle-instance configuration, autotermination tuning, and the
+ratio of distinct attached clusters to active days:
+- CRITICAL ISSUES: major inefficiencies (e.g. `min_idle_instances` >> peak
+  concurrent attachment, autotermination disabled/excessive on a low-traffic
+  pool)
+- NEEDS ATTENTION: partially tuned; one or more knobs misaligned with
+  observed workload
+- WELL-OPTIMIZED: idle-instance count and autotermination minutes are
+  proportionate to observed peak concurrent attached clusters and active-day
+  density
+
+## Pool-Specific Signals
+
+- `min_idle_instances` vs `peak_concurrent_clusters` — if min idle persistently
+  exceeds peak attachment, the pool is paying to keep warm capacity that is
+  never claimed. Flag with the qualifier "DBU savings only — idle VM cost not
+  visible in v1".
+- `idle_instance_autotermination_minutes` — long values keep VMs warm
+  unnecessarily for sporadic workloads; short values defeat the point of
+  pooling under bursty workloads. Cross-reference with `active_days` and
+  cluster-fanout.
+- `node_type` appropriateness — assess in terms of cluster fanout (high
+  distinct-cluster count per active day suggests many short-lived job
+  clusters) but acknowledge you don't have per-cluster SKU mix.
+- Ratio `distinct_cluster_count / active_days` — high fanout (>10/day on
+  average) is a strong signal that the pool is shared substrate for job
+  clusters; recommend keeping autotermination low to maximize VM reuse.
+- `pool_overhead_rows` — non-zero means some DBU is billed at the pool
+  level with no attributable cluster_id (`__pool_overhead__` bucket per
+  plan §3.3); call out as accounting noise if it dominates total spend.
+
+## Missing Data Protocol
+
+1. No cost data -> analyze configuration only; note "no spend data available for $ impact estimates".
+2. Snapshot missing (`pool_snapshot_missing=true`) -> configuration analysis is
+   disabled; report only on cost shape and recommend re-creating the pool with
+   tracked metadata if continued use is expected.
+3. Partial configuration -> analyze available fields; list missing fields explicitly.
+
+## Recommendations (max 3, ranked by estimated $ impact)
+
+- Each MUST reference >= 1 specific configuration or cost metric from input.
+- Each MUST include a dollar impact estimate when cost data is available.
+- All dollar-impact estimates are DBU-only (per the v1 cloud-cost caveat
+  above). Do not invent idle-VM savings.
+- Without cost data: describe qualitative impact; state "dollar impact requires cost data".
+- No duplicates. No filler.
+
+## Output Format (IMMUTABLE — do not add, remove, or rename sections)
+
+## 1. Overall Rating [CLASSIFICATION]
+## 2. Right-Sizing Assessment
+## 3. Cost Savings Opportunities (max 3, ranked by $ impact)
+## 4. Idle Waste Risk
+## 5. Configuration Gaps
+
+## Section 4 — Idle Waste Risk
+
+- Assess using `min_idle_instances`, `idle_instance_autotermination_minutes`,
+  `peak_concurrent_clusters`, and `active_days`. Always conclude this section
+  with an explicit reminder that idle cloud VM cost is not visible in v1.
+
+## Formatting
+
+- Currency: $ prefix, comma separators, 2 decimals (e.g., $1,234.56)
+- Percentages: 1 decimal + % (e.g., 47.3%)
+- Always include units ($/day, % of total, $/month)
+- 2-4 bullet points per section"""
+
 
 class LLMService:
     """Service for LLM-powered cost and configuration analysis."""
@@ -283,6 +379,63 @@ class LLMService:
         except Exception as e:
             logger.error("Error in LLM cluster analysis: %s", str(e))
             return self._build_cluster_fallback(cluster_details, cost_summary)
+
+    async def analyze_instance_pool_costs(
+        self,
+        pool_details: InstancePoolDetails,
+        cost_summary: Optional[dict] = None,
+    ) -> str:
+        """Analyze instance-pool configuration + cost shape via LLM.
+
+        Sibling of ``analyze_cluster_configuration`` but bound to
+        ``INSTANCE_POOL_ANALYSIS_PROMPT`` and the pool-specific
+        signals plan §CP7 calls out (idle config vs observed peak
+        concurrent attachment, autotermination tuning, cluster-fanout
+        ratio). The prompt MANDATES the v1 cloud-cost caveat — if the
+        model drops it, ``CP7`` exit criterion #4 and ``§9`` acceptance
+        criterion #10 will catch the regression in the smoke tests.
+
+        Args:
+            pool_details: Pool snapshot + REST-resolved creator GUID
+                from ``DatabricksService.get_instance_pool_details``.
+            cost_summary: Pre-computed cost shape from
+                ``DatabricksService.get_pool_cost_summary``. ``None``
+                renders the "no cost data" branch of the prompt.
+
+        Returns:
+            LLM-generated analysis text, or a structured fallback on
+            failure (the fallback also carries the v1 cloud-cost caveat
+            so the §10 acceptance criterion holds even on error).
+        """
+        try:
+            user_message = self._build_pool_user_message(
+                pool_details, cost_summary
+            )
+
+            response = self.client.serving_endpoints.query(
+                name=self.model_name,
+                messages=[
+                    ChatMessage(
+                        role=ChatMessageRole.SYSTEM,
+                        content=INSTANCE_POOL_ANALYSIS_PROMPT,
+                    ),
+                    ChatMessage(
+                        role=ChatMessageRole.USER,
+                        content=user_message,
+                    ),
+                ],
+                max_tokens=INSTANCE_POOL_MAX_TOKENS,
+                temperature=LLM_TEMPERATURE,
+            )
+
+            if response.choices and len(response.choices) > 0:
+                return response.choices[0].message.content.strip()
+
+            return self._build_pool_fallback(pool_details, cost_summary)
+
+        except Exception as e:
+            logger.error("Error in LLM instance-pool analysis: %s", str(e))
+            return self._build_pool_fallback(pool_details, cost_summary)
 
     # ------------------------------------------------------------------
     # User-message builders (data only — no instructions)
@@ -521,6 +674,134 @@ class LLMService:
 
         return "\n".join(lines)
 
+    def _build_pool_user_message(
+        self,
+        pool: InstancePoolDetails,
+        cost_summary: Optional[dict],
+    ) -> str:
+        """Assemble the data-only USER message for instance-pool analysis.
+
+        Renders the pool config block, the v1 attribution preamble (snapshot
+        state + creator GUID rendering rules from plan §3.4 / §3.5), and the
+        cost shape over the configured lookback window. The system prompt's
+        v1 cloud-cost caveat is restated as a `Notes` bullet so the model
+        cannot miss it.
+        """
+        if pool.pool_snapshot_missing:
+            snapshot_state = (
+                "Snapshot missing — `system.compute.instance_pools` has no "
+                "row for this pool (deleted before retention, or located in "
+                "another region). DBU cost is still accurate; configuration "
+                "fields below may be NULL."
+            )
+        elif pool.pool_deleted_at is not None:
+            snapshot_state = (
+                f"Deleted on {pool.pool_deleted_at.date().isoformat()} — "
+                "metadata reflects the configuration at the delete time."
+            )
+        else:
+            snapshot_state = "Active"
+
+        if pool.pool_creator_id:
+            creator_line = (
+                f"- Creator ID: {pool.pool_creator_id} "
+                "(GUID only — v1 does not resolve to email)"
+            )
+        else:
+            creator_line = "- Creator ID: Unknown (REST API enrichment returned no tag)"
+
+        def _fmt_int(v):
+            return str(v) if v is not None else "Not specified"
+
+        custom_tags_str = self._filter_tags(pool.custom_tags)
+
+        lines: list[str] = [
+            f"Pool Snapshot State: {snapshot_state}",
+            "",
+            "## Pool Configuration",
+            f"- Pool Name: {pool.pool_name or f'Pool {pool.instance_pool_id}'}",
+            f"- Node Type: {pool.node_type or 'Not specified'}",
+            f"- Min Idle Instances: {_fmt_int(pool.min_idle_instances)}",
+            f"- Max Capacity: {_fmt_int(pool.max_capacity)}",
+            (
+                "- Idle Autotermination: "
+                f"{_fmt_int(pool.idle_instance_autotermination_minutes)} minutes"
+            ),
+            f"- Preloaded Spark Version: {pool.preloaded_spark_version or 'Not specified'}",
+            creator_line,
+            "",
+            "## Custom Tags",
+            custom_tags_str,
+            "",
+        ]
+
+        if (
+            cost_summary is not None
+            and cost_summary.get("active_days", 0) > 0
+        ):
+            lookback = cost_summary.get("lookback_days", LOOKBACK_DAYS)
+            lines.append(f"## Cost Summary ({lookback}-day window)")
+            lines.append(
+                f"- Total Spend (DBU only): ${cost_summary['total_spend']:,.2f}"
+            )
+            lines.append(
+                f"- Databricks Cost: ${cost_summary['total_databricks_cost']:,.2f}"
+            )
+            lines.append(
+                f"- Distinct Clusters Attached: {cost_summary['distinct_cluster_count']}"
+            )
+            lines.append(
+                f"- Active Days: {cost_summary['active_days']}"
+            )
+            lines.append(
+                f"- Peak Concurrent Clusters (max distinct on any single day): "
+                f"{cost_summary['peak_concurrent_clusters']}"
+            )
+            ratio = (
+                cost_summary["distinct_cluster_count"]
+                / cost_summary["active_days"]
+                if cost_summary["active_days"] > 0 else 0.0
+            )
+            lines.append(
+                f"- Cluster Fanout (distinct_clusters / active_days): {ratio:.2f}"
+            )
+            lines.append(
+                f"- Avg Cost / Pool-Day: "
+                f"${cost_summary['avg_cost_per_pool_day']:,.2f}"
+            )
+            first = cost_summary.get("first_active_date") or "N/A"
+            last = cost_summary.get("last_active_date") or "N/A"
+            lines.append(f"- Active Period: {first} to {last}")
+            overhead = cost_summary.get("pool_overhead_rows", 0)
+            if overhead:
+                lines.append(
+                    f"- Pool-Overhead Rows: {overhead} "
+                    "(DBU billed at pool level with no attributable cluster_id)"
+                )
+            if cost_summary.get("limited_history"):
+                lines.append(
+                    "- NOTE: limited history (<3 active days) — trend "
+                    "signals are unreliable."
+                )
+        elif cost_summary is not None:
+            lines.append(f"## Cost Summary ({LOOKBACK_DAYS}-day window)")
+            lines.append(
+                "No spend data available for this pool in the lookback window."
+            )
+        else:
+            lines.append("## Cost Summary")
+            lines.append("Cost data unavailable.")
+
+        lines.extend([
+            "",
+            "## Notes",
+            "- v1 cloud-cost caveat: cloud VM cost (including idle "
+            "capacity) is not visible in v1. All dollar-impact estimates "
+            "must use DBU cost only.",
+        ])
+
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------
     # Structured fallbacks (never expose raw exceptions)
     # ------------------------------------------------------------------
@@ -595,6 +876,85 @@ class LLMService:
             "",
             "## 5. Configuration Gaps",
             "- Automated analysis could not be generated",
+        ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_pool_fallback(
+        pool_details: InstancePoolDetails,
+        cost_summary: Optional[dict],
+    ) -> str:
+        """Return structured fallback for instance-pool analysis.
+
+        The §10 acceptance criterion #10 requires that the v1 cloud-cost
+        caveat appears in the analysis output. We embed it under
+        Configuration Gaps so the assertion holds even when the LLM call
+        itself fails.
+        """
+        pool_name = (
+            pool_details.pool_name
+            or f"Pool {pool_details.instance_pool_id}"
+        )
+        node_type = pool_details.node_type or "N/A"
+        min_idle = (
+            str(pool_details.min_idle_instances)
+            if pool_details.min_idle_instances is not None else "N/A"
+        )
+        max_cap = (
+            str(pool_details.max_capacity)
+            if pool_details.max_capacity is not None else "N/A"
+        )
+        autoterm = (
+            f"{pool_details.idle_instance_autotermination_minutes} minutes"
+            if pool_details.idle_instance_autotermination_minutes is not None
+            else "N/A"
+        )
+
+        lines = [
+            "## 1. Overall Rating [DATA ONLY]",
+            f"- Pool: {pool_name}",
+            f"- Node Type: {node_type}",
+            f"- Min Idle: {min_idle} | Max Capacity: {max_cap}",
+            f"- Idle Autotermination: {autoterm}",
+            "- Automated classification unavailable",
+            "",
+            "## 2. Right-Sizing Assessment",
+        ]
+        if (
+            cost_summary
+            and isinstance(cost_summary.get("total_spend"), (int, float))
+            and cost_summary["total_spend"] > 0
+        ):
+            lines.append(
+                f"- Total Spend (DBU): ${cost_summary['total_spend']:,.2f}"
+            )
+            lines.append(
+                f"- Distinct Clusters: "
+                f"{cost_summary.get('distinct_cluster_count', 'N/A')}"
+            )
+            lines.append(
+                f"- Active Days: {cost_summary.get('active_days', 'N/A')}"
+            )
+            lines.append(
+                f"- Peak Concurrent Clusters: "
+                f"{cost_summary.get('peak_concurrent_clusters', 'N/A')}"
+            )
+        else:
+            lines.append("- No cost data available for sizing assessment")
+        lines.extend([
+            "",
+            "## 3. Cost Savings Opportunities",
+            "- Automated recommendations unavailable",
+            "",
+            "## 4. Idle Waste Risk",
+            f"- Idle Autotermination: {autoterm}",
+            "- Detailed analysis unavailable. Note: cloud VM cost "
+            "(including idle capacity) is not visible in v1.",
+            "",
+            "## 5. Configuration Gaps",
+            "- Automated analysis could not be generated",
+            "- Reminder: cloud VM cost (including idle capacity) is not "
+            "visible in v1; recommendations would be DBU-only.",
         ])
         return "\n".join(lines)
 

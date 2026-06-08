@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, Any
 from pydantic import BaseModel, Field, computed_field
 from server.config.cloud_platform import cloud_config
@@ -309,3 +309,426 @@ class CoverageTrendResponse(BaseModel):
     """Response for classification coverage trend."""
 
     data: list[CoverageTrendPoint]
+
+
+# ---------------------------------------------------------------------------
+# All-Purpose cluster models
+#
+# Wire-level types for the All-Purpose Clusters tab. Source table is
+# `dbspend360_total_all_purpose_spends`, keyed `(cluster_id, user_id, usage_date)`
+# with `user_id` derived from `system.compute.clusters.owned_by` (see plan
+# §3.2). Under v1 owner attribution every (cluster_id, usage_date) resolves to
+# exactly one user_id; the (user_id, ...) key shape is preserved for v2
+# multi-user attribution forward compatibility.
+# ---------------------------------------------------------------------------
+
+
+class AllPurposeUserSpend(BaseModel):
+    """Per-day cost contribution within an all-purpose cluster grouping.
+
+    Drill-down sub-row inside `GroupedAllPurposeCluster.users`. Under v1 owner
+    attribution there is exactly one user per (cluster_id, usage_date), so
+    this row collapses to a single calendar day's cost on the cluster owned by
+    that user. Forward-compatible with v2 multi-user attribution where the
+    same cluster-day can fan out to multiple users.
+    """
+
+    cluster_id: str
+    user_id: str
+    usage_date: date
+    cloud_cost: float
+    databricks_cost: float
+    compute_cost: Optional[float] = None
+    storage_cost: Optional[float] = None
+    network_cost: Optional[float] = None
+    other_cost: Optional[float] = None
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        """Calculate total cost as sum of cloud and Databricks costs."""
+        return self.cloud_cost + self.databricks_cost
+
+    @computed_field
+    @property
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.cloud_cost / self.total_cost) * 100
+
+    @computed_field
+    @property
+    def databricks_percentage(self) -> float:
+        """Calculate Databricks cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.databricks_cost / self.total_cost) * 100
+
+
+class AllPurposeClusterSpend(BaseModel):
+    """Per-cluster cost contribution within a user grouping.
+
+    Drill-down sub-row inside `GroupedAllPurposeUser.clusters`. Aggregates a
+    user's cost on a single cluster across the queried date window;
+    `cluster_active_days` is `COUNT(DISTINCT usage_date)` for that
+    `(user_id, cluster_id)` pair. `data_security_mode` is denormalized so the
+    UI can render the attribution-quality badge ("Dedicated" / "Shared" /
+    "Legacy" / "Unknown") next to the cluster name without a second lookup.
+    """
+
+    cluster_id: str
+    cluster_name: Optional[str] = None
+    user_id: str
+    cluster_active_days: int
+    cloud_cost: float
+    databricks_cost: float
+    compute_cost: Optional[float] = None
+    storage_cost: Optional[float] = None
+    network_cost: Optional[float] = None
+    other_cost: Optional[float] = None
+    data_security_mode: Optional[str] = None
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        """Calculate total cost as sum of cloud and Databricks costs."""
+        return self.cloud_cost + self.databricks_cost
+
+    @computed_field
+    @property
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.cloud_cost / self.total_cost) * 100
+
+    @computed_field
+    @property
+    def databricks_percentage(self) -> float:
+        """Calculate Databricks cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.databricks_cost / self.total_cost) * 100
+
+
+class GroupedAllPurposeCluster(BaseModel):
+    """Cluster-level rollup for the By-Cluster sub-tab.
+
+    One row per all-purpose cluster within the queried window. `users` is the
+    per-day drill-down expansion (under v1: one user per day, the cluster
+    owner). `data_security_mode` drives the UI attribution-quality badge.
+    `cluster_name` may be NULL when the `system.compute.clusters` snapshot row
+    is missing (cluster deleted before October 2023, see plan §10); the UI
+    falls back to `Cluster {cluster_id}` in that case.
+    """
+
+    cluster_id: str
+    cluster_name: Optional[str] = None
+    owner_user_id: str
+    data_security_mode: Optional[str] = None
+    active_days: int
+    total_cloud_cost: float
+    total_databricks_cost: float
+    total_compute_cost: Optional[float] = None
+    total_storage_cost: Optional[float] = None
+    total_network_cost: Optional[float] = None
+    total_other_cost: Optional[float] = None
+    users: list[AllPurposeUserSpend] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        """Calculate total cost across all users on this cluster."""
+        return self.total_cloud_cost + self.total_databricks_cost
+
+    @computed_field
+    @property
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.total_cloud_cost / self.total_cost) * 100
+
+    @computed_field
+    @property
+    def databricks_percentage(self) -> float:
+        """Calculate Databricks cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.total_databricks_cost / self.total_cost) * 100
+
+
+class GroupedAllPurposeUser(BaseModel):
+    """User-level rollup for the By-User (chargeback) sub-tab.
+
+    One row per cluster owner within the queried window. `clusters` lists the
+    per-cluster drill-down rows (one entry per (user_id, cluster_id) pair).
+    `user_active_days` is `COUNT(DISTINCT usage_date)` from the raw rows
+    (not summed across clusters — a user active on multiple clusters on the
+    same day must not double-count; see plan §5.2).
+    """
+
+    user_id: str
+    cluster_count: int
+    user_active_days: int
+    total_cloud_cost: float
+    total_databricks_cost: float
+    total_compute_cost: Optional[float] = None
+    total_storage_cost: Optional[float] = None
+    total_network_cost: Optional[float] = None
+    total_other_cost: Optional[float] = None
+    clusters: list[AllPurposeClusterSpend] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def total_cost(self) -> float:
+        """Calculate total cost across all clusters this user owns."""
+        return self.total_cloud_cost + self.total_databricks_cost
+
+    @computed_field
+    @property
+    def cloud_percentage(self) -> float:
+        """Calculate cloud cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.total_cloud_cost / self.total_cost) * 100
+
+    @computed_field
+    @property
+    def databricks_percentage(self) -> float:
+        """Calculate Databricks cost as percentage of total."""
+        if self.total_cost == 0:
+            return 0.0
+        return (self.total_databricks_cost / self.total_cost) * 100
+
+
+class AllPurposeSummaryMetrics(BaseModel):
+    """Summary metrics for the All-Purpose tab KPI strip.
+
+    `avg_cost_per_cluster_day` / `max_cost_per_cluster_day` /
+    `min_cost_per_cluster_day` are computed at the (cluster_id, user_id,
+    usage_date) grain (see plan §5.3) — not per cluster overall — so the
+    "average" is interpretable as "what does a single day on a single cluster
+    cost on average".
+    """
+
+    total_clusters: int
+    total_users: int
+    total_spend: float
+    avg_cost_per_cluster_day: float
+    max_cost_per_cluster_day: float
+    min_cost_per_cluster_day: float
+    total_cloud_cost: float
+    total_databricks_cost: float
+    total_compute_cost: Optional[float] = None
+    total_storage_cost: Optional[float] = None
+    total_network_cost: Optional[float] = None
+    total_other_cost: Optional[float] = None
+    date_range_days: int
+
+
+class PaginatedAllPurposeClusters(BaseModel):
+    """Paginated response for the By-Cluster sub-tab."""
+
+    data: list[GroupedAllPurposeCluster]
+    total_count: int
+    page: int
+    per_page: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
+
+
+class PaginatedAllPurposeUsers(BaseModel):
+    """Paginated response for the By-User sub-tab."""
+
+    data: list[GroupedAllPurposeUser]
+    total_count: int
+    page: int
+    per_page: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
+
+
+# ---------------------------------------------------------------------------
+# Instance Pool models
+#
+# Wire-level types for the Instance Pools tab. Source table is
+# `dbspend360_total_pool_spends`, keyed `(instance_pool_id, cluster_id,
+# usage_date)`. Two-level drill-down: pool row -> per-day expansion ->
+# per-cluster expansion (see plan §3.3, §5.2).
+#
+# v1 cost model is DBU-only: `cloud_cost` is structurally reserved on every
+# row but always None until v2 lights up the cloud-cost-explorer pool join
+# (plan §3.2). `total_cost` is a plain field rather than a computed_field
+# because the §5.2 service-layer rollup increments it directly during
+# day-level aggregation, and `cloud_cost = None` would otherwise force
+# NoneType arithmetic in a computed expression.
+#
+# Creator info is intentionally absent from list-shape models. The
+# `system.compute.instance_pools.tags` column excludes default tags so the
+# auto-applied `DatabricksInstancePoolCreatorId` is not visible there;
+# `pool_creator_id` is resolved per-request via the Instance Pools REST API
+# in `InstancePoolDetails` only (plan §3.4, §4.1, CP6). GUID -> email
+# resolution is deferred to v2 (plan §13).
+# ---------------------------------------------------------------------------
+
+
+class InstancePoolClusterSpend(BaseModel):
+    """Per-cluster cost contribution within a pool's per-day expansion.
+
+    Drill-down sub-row inside `InstancePoolDailySpend.clusters`. One entry
+    per cluster that attached to the pool on a given `usage_date`.
+    `cluster_id == '__pool_overhead__'` represents pool-level bootstrap
+    charges that have no attributable cluster (plan §3.3 edge case); the UI
+    renders that row as italicized "Pool overhead". `cloud_cost` is reserved
+    for v2 and is always None in v1.
+    """
+
+    cluster_id: str
+    databricks_cost: float
+    cloud_cost: Optional[float] = None
+    total_cost: float = 0.0
+
+
+class InstancePoolDailySpend(BaseModel):
+    """Per-day cost contribution within an instance pool grouping.
+
+    Drill-down sub-row inside `GroupedInstancePool.days`. `clusters` is the
+    second-level expansion (plan §3.3) listing per-cluster contributions for
+    that day, sorted DESC by `total_cost` (per the §5.2 SQL ORDER BY).
+    `cluster_count_on_day` equals `len(clusters)` by construction in the
+    service-layer rollup. `cloud_cost` is reserved for v2 and is always
+    None in v1; `total_cost` is plumbed straight through from the SQL
+    projection rather than computed (see module docstring rationale).
+    """
+
+    usage_date: date
+    cluster_count_on_day: int
+    databricks_cost: float
+    cloud_cost: Optional[float] = None
+    total_cost: float = 0.0
+    clusters: list[InstancePoolClusterSpend] = Field(default_factory=list)
+
+
+class GroupedInstancePool(BaseModel):
+    """Pool-level rollup for the By-Pool list view.
+
+    One row per instance pool within the queried window. `days` is the
+    first-level drill-down expansion (plan §3.3). `pool_snapshot_missing`
+    and `pool_deleted_at` together encode the three-state badge from plan
+    §3.5: active (both falsy), "Deleted YYYY-MM-DD" (`pool_deleted_at`
+    populated, missing flag false), "Snapshot missing" (missing flag true,
+    `pool_deleted_at` NULL). `pool_name` falls back to `Pool {pool_id}` in
+    the snapshot-missing path (plan §5.5). No creator field — creator info
+    is modal-only via the REST API in v1 (plan §3.4, §4.1).
+    """
+
+    instance_pool_id: str
+    pool_name: Optional[str] = None
+    node_type: Optional[str] = None
+    min_idle_instances: Optional[int] = None
+    max_capacity: Optional[int] = None
+    idle_instance_autotermination_minutes: Optional[int] = None
+    pool_snapshot_missing: bool = False
+    pool_deleted_at: Optional[datetime] = None
+    cluster_count: int
+    active_days: int
+    total_databricks_cost: float
+    total_cloud_cost: Optional[float] = None
+    total_cost: float
+    days: list[InstancePoolDailySpend] = Field(default_factory=list)
+
+
+class InstancePoolSummaryMetrics(BaseModel):
+    """Summary metrics for the Instance Pools tab KPI strip.
+
+    `avg_cost_per_pool_day` / `max_cost_per_pool_day` /
+    `min_cost_per_pool_day` are computed at the (instance_pool_id,
+    usage_date) grain (plan §5.3) so "average" reads as "what does a single
+    day on a single pool cost on average". `orphaned_pools` is the count of
+    distinct pools with `pool_snapshot_missing = TRUE`, surfaced as a KPI so
+    operators can spot lost-metadata churn at a glance (plan §10 risk).
+    `total_cloud_cost` is intentionally left optional: in v1 every row has
+    `cloud_cost = NULL` so the SUM is always 0 and the KPI is hidden;
+    keeping it nullable in the wire shape avoids a v2 schema migration.
+    """
+
+    total_pools: int
+    total_clusters: int
+    orphaned_pools: int
+    total_spend: float
+    avg_cost_per_pool_day: float
+    max_cost_per_pool_day: float
+    min_cost_per_pool_day: float
+    total_databricks_cost: float
+    total_cloud_cost: Optional[float] = None
+    date_range_days: int
+
+
+class InstancePoolDetails(BaseModel):
+    """Pool configuration details for the pool details modal.
+
+    Sourced from `system.compute.instance_pools` (most-recent SCD snapshot
+    via `max_by(col, change_time)` per field — see plan §5.5 / CP6).
+    `pool_creator_id` carries the GUID resolved per-request by
+    `DatabricksService.get_pool_metadata`, which reads
+    `default_tags['DatabricksInstancePoolCreatorId']` from the Instance Pools
+    REST API response. None when the REST API call fails or the pool has no
+    creator tag (e.g. workspace-system-created pools). `pool_creator_user_name`
+    (email) is intentionally absent in v1 — the SDK's `GetInstancePool`
+    dataclass exposes only `default_tags`, and GUID -> email resolution
+    requires a second hop through the Workspace users API which is deferred
+    to v2 (plan §13).
+
+    `node_type` matches the actual `system.compute.instance_pools` column
+    (NOT `node_type_id` — see plan §10 risks row).
+    `preloaded_spark_version` is singular (the column is also singular).
+    `pool_snapshot_missing=True` indicates no system-table snapshot row was
+    found; in that case the modal still attempts the REST API enrichment so
+    a deleted-but-still-tracked pool can surface its name and creator GUID
+    (plan CP6).
+    """
+
+    instance_pool_id: str
+    pool_name: Optional[str] = None
+    pool_creator_id: Optional[str] = None
+    node_type: Optional[str] = None
+    min_idle_instances: Optional[int] = None
+    max_capacity: Optional[int] = None
+    idle_instance_autotermination_minutes: Optional[int] = None
+    preloaded_spark_version: Optional[str] = None
+    custom_tags: Optional[dict[str, str]] = None
+    pool_snapshot_missing: bool = False
+    pool_deleted_at: Optional[datetime] = None
+
+
+class InstancePoolAnalysis(BaseModel):
+    """LLM-generated configuration analysis for an instance pool.
+
+    Returned by `/api/instance-pools/{id}/analyze`. The analysis text is
+    expected to include the v1 cloud-cost caveat (plan §10 risks row, CP7
+    exit criterion #4) since idle and active cloud VM cost is invisible to
+    v1 (plan §3.2). The output structure mirrors `ClusterAnalysis`'s
+    config-shape sections (Overall Rating / Right-Sizing / Cost Savings /
+    Idle Waste Risk / Configuration Gaps) rather than the run-cost trend
+    structure used by `CostAnalysis`.
+    """
+
+    instance_pool_id: str
+    analysis: str
+    timestamp: str = Field(default_factory=lambda: date.today().isoformat())
+
+
+class PaginatedInstancePools(BaseModel):
+    """Paginated response for the By-Pool list view."""
+
+    data: list[GroupedInstancePool]
+    total_count: int
+    page: int
+    per_page: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
