@@ -53,7 +53,7 @@ resources:
         - name: overlap_days
           default: "10"
         - name: schema
-          default: 03apr
+          default: 04june
         - name: workspace_ids
           default: ""
       performance_target: PERFORMANCE_OPTIMIZED
