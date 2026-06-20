@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from datetime import date, timedelta
 from typing import Dict, List, Literal, Optional, Tuple
 
@@ -23,6 +24,12 @@ from server.config.config_loader import app_config
 logger = logging.getLogger(__name__)
 
 LOOKBACK_DAYS = 180
+
+# How long to cache the job_id -> name map resolved from system.lakeflow.jobs.
+# That system table costs ~4-5s to scan regardless of filtering, so we collapse
+# it once and reuse the result. Job names rarely change, so modest staleness is
+# an acceptable trade for a ~5x faster job list/search.
+JOB_NAME_MAP_TTL_SECONDS = 30 * 60
 
 
 class DatabricksService:
@@ -53,6 +60,11 @@ class DatabricksService:
         self.pool_table_name = app_config.pool_table_name
         self.query_timeout = app_config.query_timeout_seconds
         self.job_name_cache: Dict[str, str] = {}  # Cache for job names
+        # Bulk {job_id: latest_name} map cached with a TTL. Populated from
+        # system.lakeflow.jobs (see `_get_job_name_map`). Lets the grouped job
+        # query skip the expensive SCD join and attach names in Python instead.
+        self._job_name_map: Optional[Dict[str, str]] = None
+        self._job_name_map_ts: float = 0.0
         # Lazy cache for pool name + creator GUID resolved per-request via
         # WorkspaceClient.instance_pools.get(...). Plan §3.4 / §4.1 / CP6:
         # the system table's `tags` column excludes default tags so the
@@ -78,6 +90,46 @@ class DatabricksService:
             job_name = f"Job {job_id}"
             self.job_name_cache[job_id] = job_name
             return job_name
+
+    def _get_job_name_map(self, force_refresh: bool = False) -> Dict[str, str]:
+        """Return a cached {job_id: latest_name} map for all jobs.
+
+        Joining system.lakeflow.jobs on every request is the dominant cost of
+        the job list/search (~4-5s) because that system table has a high fixed
+        read cost and does not prune on job_id or name. We collapse its SCD
+        history to the latest name per job once, cache it with a TTL, and let
+        callers attach names in Python so the hot query never touches it.
+        On refresh failure we serve the previous (stale) map if available.
+        """
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._job_name_map is not None
+            and (now - self._job_name_map_ts) < JOB_NAME_MAP_TTL_SECONDS
+        ):
+            return self._job_name_map
+
+        query = """
+        SELECT job_id, MAX_BY(name, change_time) AS name
+        FROM system.lakeflow.jobs
+        GROUP BY job_id
+        """
+        try:
+            response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=query,
+            )
+            name_map: Dict[str, str] = {}
+            if response.result and response.result.data_array:
+                for row in response.result.data_array:
+                    if row[0] is not None and row[1] is not None:
+                        name_map[str(row[0])] = row[1]
+            self._job_name_map = name_map
+            self._job_name_map_ts = now
+            return name_map
+        except Exception as e:
+            logger.error("Failed to refresh job name map: %s", e)
+            return self._job_name_map if self._job_name_map is not None else {}
 
     async def get_job_spends(
         self,
@@ -470,17 +522,48 @@ class DatabricksService:
         against both job name (from system.lakeflow.jobs) and job ID.
         """
 
-        escaped_search = job_name.replace("'", "''") if job_name else None
-        search_clause = ""
-        if escaped_search:
-            search_clause = f"WHERE (j.job_id LIKE '%{escaped_search}%' OR LOWER(COALESCE(lj.name, '')) LIKE LOWER('%{escaped_search}%'))"
+        # Resolve job names from the in-memory cached map rather than joining
+        # system.lakeflow.jobs in the hot query. That join costs ~4-5s on every
+        # request (the system table has a high fixed read cost and does not
+        # prune on job_id/name) and dominated the latency; the aggregation
+        # itself is only ~1s. Names are attached in Python below.
+        name_map = self._get_job_name_map()
 
-        base_cte = f"""
+        # For a search, resolve the matching job_ids from the cached name map so
+        # the scan never has to touch system.lakeflow.jobs. We still keep a
+        # job_id LIKE predicate so an id substring matches even for jobs missing
+        # from the name map.
+        usage_search_filter = ""
+        if job_name:
+            escaped_search = job_name.replace("'", "''")
+            term = job_name.lower()
+            id_predicates = [f"job_id LIKE '%{escaped_search}%'"]
+            name_matched_ids = [
+                jid for jid, nm in name_map.items() if nm and term in nm.lower()
+            ]
+            if name_matched_ids:
+                # Cap the IN-list defensively; a term matching thousands of jobs
+                # is a degenerate search and the LIKE predicate still applies.
+                escaped_ids = [j.replace("'", "''") for j in name_matched_ids[:5000]]
+                in_list = ", ".join(f"'{j}'" for j in escaped_ids)
+                id_predicates.append(f"job_id IN ({in_list})")
+            usage_search_filter = "AND (" + " OR ".join(id_predicates) + ")"
+
+        data_query = f"""
         WITH filtered AS (
-            SELECT *
+            SELECT
+                job_id,
+                run_id,
+                cloud_cost,
+                databricks_cost,
+                compute_cost,
+                storage_cost,
+                network_cost,
+                other_cost
             FROM {self.table_name}
             WHERE usage_date >= '{start_date.isoformat()}'
             AND usage_date <= '{end_date.isoformat()}'
+            {usage_search_filter}
         ),
         run_level AS (
             SELECT
@@ -507,35 +590,19 @@ class DatabricksService:
                 COUNT(*) AS run_count
             FROM run_level
             GROUP BY job_id
-        )"""
-
-        data_query = f"""
-        {base_cte}
+        )
         SELECT
-            j.job_id,
-            j.total_cloud_cost,
-            j.total_databricks_cost,
-            j.run_count,
-            lj.name,
+            job_id,
+            total_cloud_cost,
+            total_databricks_cost,
+            run_count,
             COUNT(*) OVER() AS total_matching,
-            j.total_compute_cost,
-            j.total_storage_cost,
-            j.total_network_cost,
-            j.total_other_cost
-        FROM job_level j
-        LEFT JOIN (
-            -- system.lakeflow.jobs is an SCD table that retains one row per
-            -- (job_id, name, change_time) snapshot. SELECT DISTINCT job_id, name
-            -- would keep every historical name for a renamed job and fan the
-            -- aggregated upstream row out into duplicates. Collapse to the most
-            -- recent name per job_id so this join is exactly 1:1.
-            SELECT job_id, MAX_BY(name, change_time) AS name
-            FROM system.lakeflow.jobs
-            GROUP BY job_id
-        ) lj
-        ON j.job_id = lj.job_id
-        {search_clause}
-        ORDER BY (j.total_cloud_cost + j.total_databricks_cost) DESC
+            total_compute_cost,
+            total_storage_cost,
+            total_network_cost,
+            total_other_cost
+        FROM job_level
+        ORDER BY (total_cloud_cost + total_databricks_cost) DESC
         LIMIT {limit} OFFSET {offset}
         """
 
@@ -546,13 +613,16 @@ class DatabricksService:
 
         total_count = 0
         if data_response.result and data_response.result.data_array:
-            total_count = int(data_response.result.data_array[0][5])
+            total_count = int(data_response.result.data_array[0][4])
 
         grouped_jobs = []
         if data_response.result and data_response.result.data_array:
-            job_ids = [row[0] for row in data_response.result.data_array]
-            runs_by_job = await self._get_batch_job_runs(job_ids, start_date, end_date, runs_per_job=10)
-
+            # Runs are intentionally NOT fetched here. Previously this method
+            # issued a second batch query (`_get_batch_job_runs`) for every job
+            # on the page, doubling the warehouse round-trips on each search even
+            # though runs are only ever shown when a row is expanded. Runs are
+            # now lazy-loaded per job via `get_job_runs()` / the
+            # `/api/job/{job_id}/runs` endpoint when the user expands a row.
             for row in data_response.result.data_array:
                 job_id = row[0]
                 total_cloud_cost = float(row[1])
@@ -561,15 +631,15 @@ class DatabricksService:
 
                 grouped_job = GroupedJob(
                     job_id=job_id,
-                    job_name=row[4],
+                    job_name=name_map.get(str(job_id)),
                     run_count=run_count,
                     total_cloud_cost=total_cloud_cost,
                     total_databricks_cost=total_databricks_cost,
-                    total_compute_cost=float(row[6]) if row[6] is not None else None,
-                    total_storage_cost=float(row[7]) if row[7] is not None else None,
-                    total_network_cost=float(row[8]) if row[8] is not None else None,
-                    total_other_cost=float(row[9]) if row[9] is not None else None,
-                    runs=runs_by_job.get(job_id, [])
+                    total_compute_cost=float(row[5]) if row[5] is not None else None,
+                    total_storage_cost=float(row[6]) if row[6] is not None else None,
+                    total_network_cost=float(row[7]) if row[7] is not None else None,
+                    total_other_cost=float(row[8]) if row[8] is not None else None,
+                    runs=[],
                 )
                 grouped_jobs.append(grouped_job)
 
