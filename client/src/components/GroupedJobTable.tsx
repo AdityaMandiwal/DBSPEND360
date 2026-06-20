@@ -9,7 +9,7 @@ import {
   useReactTable,
   Row,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon, Eye, Search } from 'lucide-react';
+import { ArrowUpDown, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon, Eye, Search, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -22,19 +22,151 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { useGroupedJobSpends } from '@/hooks/useGroupedJobSpends';
+import { useJobRuns } from '@/hooks/useJobRuns';
 import { useDatabricksHost } from '@/hooks/useDatabricksHost';
 import { DateRange, GroupedJob, JobRun } from '@/types/job-spend';
 import { cn } from '@/lib/utils';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 
+const formatRunCurrency = (amount: number) =>
+  new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount);
+
+const formatRunDay = (dateStr: string) => {
+  try {
+    return new Date(dateStr).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return dateStr;
+  }
+};
+
+const formatRunRange = (startDate: string, endDate: string) =>
+  startDate === endDate
+    ? formatRunDay(startDate)
+    : `${formatRunDay(startDate)} — ${formatRunDay(endDate)}`;
+
+interface ExpandedJobRunsProps {
+  job: GroupedJob;
+  dateRange: DateRange;
+  colSpan: number;
+  computeLabel: string;
+  onRunClick: (jobId: string, run: JobRun) => void;
+}
+
+// Renders the per-job run breakdown. Runs are fetched lazily on expand (the
+// grouped list query no longer embeds them), so this row shows its own loading
+// and error states while the request is in flight.
+const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, onRunClick }: ExpandedJobRunsProps) => {
+  const { data: runs, isLoading, error } = useJobRuns(
+    job.job_id,
+    { start_date: dateRange.start_date, end_date: dateRange.end_date, limit: 10 },
+    true,
+  );
+
+  return (
+    <TableRow className="bg-muted/30">
+      <TableCell colSpan={colSpan} className="p-0">
+        <div className="p-4 border-l-4 border-l-blue-500 bg-muted/20">
+          {isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Loading runs…</span>
+            </div>
+          ) : error ? (
+            <div className="text-sm text-red-600 py-2">
+              Failed to load runs: {error.message}
+            </div>
+          ) : !runs || runs.length === 0 ? (
+            <div className="text-sm text-muted-foreground py-2">
+              No runs found for this job in the selected range.
+            </div>
+          ) : (
+            <>
+              <h4 className="font-semibold mb-3 text-sm text-muted-foreground">
+                Individual Runs ({runs.length} of {job.run_count} total runs shown)
+              </h4>
+              <div className="space-y-2">
+                {runs.map((run) => (
+                  <div
+                    key={run.run_id}
+                    className="flex items-center justify-between p-3 bg-background rounded-md border hover:bg-muted/50 cursor-pointer transition-colors"
+                    onClick={() => onRunClick(job.job_id, run)}
+                  >
+                    <div className="flex items-center space-x-4">
+                      <div className="text-sm font-mono text-muted-foreground">
+                        Run: {run.run_id}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {formatRunRange(run.start_date, run.end_date)}
+                      </div>
+                      <div className="text-sm text-muted-foreground max-w-[150px] truncate">
+                        {run.cluster_id}
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-4">
+                      {run.compute_cost != null && (
+                        <>
+                          <div className="text-sm text-blue-600">
+                            Compute: {formatRunCurrency(run.compute_cost)}
+                          </div>
+                          <div className="text-sm text-green-600">
+                            Storage: {formatRunCurrency(run.storage_cost ?? 0)}
+                          </div>
+                          <div className="text-sm text-amber-600">
+                            Network: {formatRunCurrency(run.network_cost ?? 0)}
+                          </div>
+                          {(run.other_cost ?? 0) > 0 && (
+                            <div className="text-sm text-muted-foreground">
+                              Other: {formatRunCurrency(run.other_cost ?? 0)}
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {run.compute_cost == null && (
+                        <div className="text-sm text-blue-600">
+                          {computeLabel}: {formatRunCurrency(run.cloud_cost)}
+                        </div>
+                      )}
+                      <div className="text-sm text-red-600">
+                        DBU: {formatRunCurrency(run.databricks_cost)}
+                      </div>
+                      <div className="text-sm font-semibold">
+                        Total: {formatRunCurrency(run.total_cost)}
+                      </div>
+                      <Button size="sm" variant="outline" className="h-7">
+                        <Eye className="h-3 w-3 mr-1" />
+                        Details
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+};
+
 interface GroupedJobTableProps {
   dateRange: DateRange;
   jobFilter: string;
   onRunClick: (jobId: string, run: JobRun) => void;
+  // Reports background refetch state so parents can show search/loading feedback.
+  onFetchingChange?: (isFetching: boolean) => void;
 }
 
-export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJobTableProps) => {
+export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingChange }: GroupedJobTableProps) => {
   const { config: cloudConfig } = useCloudPlatform();
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'total_cost', desc: true }, // Default sort by total cost descending
@@ -63,6 +195,12 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
   const isInitialLoading = isLoading && !data;
   const isBackgroundFetching = isFetching && !!data;
 
+  // Surface refetch state to the parent (e.g. the search box spinner). Initial
+  // load is excluded since the row skeletons already communicate that state.
+  useEffect(() => {
+    onFetchingChange?.(isBackgroundFetching);
+  }, [isBackgroundFetching, onFetchingChange]);
+
   const { data: databricksHost } = useDatabricksHost();
 
   const formatCurrency = (amount: number) => {
@@ -72,25 +210,6 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(amount);
-  };
-
-  const formatDate = (dateStr: string) => {
-    try {
-      return new Date(dateStr).toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      });
-    } catch {
-      return dateStr;
-    }
-  };
-
-  const formatRunDates = (startDate: string, endDate: string) => {
-    if (startDate === endDate) {
-      return formatDate(startDate);
-    }
-    return `${formatDate(startDate)} — ${formatDate(endDate)}`;
   };
 
   const toggleRowExpansion = (jobId: string) => {
@@ -388,78 +507,6 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
     );
   }
 
-  const renderExpandedRow = (job: GroupedJob) => {
-    if (!expandedRows.has(job.job_id)) return null;
-
-    return (
-      <TableRow key={`${job.job_id}-expanded`} className="bg-muted/30">
-        <TableCell colSpan={columns.length} className="p-0">
-          <div className="p-4 border-l-4 border-l-blue-500 bg-muted/20">
-            <h4 className="font-semibold mb-3 text-sm text-muted-foreground">
-              Individual Runs ({job.runs.length} of {job.run_count} total runs shown)
-            </h4>
-            <div className="space-y-2">
-              {job.runs.map((run) => (
-                <div
-                  key={run.run_id}
-                  className="flex items-center justify-between p-3 bg-background rounded-md border hover:bg-muted/50 cursor-pointer transition-colors"
-                  onClick={() => onRunClick(job.job_id, run)}
-                >
-                  <div className="flex items-center space-x-4">
-                    <div className="text-sm font-mono text-muted-foreground">
-                      Run: {run.run_id}
-                    </div>
-                    <div className="text-sm text-muted-foreground">
-                      {formatRunDates(run.start_date, run.end_date)}
-                    </div>
-                    <div className="text-sm text-muted-foreground max-w-[150px] truncate">
-                      {run.cluster_id}
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-4">
-                    {run.compute_cost != null && (
-                      <>
-                        <div className="text-sm text-blue-600">
-                          Compute: {formatCurrency(run.compute_cost)}
-                        </div>
-                        <div className="text-sm text-green-600">
-                          Storage: {formatCurrency(run.storage_cost ?? 0)}
-                        </div>
-                        <div className="text-sm text-amber-600">
-                          Network: {formatCurrency(run.network_cost ?? 0)}
-                        </div>
-                        {(run.other_cost ?? 0) > 0 && (
-                          <div className="text-sm text-muted-foreground">
-                            Other: {formatCurrency(run.other_cost ?? 0)}
-                          </div>
-                        )}
-                      </>
-                    )}
-                    {run.compute_cost == null && (
-                      <div className="text-sm text-blue-600">
-                        {cloudConfig?.compute_service || 'Cloud'}: {formatCurrency(run.cloud_cost)}
-                      </div>
-                    )}
-                    <div className="text-sm text-red-600">
-                      DBU: {formatCurrency(run.databricks_cost)}
-                    </div>
-                    <div className="text-sm font-semibold">
-                      Total: {formatCurrency(run.total_cost)}
-                    </div>
-                    <Button size="sm" variant="outline" className="h-7">
-                      <Eye className="h-3 w-3 mr-1" />
-                      Details
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </TableCell>
-      </TableRow>
-    );
-  };
-
   return (
     <div className="space-y-4">
       {/* Table */}
@@ -513,7 +560,15 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick }: GroupedJob
                         </TableCell>
                       ))}
                     </TableRow>
-                    {renderExpandedRow(row.original)}
+                    {expandedRows.has(row.original.job_id) && (
+                      <ExpandedJobRuns
+                        job={row.original}
+                        dateRange={dateRange}
+                        colSpan={columns.length}
+                        computeLabel={cloudConfig?.compute_service || 'Cloud'}
+                        onRunClick={onRunClick}
+                      />
+                    )}
                   </>
                 ))}
               </>

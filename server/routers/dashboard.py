@@ -9,7 +9,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 from server.models.job_spend import (
-    JobSpend, SummaryMetrics, CostBreakdown, PaginatedJobSpends,
+    JobSpend, JobRun, SummaryMetrics, CostBreakdown, PaginatedJobSpends,
     GroupedJob, PaginatedGroupedJobs, CostAnalysis, ClusterDetails,
     ClusterAnalysis, CloudPlatformInfo, OtherCostBreakdownResponse,
     CoverageTrendResponse,
@@ -128,6 +128,44 @@ async def get_grouped_job_spends(
         raise HTTPException(
             status_code=500,
             detail=f"Error retrieving grouped job spending data: {str(e)}"
+        )
+
+
+@router.get("/job/{job_id}/runs", response_model=list[JobRun])
+async def get_job_runs(
+    job_id: str,
+    start_date: date = Query(..., description="Start date for filtering (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="End date for filtering (YYYY-MM-DD)"),
+    limit: int = Query(10, ge=1, le=100, description="Max runs to return"),
+):
+    """
+    Get recent runs for a single job within a date range.
+
+    Powers the lazy-loaded run breakdown shown when a job row is expanded in the
+    Job Spending Details table. `/api/grouped-job-spends` no longer embeds runs,
+    so this endpoint is fetched on-demand per job to keep the list query fast.
+    """
+    try:
+        if start_date > end_date:
+            raise HTTPException(
+                status_code=400,
+                detail="Start date must be before or equal to end date"
+            )
+
+        service = get_databricks_service()
+        return await service.get_job_runs(
+            job_id=job_id,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving runs for job {job_id}: {str(e)}"
         )
 
 

@@ -16,6 +16,7 @@ const JobClustersDashboard = () => {
 
   const [dateRange, setDateRange] = useState<DateRange>(defaultDateRange);
   const [jobFilter, setJobFilter] = useState<string>('');
+  const [isTableFetching, setIsTableFetching] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<JobRun | null>(null);
   const [isBreakdownModalOpen, setIsBreakdownModalOpen] = useState(false);
@@ -48,6 +49,7 @@ const JobClustersDashboard = () => {
             onDateRangeChange={setDateRange}
             jobFilter={jobFilter}
             onJobFilterChange={setJobFilter}
+            isSearching={isTableFetching}
           />
         </CardContent>
       </Card>
@@ -66,6 +68,7 @@ const JobClustersDashboard = () => {
             dateRange={dateRange}
             jobFilter={jobFilter}
             onRunClick={handleRunClick}
+            onFetchingChange={setIsTableFetching}
           />
         </CardContent>
       </Card>

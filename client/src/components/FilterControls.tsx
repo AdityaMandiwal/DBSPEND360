@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search } from 'lucide-react';
+import { Search, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,8 @@ interface FilterControlsProps {
   onDateRangeChange: (dateRange: DateRange) => void;
   jobFilter: string;
   onJobFilterChange: (filter: string) => void;
+  // True while the table is fetching results for the committed search term.
+  isSearching?: boolean;
 }
 
 export const FilterControls = ({
@@ -20,9 +22,13 @@ export const FilterControls = ({
   onDateRangeChange,
   jobFilter,
   onJobFilterChange,
+  isSearching = false,
 }: FilterControlsProps) => {
   const { data: presets } = useDatePresets();
   const [localFilter, setLocalFilter] = useState(jobFilter);
+  // Tracks the debounce window so the spinner appears on the first keystroke,
+  // before the request is even fired (the table query only starts after 300ms).
+  const [pendingSearch, setPendingSearch] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -31,9 +37,16 @@ export const FilterControls = ({
 
   const handleFilterChange = (value: string) => {
     setLocalFilter(value);
+    setPendingSearch(true);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => onJobFilterChange(value), 300);
+    debounceRef.current = setTimeout(() => {
+      onJobFilterChange(value);
+      setPendingSearch(false);
+    }, 300);
   };
+
+  // Show feedback during the debounce wait and while the request is in flight.
+  const showSearchSpinner = pendingSearch || isSearching;
 
   useEffect(() => {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
@@ -125,12 +138,26 @@ export const FilterControls = ({
             placeholder="Search by job name or ID..."
             value={localFilter}
             onChange={(e) => handleFilterChange(e.target.value)}
-            className="pl-10"
+            className="pl-10 pr-10"
           />
+          {showSearchSpinner && (
+            <span
+              className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center"
+              aria-hidden="true"
+            >
+              <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+            </span>
+          )}
         </div>
 
         {/* Filter Summary */}
         <div className="text-xs text-muted-foreground space-y-1">
+          {showSearchSpinner && (
+            <div className="flex items-center gap-1.5 text-blue-600" aria-live="polite">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span>Searching jobs…</span>
+            </div>
+          )}
           <div>
             <strong>Date Range:</strong> {formatDisplayDate(dateRange.start_date)} to {formatDisplayDate(dateRange.end_date)}
           </div>
