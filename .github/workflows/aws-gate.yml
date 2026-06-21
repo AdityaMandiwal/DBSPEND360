@@ -1,0 +1,29 @@
+name: AWS honesty gate
+
+# CP9 — fail the build if any of the six gated components re-introduce a
+# data-shape segmentation gate (`compute_cost != null`) or a config-derived
+# cloud label (`compute_service` / `compute_display_name`) in an AWS branch.
+# See docs/plan_aws_cost_accuracy_cleanup.md §4.0(c), D16.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    paths:
+      - 'client/src/components/**'
+      - 'claude_scripts/check_aws_gate.mjs'
+      - '.github/workflows/aws-gate.yml'
+
+jobs:
+  aws-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # Dependency-free node script; no install step required.
+      - name: Self-test the guard (proves red/green logic)
+        run: node claude_scripts/check_aws_gate.mjs --self-test
+      - name: Enforce the AWS gate on the six components
+        run: node claude_scripts/check_aws_gate.mjs

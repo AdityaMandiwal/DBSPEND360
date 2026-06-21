@@ -27,6 +27,48 @@ Tests Databricks table access using SQL warehouses.
 - Displays results and schema information
 - Includes warehouse management and error handling
 
+### `aws_cost_recon_assert.py`
+CP10 pre-merge reconciliation gate for the AWS `DEFAULT_SERVICES` shrink
+(`docs/plan_aws_cost_accuracy_cleanup.md` §4.8(a)). Runs the same Cost Explorer
+query over one window with the current 7-entry service filter vs. the proposed
+2-entry EC2 pair and asserts the tagged (`ClusterId` non-empty) total is
+unchanged — proving the shrink drops no cluster-attributable cost. Must pass
+before the §4.1 ETL change (CP11) lands. Uses the `dbspend-read-ce` Databricks
+service credential when run on Databricks; falls back to default boto3
+credential resolution locally (needs `ce:GetCostAndUsage`).
+
+```bash
+# Match the §1 evidence window
+uv run claude_scripts/aws_cost_recon_assert.py --start 2026-06-17 --end 2026-06-20
+
+# Default window = last 3 complete UTC days
+uv run claude_scripts/aws_cost_recon_assert.py
+```
+
+Exit code 0 = reconciliation passed; 1 = a dropped service carries tagged cost.
+
+### `aws_cost_cleanup.sql`
+CP13 one-off data cleanup for the AWS cost-accuracy work
+(`docs/plan_aws_cost_accuracy_cleanup.md` §5, D11). Removes orphaned artifacts
+left by the discarded workspace-shared / reconciliation attempt against the live
+UC schema `dbspend360.04june`:
+- `DROP TABLE IF EXISTS ... dbspend360_workspace_total_costs` (orphaned table,
+  unread by all code paths).
+- `DELETE FROM ... dbspend360_other_cost_breakdown WHERE scope =
+  'workspace_shared'` (orphaned rows; the shared table itself is kept for
+  Azure/GCP).
+
+Both statements are idempotent and existence-gated, so the file is safe to
+re-run. The vestigial `scope` / `category` columns are intentionally left in
+place. This is a hand-run, one-off cleanup — NOT wired into the recurring DABs
+job. Run against the SQL warehouse, e.g.:
+
+```bash
+databricks sql query --warehouse-id 8baced1ff014912d --file claude_scripts/aws_cost_cleanup.sql
+```
+
+(or paste the statements into the Databricks SQL editor).
+
 ## Usage
 
 These scripts are designed to be run from the project root directory:

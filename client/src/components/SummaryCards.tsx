@@ -6,6 +6,7 @@ import { TrendingUp, TrendingDown, DollarSign, Activity, BarChart3, AlertTriangl
 import { useSummaryMetrics, useTopJobs } from '@/hooks/useJobSpends';
 import { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 import { CoverageTrendChart } from './CoverageTrendChart';
 
@@ -15,6 +16,8 @@ interface SummaryCardsProps {
 
 export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
   const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  const isSegmentedPlatform = useIsSegmentedPlatform();
   const { data: metrics, isLoading: isMetricsLoading } = useSummaryMetrics(dateRange);
   const { data: topJobs, isLoading: isTopJobsLoading } = useTopJobs(dateRange, 5);
   const [showOtherBreakdown, setShowOtherBreakdown] = useState(false);
@@ -70,13 +73,17 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
   const databricksPercentage = metrics.total_spend > 0 ? (metrics.total_databricks_cost / metrics.total_spend) * 100 : 0;
 
   const hasSegmented = metrics.total_compute_cost != null;
-  const computePct = hasSegmented && metrics.total_cloud_cost > 0
+  // Positive allowlist (D14): segmented compute/storage/network is shown only for
+  // Azure/GCP. AWS, Unknown, and the config-loading window fall to the always-correct
+  // cloud-vs-DBU 2-slice — never the data-shape branch.
+  const showSegmented = hasSegmented && isSegmentedPlatform;
+  const computePct = showSegmented && metrics.total_cloud_cost > 0
     ? ((metrics.total_compute_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
-  const storagePct = hasSegmented && metrics.total_cloud_cost > 0
+  const storagePct = showSegmented && metrics.total_cloud_cost > 0
     ? ((metrics.total_storage_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
-  const networkPct = hasSegmented && metrics.total_cloud_cost > 0
+  const networkPct = showSegmented && metrics.total_cloud_cost > 0
     ? ((metrics.total_network_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
-  const otherPct = hasSegmented && metrics.total_cloud_cost > 0
+  const otherPct = showSegmented && metrics.total_cloud_cost > 0
     ? ((metrics.total_other_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
   const coveragePct = metrics.classification_coverage_pct;
 
@@ -158,7 +165,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {hasSegmented ? (
+              {showSegmented ? (
                 <>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-2">
@@ -268,7 +275,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-2">
                       <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                      <span className="text-sm font-medium">{cloudConfig?.compute_display_name || 'Cloud Costs'}</span>
+                      <span className="text-sm font-medium">{isAws ? AWS_CLOUD_LABEL : (cloudConfig?.compute_display_name || 'Cloud Costs')}</span>
                     </div>
                     <div className="text-right">
                       <div className="font-semibold">{formatCurrency(metrics.total_cloud_cost)}</div>
@@ -294,6 +301,11 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                 </>
               )}
             </div>
+            {isAws && (
+              <p className="text-xs text-muted-foreground mt-4 pt-3 border-t">
+                AWS shared infrastructure (S3, NAT, networking) is not cluster-attributable and is excluded.
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -348,7 +360,7 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
       </div>
 
       {/* Coverage Trend */}
-      {hasSegmented && (
+      {showSegmented && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <CoverageTrendChart />
         </div>

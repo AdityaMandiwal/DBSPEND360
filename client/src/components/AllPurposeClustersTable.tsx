@@ -42,6 +42,11 @@ import type {
 } from '@/types/all-purpose';
 import type { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import {
+  useIsAws,
+  useIsSegmentedPlatform,
+  AWS_CLOUD_LABEL,
+} from '@/hooks/useCloudGate';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 import { ClusterDetailsModal } from './JobBreakdownModal';
 
@@ -135,6 +140,8 @@ export const AllPurposeClustersTable = ({
   searchTerm,
 }: AllPurposeClustersTableProps) => {
   const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  const isSegmentedPlatform = useIsSegmentedPlatform();
   const { data: databricksHost } = useDatabricksHost();
   const [page, setPage] = useState(1);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -185,8 +192,10 @@ export const AllPurposeClustersTable = ({
     workspaceHost ? `${workspaceHost}/compute/clusters/${clusterId}` : '#';
 
   // Column count for colspan calcs in skeleton / empty / expanded rows.
-  // Bumped if the cloud-cost breakdown is segmented.
-  const columnCount = 9;
+  // The segmented Compute/Storage/Network trio renders only for Azure/GCP
+  // (positive allowlist); AWS/Unknown/loading drop them for the single
+  // EC2 / EBS cloud column (D4, D14).
+  const columnCount = isSegmentedPlatform ? 9 : 6;
 
   return (
     <div className="space-y-4">
@@ -204,11 +213,17 @@ export const AllPurposeClustersTable = ({
               <TableHead className="px-4">Cluster</TableHead>
               <TableHead className="px-4">Owner</TableHead>
               <TableHead className="px-4 text-right">Active Days</TableHead>
-              <TableHead className="px-4 text-right">Compute</TableHead>
-              <TableHead className="px-4 text-right">Storage</TableHead>
-              <TableHead className="px-4 text-right">Network</TableHead>
+              {isSegmentedPlatform && (
+                <>
+                  <TableHead className="px-4 text-right">Compute</TableHead>
+                  <TableHead className="px-4 text-right">Storage</TableHead>
+                  <TableHead className="px-4 text-right">Network</TableHead>
+                </>
+              )}
               <TableHead className="px-4 text-right">
-                Total {cloudConfig?.compute_service || 'Cloud'}
+                {isAws
+                  ? AWS_CLOUD_LABEL
+                  : `Total ${cloudConfig?.compute_service || 'Cloud'}`}
               </TableHead>
               <TableHead className="px-4 text-right">DBU</TableHead>
               <TableHead className="px-4 text-right">Total Cost</TableHead>
@@ -317,36 +332,43 @@ export const AllPurposeClustersTable = ({
                       <TableCell className="px-4 text-right text-sm">
                         {cluster.active_days}
                       </TableCell>
-                      <TableCell className="px-4 text-right font-medium text-blue-600">
-                        {cluster.total_compute_cost != null
-                          ? formatCurrency(cluster.total_compute_cost)
-                          : '—'}
-                      </TableCell>
-                      <TableCell className="px-4 text-right font-medium text-green-600">
-                        {cluster.total_storage_cost != null
-                          ? formatCurrency(cluster.total_storage_cost)
-                          : '—'}
-                      </TableCell>
-                      <TableCell className="px-4 text-right font-medium text-amber-600">
-                        {cluster.total_network_cost != null
-                          ? formatCurrency(cluster.total_network_cost)
-                          : '—'}
-                      </TableCell>
+                      {isSegmentedPlatform && (
+                        <>
+                          <TableCell className="px-4 text-right font-medium text-blue-600">
+                            {cluster.total_compute_cost != null
+                              ? formatCurrency(cluster.total_compute_cost)
+                              : '—'}
+                          </TableCell>
+                          <TableCell className="px-4 text-right font-medium text-green-600">
+                            {cluster.total_storage_cost != null
+                              ? formatCurrency(cluster.total_storage_cost)
+                              : '—'}
+                          </TableCell>
+                          <TableCell className="px-4 text-right font-medium text-amber-600">
+                            {cluster.total_network_cost != null
+                              ? formatCurrency(cluster.total_network_cost)
+                              : '—'}
+                          </TableCell>
+                        </>
+                      )}
                       <TableCell className="px-4 text-right font-medium text-blue-600">
                         {formatCurrency(cluster.total_cloud_cost)}
-                        {(cluster.total_other_cost ?? 0) > 0 && (
-                          <div
-                            className="text-xs text-muted-foreground cursor-pointer hover:text-foreground inline-flex items-center gap-0.5 ml-1"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setOtherBreakdownCluster(cluster.cluster_id);
-                            }}
-                            title="Click to view breakdown of unclassified costs"
-                          >
-                            (+{formatCurrency(cluster.total_other_cost ?? 0)}{' '}
-                            other <Search className="h-2.5 w-2.5" />)
-                          </div>
-                        )}
+                        {/* "Other (Unclassified)" drill-down is hidden on
+                            AWS/Unknown (D7) — only segmented platforms expose it. */}
+                        {isSegmentedPlatform &&
+                          (cluster.total_other_cost ?? 0) > 0 && (
+                            <div
+                              className="text-xs text-muted-foreground cursor-pointer hover:text-foreground inline-flex items-center gap-0.5 ml-1"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOtherBreakdownCluster(cluster.cluster_id);
+                              }}
+                              title="Click to view breakdown of unclassified costs"
+                            >
+                              (+{formatCurrency(cluster.total_other_cost ?? 0)}{' '}
+                              other <Search className="h-2.5 w-2.5" />)
+                            </div>
+                          )}
                       </TableCell>
                       <TableCell className="px-4 text-right font-medium text-red-600">
                         {formatCurrency(cluster.total_databricks_cost)}
@@ -370,6 +392,12 @@ export const AllPurposeClustersTable = ({
                         <TableCell colSpan={columnCount + 1} className="p-0">
                           <ClusterDayBreakdown
                             cluster={cluster}
+                            isSegmentedPlatform={isSegmentedPlatform}
+                            computeLabel={
+                              isAws
+                                ? AWS_CLOUD_LABEL
+                                : cloudConfig?.compute_service || 'Cloud'
+                            }
                             onOpenDetails={() =>
                               setActiveClusterModal(cluster.cluster_id)
                             }
@@ -443,7 +471,9 @@ export const AllPurposeClustersTable = ({
         />
       )}
 
-      {otherBreakdownCluster && (
+      {/* Other-cost breakdown modal — only mounted for segmented platforms;
+          its only trigger is hidden on AWS/Unknown (D7). */}
+      {isSegmentedPlatform && otherBreakdownCluster && (
         <OtherCostBreakdownModal
           dateRange={dateRange}
           clusterId={otherBreakdownCluster}
@@ -461,13 +491,15 @@ export const AllPurposeClustersTable = ({
 // to one row here.
 const ClusterDayBreakdown = ({
   cluster,
+  isSegmentedPlatform,
+  computeLabel,
   onOpenDetails,
 }: {
   cluster: GroupedAllPurposeCluster;
+  isSegmentedPlatform: boolean;
+  computeLabel: string;
   onOpenDetails: () => void;
 }) => {
-  const { config: cloudConfig } = useCloudPlatform();
-
   if (cluster.users.length === 0) {
     return (
       <div className="p-4 border-l-4 border-l-blue-500 bg-muted/20 text-sm text-muted-foreground">
@@ -506,10 +538,13 @@ const ClusterDayBreakdown = ({
                 </div>
               </div>
               <div className="flex items-center space-x-4">
-                {day.compute_cost != null ? (
+                {/* Positive allowlist (D14): segmented spans render only for
+                    Azure/GCP. AWS/Unknown/loading show the single EC2 / EBS
+                    (cloud_cost) line — never the data-shape branch. */}
+                {isSegmentedPlatform ? (
                   <>
                     <div className="text-sm text-blue-600">
-                      Compute: {formatCurrency(day.compute_cost)}
+                      Compute: {formatCurrency(day.compute_cost ?? 0)}
                     </div>
                     <div className="text-sm text-green-600">
                       Storage: {formatCurrency(day.storage_cost ?? 0)}
@@ -525,8 +560,7 @@ const ClusterDayBreakdown = ({
                   </>
                 ) : (
                   <div className="text-sm text-blue-600">
-                    {cloudConfig?.compute_service || 'Cloud'}:{' '}
-                    {formatCurrency(day.cloud_cost)}
+                    {computeLabel}: {formatCurrency(day.cloud_cost)}
                   </div>
                 )}
                 <div className="text-sm text-red-600">
