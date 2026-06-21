@@ -9,7 +9,7 @@ import {
   useReactTable,
   Row,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon, Eye, Search, Loader2 } from 'lucide-react';
+import { ArrowUpDown, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon, Eye, Search, Loader2, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -27,6 +27,8 @@ import { useDatabricksHost } from '@/hooks/useDatabricksHost';
 import { DateRange, GroupedJob, JobRun } from '@/types/job-spend';
 import { cn } from '@/lib/utils';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 
 const formatRunCurrency = (amount: number) =>
@@ -59,13 +61,14 @@ interface ExpandedJobRunsProps {
   dateRange: DateRange;
   colSpan: number;
   computeLabel: string;
+  isSegmentedPlatform: boolean;
   onRunClick: (jobId: string, run: JobRun) => void;
 }
 
 // Renders the per-job run breakdown. Runs are fetched lazily on expand (the
 // grouped list query no longer embeds them), so this row shows its own loading
 // and error states while the request is in flight.
-const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, onRunClick }: ExpandedJobRunsProps) => {
+const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, isSegmentedPlatform, onRunClick }: ExpandedJobRunsProps) => {
   const { data: runs, isLoading, error } = useJobRuns(
     job.job_id,
     { start_date: dateRange.start_date, end_date: dateRange.end_date, limit: 10 },
@@ -113,10 +116,10 @@ const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, onRunClick }: 
                       </div>
                     </div>
                     <div className="flex items-center space-x-4">
-                      {run.compute_cost != null && (
+                      {isSegmentedPlatform ? (
                         <>
                           <div className="text-sm text-blue-600">
-                            Compute: {formatRunCurrency(run.compute_cost)}
+                            Compute: {formatRunCurrency(run.compute_cost ?? 0)}
                           </div>
                           <div className="text-sm text-green-600">
                             Storage: {formatRunCurrency(run.storage_cost ?? 0)}
@@ -130,8 +133,7 @@ const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, onRunClick }: 
                             </div>
                           )}
                         </>
-                      )}
-                      {run.compute_cost == null && (
+                      ) : (
                         <div className="text-sm text-blue-600">
                           {computeLabel}: {formatRunCurrency(run.cloud_cost)}
                         </div>
@@ -168,6 +170,8 @@ interface GroupedJobTableProps {
 
 export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingChange }: GroupedJobTableProps) => {
   const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  const isSegmentedPlatform = useIsSegmentedPlatform();
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'total_cost', desc: true }, // Default sort by total cost descending
   ]);
@@ -323,6 +327,10 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
         </div>
       ),
     },
+    // Segmented compute/storage/network/other columns render only for platforms
+    // that emit a full segmentation (Azure/GCP). AWS, Unknown, and the loading
+    // window fall to the single EC2 / EBS cloud column below (D4, D14).
+    ...(isSegmentedPlatform ? ([
     {
       accessorKey: 'total_compute_cost',
       header: ({ column }) => (
@@ -416,6 +424,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
         );
       },
     },
+    ] as ColumnDef<GroupedJob>[]) : []),
     {
       accessorKey: 'total_cloud_cost',
       header: ({ column }) => (
@@ -424,7 +433,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
           className="h-8 px-2"
         >
-          Total {cloudConfig?.compute_service || 'Cloud'} Cost
+          {isAws ? AWS_CLOUD_LABEL : `Total ${cloudConfig?.compute_service || 'Cloud'} Cost`}
           <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
       ),
@@ -455,14 +464,28 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
     {
       accessorKey: 'total_cost',
       header: ({ column }) => (
-        <Button
-          variant="ghost"
-          onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-          className="h-8 px-2"
-        >
-          Total Cost
-          <ArrowUpDown className="ml-2 h-4 w-4" />
-        </Button>
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            variant="ghost"
+            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+            className="h-8 px-2"
+          >
+            Total Cost
+            <ArrowUpDown className="ml-2 h-4 w-4" />
+          </Button>
+          {isAws && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex text-muted-foreground">
+                  <Info className="h-3.5 w-3.5" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                Total Cost = DBU + tagged EC2 / EBS. Excludes non-attributable AWS shared infra (S3, NAT, networking).
+              </TooltipContent>
+            </Tooltip>
+          )}
+        </div>
       ),
       cell: ({ row }) => {
         const totalCost = row.getValue('total_cost') as number;
@@ -565,7 +588,8 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
                         job={row.original}
                         dateRange={dateRange}
                         colSpan={columns.length}
-                        computeLabel={cloudConfig?.compute_service || 'Cloud'}
+                        computeLabel={isAws ? AWS_CLOUD_LABEL : (cloudConfig?.compute_service || 'Cloud')}
+                        isSegmentedPlatform={isSegmentedPlatform}
                         onRunClick={onRunClick}
                       />
                     )}
@@ -631,12 +655,15 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
         </div>
       )}
 
-      {/* Other Cost Breakdown Modal */}
-      <OtherCostBreakdownModal
-        dateRange={dateRange}
-        isOpen={otherBreakdownOpen}
-        onClose={() => setOtherBreakdownOpen(false)}
-      />
+      {/* Other Cost Breakdown Modal — only mounted for segmented platforms;
+          the "Other" column (its only trigger) is hidden on AWS/Unknown (D7). */}
+      {isSegmentedPlatform && (
+        <OtherCostBreakdownModal
+          dateRange={dateRange}
+          isOpen={otherBreakdownOpen}
+          onClose={() => setOtherBreakdownOpen(false)}
+        />
+      )}
     </div>
   );
 };

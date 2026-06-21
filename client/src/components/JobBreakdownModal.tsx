@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useJobBreakdown, useJobCostAnalysis, useClusterDetails, useClusterAnalysis } from '@/hooks/useJobSpends';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 
 interface JobBreakdownModalProps {
@@ -38,10 +39,29 @@ interface ClusterDetailsModalProps {
 
 export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdownModalProps) => {
   const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  const isSegmentedPlatform = useIsSegmentedPlatform();
   const { data: breakdown, isLoading, error } = useJobBreakdown(jobId, runId);
   const { data: analysis, isLoading: analysisLoading, error: analysisError } = useJobCostAnalysis(jobId, runId);
   const [isClusterDetailsOpen, setIsClusterDetailsOpen] = useState(false);
   const [isOtherBreakdownOpen, setIsOtherBreakdownOpen] = useState(false);
+
+  // D12: the model's `cost_split` is data-shaped (`has_segmented = compute is not
+  // None`) and is NOT trustworthy on AWS for runs straddling the deploy date.
+  // Build a client-side 2-slice on AWS and feed it to every consumer of the split
+  // (pie data, the <Cell> color map, and the legend/summary list).
+  const awsCostSplit = breakdown
+    ? [
+        { name: AWS_CLOUD_LABEL, value: breakdown.cloud_cost, color: '#3b82f6' },
+        { name: 'Databricks (DBU)', value: breakdown.databricks_cost, color: '#ef4444' },
+      ]
+    : [];
+  const pieData = isAws ? awsCostSplit : (breakdown?.cost_split ?? []);
+  // Positive allowlist (D14): segmented compute/storage/network is shown only for
+  // Azure/GCP. AWS, Unknown, and the config-loading window all fall to the
+  // always-correct cloud-vs-DBU 2-slice — never the data-shape branch.
+  const hasSegmented = breakdown?.compute_cost != null;
+  const showSegmented = hasSegmented && isSegmentedPlatform;
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -126,7 +146,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
-                      data={breakdown.cost_split}
+                      data={pieData}
                       cx="50%"
                       cy="50%"
                       labelLine={false}
@@ -135,7 +155,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                       fill="#8884d8"
                       dataKey="value"
                     >
-                      {breakdown.cost_split.map((entry, index) => (
+                      {pieData.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={entry.color} />
                       ))}
                     </Pie>
@@ -147,7 +167,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
 
               {/* Cost Summary */}
               <div className="space-y-2">
-                {breakdown.cost_split.map((item) => (
+                {pieData.map((item) => (
                   <div key={item.name} className="flex items-center justify-between p-2 bg-muted/50 rounded">
                     <div className="flex items-center space-x-2">
                       <div
@@ -229,12 +249,12 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                 <div className="p-4 border rounded-lg space-y-3">
                   <h4 className="font-semibold">Cost Analysis</h4>
 
-                  {breakdown.compute_cost != null ? (
+                  {showSegmented ? (
                     <>
                       <div className={`grid gap-3 ${(breakdown.other_cost ?? 0) > 0 ? 'grid-cols-3' : 'grid-cols-2'}`}>
                         <div className="text-center p-3 bg-blue-50 dark:bg-blue-500/10 rounded">
                           <div className="text-xl font-bold text-blue-600 dark:text-blue-400">
-                            {breakdown.total_cost > 0 ? ((breakdown.compute_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                            {breakdown.total_cost > 0 ? (((breakdown.compute_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                           </div>
                           <div className="text-xs text-blue-600 dark:text-blue-400">Compute</div>
                         </div>
@@ -278,7 +298,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                         <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
                           {breakdown.total_cost > 0 ? ((breakdown.cloud_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                         </div>
-                        <div className="text-sm text-blue-600 dark:text-blue-400">{cloudConfig?.compute_service || 'Cloud'} Share</div>
+                        <div className="text-sm text-blue-600 dark:text-blue-400">{isAws ? AWS_CLOUD_LABEL : (cloudConfig?.compute_service || 'Cloud')} Share</div>
                       </div>
                       <div className="text-center p-3 bg-red-50 dark:bg-red-500/10 rounded">
                         <div className="text-2xl font-bold text-red-600 dark:text-red-400">
@@ -392,15 +412,17 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
               onClose={() => setIsClusterDetailsOpen(false)}
               clusterKind="job"
             />
-            <OtherCostBreakdownModal
-              dateRange={{
-                start_date: breakdown.usage_date,
-                end_date: breakdown.end_date || breakdown.usage_date,
-              }}
-              clusterId={breakdown.cluster_id}
-              isOpen={isOtherBreakdownOpen}
-              onClose={() => setIsOtherBreakdownOpen(false)}
-            />
+            {!isAws && (
+              <OtherCostBreakdownModal
+                dateRange={{
+                  start_date: breakdown.usage_date,
+                  end_date: breakdown.end_date || breakdown.usage_date,
+                }}
+                clusterId={breakdown.cluster_id}
+                isOpen={isOtherBreakdownOpen}
+                onClose={() => setIsOtherBreakdownOpen(false)}
+              />
+            )}
           </>
         )}
       </DialogContent>

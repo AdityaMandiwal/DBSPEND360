@@ -24,6 +24,11 @@ import {
 } from '@/hooks/useAllPurposeClusters';
 import type { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import {
+  useIsAws,
+  useIsSegmentedPlatform,
+  AWS_CLOUD_LABEL,
+} from '@/hooks/useCloudGate';
 
 interface AllPurposeSummaryCardsProps {
   dateRange: DateRange;
@@ -45,6 +50,8 @@ export const AllPurposeSummaryCards = ({
   dateRange,
 }: AllPurposeSummaryCardsProps) => {
   const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  const isSegmentedPlatform = useIsSegmentedPlatform();
   const { data: metrics, isLoading: isMetricsLoading } =
     useAllPurposeSummary(dateRange);
   const { data: topClusters, isLoading: isTopClustersLoading } =
@@ -97,21 +104,25 @@ export const AllPurposeSummaryCards = ({
       : 0;
 
   const hasSegmented = metrics.total_compute_cost != null;
+  // Positive allowlist (D14): segmented compute/storage/network is shown only for
+  // Azure/GCP. AWS, Unknown, and the config-loading window fall to the
+  // always-correct cloud-vs-DBU 2-slice — never the data-shape branch.
+  const showSegmented = hasSegmented && isSegmentedPlatform;
   const safe = (n: number | null | undefined) => n ?? 0;
   const computePct =
-    hasSegmented && metrics.total_cloud_cost > 0
+    showSegmented && metrics.total_cloud_cost > 0
       ? (safe(metrics.total_compute_cost) / metrics.total_cloud_cost) * 100
       : 0;
   const storagePct =
-    hasSegmented && metrics.total_cloud_cost > 0
+    showSegmented && metrics.total_cloud_cost > 0
       ? (safe(metrics.total_storage_cost) / metrics.total_cloud_cost) * 100
       : 0;
   const networkPct =
-    hasSegmented && metrics.total_cloud_cost > 0
+    showSegmented && metrics.total_cloud_cost > 0
       ? (safe(metrics.total_network_cost) / metrics.total_cloud_cost) * 100
       : 0;
   const otherPct =
-    hasSegmented && metrics.total_cloud_cost > 0
+    showSegmented && metrics.total_cloud_cost > 0
       ? (safe(metrics.total_other_cost) / metrics.total_cloud_cost) * 100
       : 0;
 
@@ -194,7 +205,7 @@ export const AllPurposeSummaryCards = ({
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {hasSegmented ? (
+              {showSegmented ? (
                 <>
                   <BreakdownRow
                     color="bg-blue-500"
@@ -273,7 +284,11 @@ export const AllPurposeSummaryCards = ({
                 <>
                   <BreakdownRow
                     color="bg-blue-500"
-                    label={cloudConfig?.compute_display_name || 'Cloud Costs'}
+                    label={
+                      isAws
+                        ? AWS_CLOUD_LABEL
+                        : cloudConfig?.compute_display_name || 'Cloud Costs'
+                    }
                     value={metrics.total_cloud_cost}
                     pct={cloudPercentage}
                   />
@@ -296,6 +311,12 @@ export const AllPurposeSummaryCards = ({
                 </>
               )}
             </div>
+            {isAws && (
+              <p className="text-xs text-muted-foreground mt-4 pt-3 border-t">
+                AWS shared infrastructure (S3, NAT, networking) is not
+                cluster-attributable and is excluded.
+              </p>
+            )}
           </CardContent>
         </Card>
 
