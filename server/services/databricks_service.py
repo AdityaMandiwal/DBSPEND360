@@ -18,12 +18,47 @@ from server.models.job_spend import (
     GroupedInstancePool, InstancePoolDailySpend, InstancePoolClusterSpend,
     InstancePoolSummaryMetrics, InstancePoolDetails,
     PaginatedInstancePools,
+    PipelineDailySpend, GroupedPipeline, PipelineSummaryMetrics,
+    PipelineDetails, PaginatedPipelines,
 )
 from server.config.config_loader import app_config
 
 logger = logging.getLogger(__name__)
 
 LOOKBACK_DAYS = 180
+
+# Friendly `workload_type` labels (mirrors WORKLOAD_MAP in
+# `pipeline_spends_app.ipynb`, plan §5.5) that are *expected* to carry a
+# `system.lakeflow.pipelines` snapshot. Reused by the §5.3 metadata-missing KPI
+# so the count only flags pipelines that SHOULD have metadata but don't —
+# workloads that never get a snapshot (e.g. Vector Search) are excluded by
+# design so the number stays meaningful (plan §3.5).
+METADATA_BEARING_WORKLOADS = (
+    "DLT Pipeline",
+    "DBSQL Materialized View",
+    "Online Table",
+)
+
+
+class AmbiguousPipelineError(Exception):
+    """Raised when a `pipeline_id` is requested without a `workspace_id` but
+    that id exists in more than one workspace.
+
+    `pipeline_id` is only unique within a workspace (plan §3.3/§6), so the
+    id-keyed endpoints (`/{id}/details`, `/{id}/analyze`) must refuse to
+    silently pick a workspace. The router translates this into an HTTP 409
+    naming the candidate workspaces rather than returning a wrong-workspace
+    pipeline.
+    """
+
+    def __init__(self, pipeline_id: str, workspace_ids: List[str]):
+        self.pipeline_id = pipeline_id
+        self.workspace_ids = workspace_ids
+        super().__init__(
+            f"pipeline_id '{pipeline_id}' exists in {len(workspace_ids)} "
+            f"workspaces ({', '.join(workspace_ids)}); pass workspace_id to "
+            "disambiguate."
+        )
 
 # How long to cache the job_id -> name map resolved from system.lakeflow.jobs.
 # That system table costs ~4-5s to scan regardless of filtering, so we collapse
@@ -58,6 +93,7 @@ class DatabricksService:
         self.table_name = app_config.table_name
         self.all_purpose_table_name = app_config.all_purpose_table_name
         self.pool_table_name = app_config.pool_table_name
+        self.pipeline_table_name = app_config.pipeline_table_name
         self.query_timeout = app_config.query_timeout_seconds
         self.job_name_cache: Dict[str, str] = {}  # Cache for job names
         # Bulk {job_id: latest_name} map cached with a TTL. Populated from
@@ -3292,6 +3328,792 @@ class DatabricksService:
             logger.error(
                 "Error fetching pool cost summary for %s: %s",
                 pool_id,
+                str(exc),
+            )
+            return None
+
+    # ------------------------------------------------------------------
+    # Pipeline Compute (plan_dlt_tab.md, CP6)
+    #
+    # All `usage_metadata.dlt_pipeline_id` spend, dimensioned by
+    # `workload_type`. The rollup table `dbspend360_total_pipeline_spends`
+    # is keyed `(workspace_id, pipeline_id, usage_date,
+    # billing_origin_product)`; `compute_mode` / `cost_basis` /
+    # `workload_type` are pre-computed there (plan §3.3/§5.1), so the reads
+    # below collapse them deterministically — never the non-deterministic
+    # ANY_VALUE the council flagged.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pipeline_workload_filter(workload_type: Optional[List[str]]) -> str:
+        """Build the optional `AND workload_type IN (...)` chip filter.
+
+        Used by the §5.1/§5.3 `filtered` CTEs. `workload_type` *only ever
+        filters* — it never drops rows from staging (plan §3.1); an empty /
+        None selection means "all workloads".
+        """
+        if not workload_type:
+            return ""
+        escaped = [w.replace("'", "''") for w in workload_type]
+        in_list = ", ".join(f"'{w}'" for w in escaped)
+        return f"AND workload_type IN ({in_list})"
+
+    def _pipeline_workspace_clause(self, workspace_id: Optional[str]) -> str:
+        """Build the optional `AND workspace_id = '...'` scoping clause.
+
+        `pipeline_id` is only unique within a workspace (plan §3.3/§6), so
+        the id-keyed reads scope by `workspace_id` when it is supplied.
+        """
+        if not workspace_id:
+            return ""
+        return f"AND workspace_id = '{workspace_id.replace(chr(39), chr(39) * 2)}'"
+
+    async def _resolve_pipeline_workspace(
+        self, pipeline_id: str, workspace_id: Optional[str]
+    ) -> Optional[str]:
+        """Resolve the workspace a `pipeline_id` belongs to (plan §6).
+
+        When `workspace_id` is supplied it is honoured verbatim. Otherwise
+        the candidate workspaces are gathered from BOTH the rollup table and
+        `system.lakeflow.pipelines` (a pipeline can have metadata but no
+        in-window spend, or spend but no metadata — plan §3.5), and:
+
+        * 0 candidates  -> returns ``None`` (caller renders the
+          `metadata_missing` sentinel; CP6 exit criterion #3 — a made-up id
+          must not raise).
+        * 1 candidate   -> returns it.
+        * >1 candidates -> raises `AmbiguousPipelineError` (router → HTTP
+          409) rather than silently picking one.
+        """
+        if workspace_id:
+            return workspace_id
+
+        escaped_id = pipeline_id.replace("'", "''")
+        query = f"""
+        SELECT DISTINCT workspace_id FROM (
+            SELECT workspace_id FROM {self.pipeline_table_name}
+            WHERE pipeline_id = '{escaped_id}'
+            UNION
+            SELECT workspace_id FROM system.lakeflow.pipelines
+            WHERE pipeline_id = '{escaped_id}'
+        )
+        WHERE workspace_id IS NOT NULL
+        """
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        candidates: List[str] = []
+        if response.result and response.result.data_array:
+            candidates = [
+                row[0] for row in response.result.data_array if row[0] is not None
+            ]
+
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            raise AmbiguousPipelineError(pipeline_id, candidates)
+        return candidates[0]
+
+    async def get_pipelines_grouped(
+        self,
+        start_date: date,
+        end_date: date,
+        search: Optional[str] = None,
+        workload_type: Optional[List[str]] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> PaginatedPipelines:
+        """Paginated By-Pipeline rollup for the Pipeline Compute tab.
+
+        Implements plan §5.1. One row per pipeline in the window, with the
+        cost-dominant `workload_type` badge computed as a per-workload
+        `SUM(total_cost)` sub-aggregate (`wl`) feeding
+        `max_by(workload_type, struct(wl_cost, workload_type))` — summing
+        first makes the label the workload with the largest TOTAL cost, not
+        the product on the single largest row; the struct tiebreak keeps it
+        deterministic (alphabetical) on equal cost (plan §3.1). All
+        constant-per-pipeline metadata collapses with `MAX(...)`, and
+        `compute_mode`/`cost_basis` collapse with explicit
+        `COUNT(DISTINCT)`/`MIN=MAX` CASEs — never `ANY_VALUE`.
+
+        `search` matches `pipeline_name` (case-insensitive substring),
+        `pipeline_id` (exact), or `created_by` (case-insensitive substring).
+        `workload_type` is the optional chip filter (plan §3.1 — it only
+        *labels/filters*, never drops). `days` (per-day expansion) is
+        enriched via `_get_batch_pipeline_days`.
+        """
+        workload_filter = self._pipeline_workload_filter(workload_type)
+
+        escaped_search = search.replace("'", "''") if search else None
+        search_clause = ""
+        if escaped_search:
+            search_clause = (
+                "WHERE ("
+                f"LOWER(COALESCE(pl.pipeline_name, '')) LIKE LOWER('%{escaped_search}%') "
+                f"OR pl.pipeline_id = '{escaped_search}' "
+                f"OR LOWER(COALESCE(pl.created_by, '')) LIKE LOWER('%{escaped_search}%')"
+                ")"
+            )
+
+        data_query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.pipeline_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+              {workload_filter}
+        ),
+        wl AS (
+            SELECT workspace_id, pipeline_id, workload_type,
+                   SUM(total_cost) AS wl_cost
+            FROM filtered
+            GROUP BY workspace_id, pipeline_id, workload_type
+        ),
+        wl_dominant AS (
+            SELECT workspace_id, pipeline_id,
+                   max_by(workload_type, struct(wl_cost, workload_type)) AS workload_type
+            FROM wl
+            GROUP BY workspace_id, pipeline_id
+        ),
+        pipeline_level AS (
+            SELECT workspace_id,
+                   pipeline_id,
+                   MAX(pipeline_name)             AS pipeline_name,
+                   MAX(pipeline_type)             AS pipeline_type,
+                   MAX(created_by)                AS created_by,
+                   MAX(run_as)                    AS run_as,
+                   CASE
+                     WHEN COUNT(DISTINCT compute_mode) > 1 THEN 'mixed'
+                     ELSE MAX(compute_mode)
+                   END                            AS compute_mode,
+                   CASE
+                     WHEN MIN(cost_basis) = MAX(cost_basis) THEN MAX(cost_basis)
+                     ELSE 'partial'
+                   END                            AS cost_basis,
+                   BOOL_OR(metadata_missing)      AS metadata_missing,
+                   MAX(pipeline_deleted_at)       AS pipeline_deleted_at,
+                   COUNT(DISTINCT usage_date)     AS active_days,
+                   SUM(databricks_cost)           AS total_databricks_cost,
+                   SUM(total_cost)                AS total_cost
+            FROM filtered
+            GROUP BY workspace_id, pipeline_id
+        )
+        SELECT pl.workspace_id, pl.pipeline_id, pl.pipeline_name,
+               pl.pipeline_type, pl.created_by, pl.run_as,
+               pl.compute_mode, pl.cost_basis, pl.metadata_missing,
+               pl.pipeline_deleted_at, pl.active_days,
+               pl.total_databricks_cost, pl.total_cost,
+               wd.workload_type,
+               COUNT(*) OVER() AS total_matching
+        FROM pipeline_level pl
+        JOIN wl_dominant wd USING (workspace_id, pipeline_id)
+        {search_clause}
+        ORDER BY pl.total_cost DESC
+        LIMIT {limit} OFFSET {offset}
+        """
+
+        data_response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=data_query,
+        )
+
+        total_count = 0
+        if data_response.result and data_response.result.data_array:
+            total_count = int(data_response.result.data_array[0][14])
+
+        grouped: List[GroupedPipeline] = []
+        if data_response.result and data_response.result.data_array:
+            id_pairs = [
+                (row[0], row[1]) for row in data_response.result.data_array
+            ]
+            days_by_pipeline = await self._get_batch_pipeline_days(
+                id_pairs, start_date, end_date, workload_type=workload_type
+            )
+
+            for row in data_response.result.data_array:
+                workspace_id = row[0]
+                pipeline_id = row[1]
+                grouped.append(GroupedPipeline(
+                    workspace_id=workspace_id,
+                    pipeline_id=pipeline_id,
+                    pipeline_name=row[2],
+                    pipeline_type=row[3],
+                    created_by=row[4],
+                    run_as=row[5],
+                    compute_mode=row[6],
+                    cost_basis=row[7],
+                    metadata_missing=self._parse_bool(row[8]) or False,
+                    pipeline_deleted_at=self._parse_timestamp(row[9]),
+                    active_days=int(row[10]) if row[10] is not None else 0,
+                    total_databricks_cost=float(row[11]) if row[11] is not None else 0.0,
+                    total_cloud_cost=None,
+                    total_cost=float(row[12]) if row[12] is not None else 0.0,
+                    workload_type=row[13],
+                    days=days_by_pipeline.get((workspace_id, pipeline_id), []),
+                ))
+
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
+        current_page = (offset // limit) + 1
+
+        return PaginatedPipelines(
+            data=grouped,
+            total_count=total_count,
+            page=current_page,
+            per_page=limit,
+            total_pages=total_pages,
+            has_next=current_page < total_pages,
+            has_previous=current_page > 1,
+        )
+
+    async def _get_batch_pipeline_days(
+        self,
+        id_pairs: List[Tuple[str, str]],
+        start_date: date,
+        end_date: date,
+        workload_type: Optional[List[str]] = None,
+    ) -> Dict[Tuple[str, str], List[PipelineDailySpend]]:
+        """Fetch the per-day expansion for a batch of pipelines.
+
+        Implements plan §5.2. The rollup is at product grain (plan §3.3), so
+        this read sums across `billing_origin_product` within each
+        `(workspace_id, pipeline_id, usage_date)` before nesting into
+        `GroupedPipeline.days` — the UI still sees exactly one row per
+        pipeline-day, and the §9 invariant "sum of `days[].total_cost` ==
+        the pipeline's `total_cost`" is therefore structural.
+
+        `workload_type` MUST mirror the chip filter applied by the calling
+        `get_pipelines_grouped` query: the row total is computed over the
+        filtered `workload_type IN (...)` slice, so the per-day breakdown has
+        to apply the same predicate or the days will not sum to the row total
+        (plan §9 #11). Omitting it would re-include every workload's spend and
+        overstate the drill-down for multi-workload pipelines.
+
+        Keyed on `(workspace_id, pipeline_id)` because `pipeline_id` is only
+        unique within a workspace (plan §3.3); a bare `pipeline_id IN (...)`
+        filter is used in the query (it is the selective predicate) and the
+        rows are bucketed back onto the right workspace in Python.
+        """
+        if not id_pairs:
+            return {}
+
+        pipeline_ids = sorted({pid for _, pid in id_pairs})
+        in_clause = ", ".join(
+            f"'{pid.replace(chr(39), chr(39) * 2)}'" for pid in pipeline_ids
+        )
+        workload_filter = self._pipeline_workload_filter(workload_type)
+
+        query = f"""
+        SELECT workspace_id,
+               pipeline_id,
+               usage_date,
+               SUM(databricks_cost)                        AS databricks_cost,
+               CASE WHEN MIN(cost_basis) = MAX(cost_basis) THEN MAX(cost_basis)
+                    ELSE 'partial' END                     AS cost_basis,
+               SUM(COALESCE(cloud_cost, 0))                AS cloud_cost,
+               SUM(total_cost)                             AS total_cost
+        FROM {self.pipeline_table_name}
+        WHERE pipeline_id IN ({in_clause})
+          AND usage_date >= '{start_date.isoformat()}'
+          AND usage_date <= '{end_date.isoformat()}'
+          {workload_filter}
+        GROUP BY workspace_id, pipeline_id, usage_date
+        ORDER BY pipeline_id, usage_date
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        result: Dict[Tuple[str, str], List[PipelineDailySpend]] = {}
+        if response.result and response.result.data_array:
+            for row in response.result.data_array:
+                key = (row[0], row[1])
+                result.setdefault(key, []).append(PipelineDailySpend(
+                    usage_date=date.fromisoformat(row[2]),
+                    databricks_cost=float(row[3]) if row[3] is not None else 0.0,
+                    cost_basis=row[4],
+                    cloud_cost=None,
+                    total_cost=float(row[6]) if row[6] is not None else 0.0,
+                ))
+
+        return result
+
+    async def get_top_pipelines(
+        self,
+        start_date: date,
+        end_date: date,
+        limit: int = 5,
+        workload_type: Optional[List[str]] = None,
+    ) -> List[GroupedPipeline]:
+        """Get top N most expensive pipelines in the window.
+
+        Pipeline-grain analogue of `get_top_instance_pools`. Returns flat
+        `GroupedPipeline` rows with `days=[]` — this endpoint powers a
+        top-N card and intentionally skips the per-day enrichment query for
+        cost reasons (mirrors the other tabs' top-N pattern). The
+        cost-dominant `workload_type` badge uses the same sum-then-`max_by`
+        shape as `get_pipelines_grouped` (plan §3.1/§5.1).
+
+        `workload_type` mirrors the chip filter applied to the KPI strip and
+        table so the Top-5 card narrows in lock-step (plan §3.1); an empty /
+        None selection means "all workloads".
+        """
+        workload_filter = self._pipeline_workload_filter(workload_type)
+        query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.pipeline_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+              {workload_filter}
+        ),
+        wl AS (
+            SELECT workspace_id, pipeline_id, workload_type,
+                   SUM(total_cost) AS wl_cost
+            FROM filtered
+            GROUP BY workspace_id, pipeline_id, workload_type
+        ),
+        wl_dominant AS (
+            SELECT workspace_id, pipeline_id,
+                   max_by(workload_type, struct(wl_cost, workload_type)) AS workload_type
+            FROM wl
+            GROUP BY workspace_id, pipeline_id
+        ),
+        pipeline_level AS (
+            SELECT workspace_id,
+                   pipeline_id,
+                   MAX(pipeline_name)             AS pipeline_name,
+                   MAX(pipeline_type)             AS pipeline_type,
+                   MAX(created_by)                AS created_by,
+                   MAX(run_as)                    AS run_as,
+                   CASE
+                     WHEN COUNT(DISTINCT compute_mode) > 1 THEN 'mixed'
+                     ELSE MAX(compute_mode)
+                   END                            AS compute_mode,
+                   CASE
+                     WHEN MIN(cost_basis) = MAX(cost_basis) THEN MAX(cost_basis)
+                     ELSE 'partial'
+                   END                            AS cost_basis,
+                   BOOL_OR(metadata_missing)      AS metadata_missing,
+                   MAX(pipeline_deleted_at)       AS pipeline_deleted_at,
+                   COUNT(DISTINCT usage_date)     AS active_days,
+                   SUM(databricks_cost)           AS total_databricks_cost,
+                   SUM(total_cost)                AS total_cost
+            FROM filtered
+            GROUP BY workspace_id, pipeline_id
+        )
+        SELECT pl.workspace_id, pl.pipeline_id, pl.pipeline_name,
+               pl.pipeline_type, pl.created_by, pl.run_as,
+               pl.compute_mode, pl.cost_basis, pl.metadata_missing,
+               pl.pipeline_deleted_at, pl.active_days,
+               pl.total_databricks_cost, pl.total_cost,
+               wd.workload_type
+        FROM pipeline_level pl
+        JOIN wl_dominant wd USING (workspace_id, pipeline_id)
+        ORDER BY pl.total_cost DESC
+        LIMIT {limit}
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        pipelines: List[GroupedPipeline] = []
+        if response.result and response.result.data_array:
+            for row in response.result.data_array:
+                pipelines.append(GroupedPipeline(
+                    workspace_id=row[0],
+                    pipeline_id=row[1],
+                    pipeline_name=row[2],
+                    pipeline_type=row[3],
+                    created_by=row[4],
+                    run_as=row[5],
+                    compute_mode=row[6],
+                    cost_basis=row[7],
+                    metadata_missing=self._parse_bool(row[8]) or False,
+                    pipeline_deleted_at=self._parse_timestamp(row[9]),
+                    active_days=int(row[10]) if row[10] is not None else 0,
+                    total_databricks_cost=float(row[11]) if row[11] is not None else 0.0,
+                    total_cloud_cost=None,
+                    total_cost=float(row[12]) if row[12] is not None else 0.0,
+                    workload_type=row[13],
+                    days=[],
+                ))
+
+        return pipelines
+
+    async def get_pipeline_summary_metrics(
+        self,
+        start_date: date,
+        end_date: date,
+        workload_type: Optional[List[str]] = None,
+    ) -> PipelineSummaryMetrics:
+        """Get summary metrics for the Pipeline Compute tab KPI strip.
+
+        Implements plan §5.3. The pipeline-count split is exhaustive of
+        THREE buckets (`serverless` + `classic` + `mixed` ==
+        `total_pipelines`) so mode-switchers land in `mixed` and are never
+        double-counted; the `$` split is likewise three buckets summing to
+        `total_spend` so the summary footnote stays exact when mixed rows
+        exist. `metadata_unavailable` counts only pipelines whose
+        cost-dominant `workload_type` is in `METADATA_BEARING_WORKLOADS`
+        (Vector Search etc. excluded — plan §3.5). The per-`workload_type`
+        `$` breakdown is computed by a second small query and is EXACT
+        because `billing_origin_product` is in the rollup grain (plan
+        §3.1/§5.3 — no dominant-product approximation).
+        """
+        workload_filter = self._pipeline_workload_filter(workload_type)
+        metadata_bearing_list = ", ".join(
+            f"'{w}'" for w in METADATA_BEARING_WORKLOADS
+        )
+
+        query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.pipeline_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+              {workload_filter}
+        ),
+        wl AS (
+            SELECT workspace_id, pipeline_id, workload_type,
+                   SUM(total_cost) AS wl_cost
+            FROM filtered
+            GROUP BY workspace_id, pipeline_id, workload_type
+        ),
+        pipe_wl AS (
+            SELECT workspace_id, pipeline_id,
+                   max_by(workload_type, struct(wl_cost, workload_type)) AS workload_type
+            FROM wl
+            GROUP BY workspace_id, pipeline_id
+        ),
+        pipe AS (
+            SELECT workspace_id, pipeline_id,
+                   CASE WHEN COUNT(DISTINCT compute_mode) > 1 THEN 'mixed'
+                        ELSE MAX(compute_mode) END AS compute_mode,
+                   BOOL_OR(metadata_missing)       AS metadata_missing,
+                   SUM(total_cost)                 AS pipe_cost,
+                   SUM(databricks_cost)            AS pipe_databricks_cost,
+                   SUM(CASE WHEN compute_mode='serverless' THEN total_cost ELSE 0 END) AS serverless_cost,
+                   SUM(CASE WHEN compute_mode='classic'    THEN total_cost ELSE 0 END) AS classic_cost,
+                   SUM(CASE WHEN compute_mode='mixed'      THEN total_cost ELSE 0 END) AS mixed_cost
+            FROM filtered
+            GROUP BY workspace_id, pipeline_id
+        )
+        SELECT
+            COUNT(*)                                                      AS total_pipelines,
+            SUM(CASE WHEN p.compute_mode='serverless' THEN 1 ELSE 0 END)  AS serverless_pipelines,
+            SUM(CASE WHEN p.compute_mode='classic'    THEN 1 ELSE 0 END)  AS classic_pipelines,
+            SUM(CASE WHEN p.compute_mode='mixed'      THEN 1 ELSE 0 END)  AS mixed_pipelines,
+            SUM(CASE WHEN p.metadata_missing AND pw.workload_type IN ({metadata_bearing_list})
+                     THEN 1 ELSE 0 END)                                   AS metadata_unavailable,
+            COALESCE(SUM(p.pipe_cost), 0)                                 AS total_spend,
+            COALESCE(SUM(p.serverless_cost), 0)                           AS serverless_spend,
+            COALESCE(SUM(p.classic_cost), 0)                             AS classic_spend,
+            COALESCE(SUM(p.mixed_cost), 0)                               AS mixed_spend,
+            COALESCE(SUM(p.pipe_databricks_cost), 0)                      AS total_databricks_cost
+        FROM pipe p
+        JOIN pipe_wl pw USING (workspace_id, pipeline_id)
+        """
+
+        response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=query,
+        )
+
+        date_range_days = (end_date - start_date).days + 1
+
+        # Per-workload $ breakdown — exact because billing_origin_product is
+        # in the rollup grain (plan §3.1/§5.3).
+        breakdown_query = f"""
+        SELECT workload_type, SUM(total_cost) AS wl_cost
+        FROM {self.pipeline_table_name}
+        WHERE usage_date >= '{start_date.isoformat()}'
+          AND usage_date <= '{end_date.isoformat()}'
+          {workload_filter}
+        GROUP BY workload_type
+        ORDER BY wl_cost DESC
+        """
+        breakdown_response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=breakdown_query,
+        )
+        workload_breakdown: Dict[str, float] = {}
+        if breakdown_response.result and breakdown_response.result.data_array:
+            for row in breakdown_response.result.data_array:
+                if row[0] is not None:
+                    workload_breakdown[row[0]] = (
+                        float(row[1]) if row[1] is not None else 0.0
+                    )
+
+        if response.result and response.result.data_array:
+            row = response.result.data_array[0]
+            return PipelineSummaryMetrics(
+                total_pipelines=int(row[0]) if row[0] is not None else 0,
+                serverless_pipelines=int(row[1]) if row[1] is not None else 0,
+                classic_pipelines=int(row[2]) if row[2] is not None else 0,
+                mixed_pipelines=int(row[3]) if row[3] is not None else 0,
+                metadata_unavailable=int(row[4]) if row[4] is not None else 0,
+                total_spend=float(row[5]) if row[5] is not None else 0.0,
+                serverless_spend=float(row[6]) if row[6] is not None else 0.0,
+                classic_spend=float(row[7]) if row[7] is not None else 0.0,
+                mixed_spend=float(row[8]) if row[8] is not None else 0.0,
+                total_databricks_cost=float(row[9]) if row[9] is not None else 0.0,
+                total_cloud_cost=None,
+                workload_breakdown=workload_breakdown,
+                date_range_days=date_range_days,
+            )
+
+        return PipelineSummaryMetrics(
+            total_pipelines=0,
+            serverless_pipelines=0,
+            classic_pipelines=0,
+            mixed_pipelines=0,
+            metadata_unavailable=0,
+            total_spend=0.0,
+            serverless_spend=0.0,
+            classic_spend=0.0,
+            mixed_spend=0.0,
+            total_databricks_cost=0.0,
+            total_cloud_cost=None,
+            workload_breakdown=workload_breakdown,
+            date_range_days=date_range_days,
+        )
+
+    async def get_pipeline_details(
+        self, pipeline_id: str, workspace_id: Optional[str] = None
+    ) -> PipelineDetails:
+        """Get pipeline configuration details for the details modal.
+
+        Reads config straight from `system.lakeflow.pipelines` (most-recent
+        SCD snapshot via QUALIFY ROW_NUMBER() per `(workspace_id,
+        pipeline_id)` — plan §5.5/§3.4). No REST API, no GUID resolution:
+        `created_by`/`run_as` are human-readable system-table values.
+        `workload_type`/`compute_mode`/`cost_basis` are collapsed in from the
+        rollup so the modal renders the workload badge and DBU-only caveat
+        consistently with the list.
+
+        `workspace_id` scopes the reads when supplied; otherwise the
+        workspace is resolved across the rollup + system table and an
+        `AmbiguousPipelineError` (router → 409) is raised if the id spans
+        >1 workspace (plan §6). When no snapshot row exists, returns a
+        sentinel with `metadata_missing=True` and config fields None — a
+        made-up id must not raise (CP6 exit criterion #3).
+        """
+        resolved_workspace = await self._resolve_pipeline_workspace(
+            pipeline_id, workspace_id
+        )
+        escaped_id = pipeline_id.replace("'", "''")
+        workspace_clause = self._pipeline_workspace_clause(resolved_workspace)
+
+        snapshot_query = f"""
+        SELECT workspace_id, pipeline_id, name AS pipeline_name,
+               pipeline_type, created_by, run_as, tags,
+               delete_time AS pipeline_deleted_at
+        FROM system.lakeflow.pipelines
+        WHERE pipeline_id = '{escaped_id}'
+          {workspace_clause}
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY workspace_id, pipeline_id ORDER BY change_time DESC) = 1
+        """
+
+        snapshot_row = None
+        try:
+            response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=snapshot_query,
+            )
+            if (
+                response.result
+                and response.result.data_array
+                and len(response.result.data_array) > 0
+            ):
+                snapshot_row = response.result.data_array[0]
+        except Exception as exc:
+            logger.error(
+                "Error fetching pipeline snapshot for %s: %s",
+                pipeline_id, str(exc),
+            )
+
+        # Collapse the rollup's pre-computed dimensions for this pipeline so
+        # the modal can show the workload badge + DBU-only caveat. No date
+        # window — the modal describes the pipeline, not a window slice.
+        workload_type = None
+        compute_mode = None
+        cost_basis = None
+        dims_query = f"""
+        WITH r AS (
+            SELECT * FROM {self.pipeline_table_name}
+            WHERE pipeline_id = '{escaped_id}'
+              {workspace_clause}
+        ),
+        wl AS (
+            SELECT workload_type, SUM(total_cost) AS wl_cost
+            FROM r GROUP BY workload_type
+        )
+        SELECT
+            (SELECT max_by(workload_type, struct(wl_cost, workload_type)) FROM wl) AS workload_type,
+            CASE WHEN COUNT(DISTINCT compute_mode) > 1 THEN 'mixed'
+                 ELSE MAX(compute_mode) END AS compute_mode,
+            CASE WHEN MIN(cost_basis) = MAX(cost_basis) THEN MAX(cost_basis)
+                 ELSE 'partial' END AS cost_basis
+        FROM r
+        """
+        try:
+            dims_response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=dims_query,
+            )
+            if dims_response.result and dims_response.result.data_array:
+                drow = dims_response.result.data_array[0]
+                workload_type = drow[0]
+                compute_mode = drow[1]
+                cost_basis = drow[2]
+        except Exception as exc:
+            logger.error(
+                "Error fetching pipeline dimensions for %s: %s",
+                pipeline_id, str(exc),
+            )
+
+        if snapshot_row is None:
+            return PipelineDetails(
+                workspace_id=resolved_workspace or "",
+                pipeline_id=pipeline_id,
+                workload_type=workload_type,
+                compute_mode=compute_mode,
+                cost_basis=cost_basis,
+                metadata_missing=True,
+            )
+
+        return PipelineDetails(
+            workspace_id=snapshot_row[0],
+            pipeline_id=snapshot_row[1],
+            pipeline_name=snapshot_row[2],
+            pipeline_type=snapshot_row[3],
+            created_by=snapshot_row[4],
+            run_as=snapshot_row[5],
+            workload_type=workload_type,
+            compute_mode=compute_mode,
+            cost_basis=cost_basis,
+            tags=self._parse_tags(snapshot_row[6]),
+            metadata_missing=False,
+            pipeline_deleted_at=self._parse_timestamp(snapshot_row[7]),
+        )
+
+    async def get_pipeline_cost_summary(
+        self, pipeline_id: str, workspace_id: Optional[str] = None
+    ) -> Optional[dict]:
+        """Aggregated cost summary for a single pipeline over the lookback.
+
+        Feeds the LLM analyze endpoint (`/api/pipelines/{id}/analyze`) with
+        the `workload_type` + `cost_basis` context plan §4.1 requires so the
+        model never gives confidently-wrong advice on incomplete numbers. v1
+        reports only DBU spend — every rollup row has `cloud_cost = NULL`
+        (plan §3.2), so the cloud-cost slot is reserved with `None` and the
+        prompt's DBU-only caveat covers the gap.
+
+        `workspace_id` scopes the read when supplied; otherwise resolved
+        across workspaces (raises `AmbiguousPipelineError` on collision —
+        plan §6). Returns ``None`` only on query failure; an empty-window
+        pipeline returns a zero-valued dict (with `limited_history=True`)
+        so the LLM still gets scaffolding rather than throwing.
+        """
+        try:
+            resolved_workspace = await self._resolve_pipeline_workspace(
+                pipeline_id, workspace_id
+            )
+            escaped_id = pipeline_id.replace("'", "''")
+            workspace_clause = self._pipeline_workspace_clause(resolved_workspace)
+            lookback_date = (
+                date.today() - timedelta(days=LOOKBACK_DAYS)
+            ).isoformat()
+
+            query = f"""
+            WITH filtered AS (
+                SELECT *
+                FROM {self.pipeline_table_name}
+                WHERE pipeline_id = '{escaped_id}'
+                  {workspace_clause}
+                  AND usage_date >= '{lookback_date}'
+            ),
+            wl AS (
+                SELECT workload_type, SUM(total_cost) AS wl_cost
+                FROM filtered GROUP BY workload_type
+            ),
+            day_level AS (
+                SELECT usage_date,
+                       SUM(databricks_cost) AS day_databricks_cost,
+                       SUM(total_cost)      AS day_total_cost
+                FROM filtered
+                GROUP BY usage_date
+            )
+            SELECT
+                COALESCE(SUM(day_total_cost), 0)       AS total_spend,
+                COALESCE(SUM(day_databricks_cost), 0)  AS total_databricks_cost,
+                COUNT(*)                               AS active_days,
+                COALESCE(AVG(day_total_cost), 0)       AS avg_cost_per_day,
+                MIN(usage_date)                        AS first_active_date,
+                MAX(usage_date)                        AS last_active_date,
+                (SELECT max_by(workload_type, struct(wl_cost, workload_type))
+                   FROM wl)                            AS workload_type,
+                (SELECT CASE WHEN COUNT(DISTINCT compute_mode) > 1 THEN 'mixed'
+                             ELSE MAX(compute_mode) END FROM filtered) AS compute_mode,
+                (SELECT CASE WHEN MIN(cost_basis) = MAX(cost_basis) THEN MAX(cost_basis)
+                             ELSE 'partial' END FROM filtered)         AS cost_basis,
+                (SELECT COUNT(DISTINCT workload_type) FROM filtered)   AS distinct_workload_count
+            FROM day_level
+            """
+
+            response = self.client.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=query,
+            )
+
+            if not response.result or not response.result.data_array:
+                return {
+                    "total_spend": 0.0,
+                    "total_databricks_cost": 0.0,
+                    "active_days": 0,
+                    "avg_cost_per_day": 0.0,
+                    "first_active_date": None,
+                    "last_active_date": None,
+                    "workload_type": None,
+                    "compute_mode": None,
+                    "cost_basis": None,
+                    "distinct_workload_count": 0,
+                    "workspace_id": resolved_workspace,
+                    "lookback_days": LOOKBACK_DAYS,
+                    "limited_history": True,
+                }
+
+            row = response.result.data_array[0]
+            active_days = int(row[2]) if row[2] is not None else 0
+
+            return {
+                "total_spend": float(row[0]) if row[0] is not None else 0.0,
+                "total_databricks_cost": float(row[1]) if row[1] is not None else 0.0,
+                "active_days": active_days,
+                "avg_cost_per_day": float(row[3]) if row[3] is not None else 0.0,
+                "first_active_date": row[4],
+                "last_active_date": row[5],
+                "workload_type": row[6],
+                "compute_mode": row[7],
+                "cost_basis": row[8],
+                "distinct_workload_count": int(row[9]) if row[9] is not None else 0,
+                "workspace_id": resolved_workspace,
+                "lookback_days": LOOKBACK_DAYS,
+                "limited_history": active_days < 3,
+            }
+        except AmbiguousPipelineError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "Error fetching pipeline cost summary for %s: %s",
+                pipeline_id,
                 str(exc),
             )
             return None

@@ -7,7 +7,11 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
 from server.config.cloud_platform import cloud_config
-from server.models.job_spend import ClusterDetails, InstancePoolDetails
+from server.models.job_spend import (
+    ClusterDetails,
+    InstancePoolDetails,
+    PipelineDetails,
+)
 from server.services.databricks_service import LOOKBACK_DAYS
 
 logger = logging.getLogger(__name__)
@@ -17,6 +21,15 @@ LLM_TEMPERATURE = 0.2
 JOB_MAX_TOKENS = 600
 CLUSTER_MAX_TOKENS = 700
 INSTANCE_POOL_MAX_TOKENS = 800
+PIPELINE_MAX_TOKENS = 800
+
+# Mandatory v1 honesty string for DBU-only (classic/mixed) pipeline spend. The
+# prompt MUST include it whenever `cost_basis != 'full'` and the structured
+# fallback embeds it too, so plan §9 acceptance criterion #14 / CP7 exit
+# criterion #4 hold even on LLM failure (plan §3.2 / §4.1).
+PIPELINE_DBU_ONLY_CAVEAT = (
+    "Databricks DBU cost only — excludes cloud VM cost"
+)
 
 # ---------------------------------------------------------------------------
 # System prompts — stable instruction sets, never change per request.
@@ -249,6 +262,99 @@ ratio of distinct attached clusters to active days:
 - Always include units ($/day, % of total, $/month)
 - 2-4 bullet points per section"""
 
+PIPELINE_ANALYSIS_PROMPT = """\
+You are a senior FinOps analyst specializing in Databricks declarative / \
+serverless pipeline compute (Lakeflow Declarative Pipelines, DBSQL \
+materialized views & streaming tables, online tables, vector search, model \
+serving, AI functions). You are analytical, precise, and produce zero fluff. \
+Every word must earn its place.
+
+## Scope Note (read first)
+
+This tab covers ALL `usage_metadata.dlt_pipeline_id` spend — it is NOT
+DLT-only. The `Workload Type` field tells you what this pipeline actually is
+(e.g. DBSQL Materialized View, Online Table, Vector Search). Tailor your
+analysis to that workload; do NOT assume it is a DLT pipeline.
+
+## Strict Rules
+
+1. Every cost-related claim MUST cite a specific number from the input data.
+2. Configuration observations may be qualitative but must be directly supported by input data.
+3. Do NOT infer, estimate, or assume values not present in the data.
+4. If data is insufficient for an assessment, state: "Insufficient data for this assessment"
+5. If no optimization exists, state: "No actionable optimizations identified" and briefly explain why.
+6. NEVER fabricate cost estimates or reference external benchmarks.
+7. **Cost-basis honesty (MANDATORY, conditional).** The input carries a
+   `Cost Basis` field:
+   - `full` (serverless): the DBU rate already bundles infrastructure, so the
+     figure IS the complete cost. Do NOT add a cloud-VM caveat and do NOT
+     recommend cloud-VM / instance-type changes — there is no separate VM line.
+   - `dbu_only` (classic) or `partial` (mixed): the figure EXCLUDES separate
+     cloud VM cost. You MUST include the exact phrase
+     "excludes cloud VM cost" at least once (as a standalone caveat bullet
+     under Configuration Gaps or as a parenthetical inside any recommendation),
+     all dollar-impact estimates MUST be treated as DBU-only, and you MUST NOT
+     invent cloud-VM savings figures.
+
+## Classification Rubric
+
+Evaluate based on spend concentration, active-day density, and workload type:
+- CRITICAL ISSUES: spend concentrated in few days with no clear driver, or a
+  workload pattern strongly suggesting an over-refreshing materialized view /
+  continuously-running pipeline that could be triggered.
+- NEEDS ATTENTION: partially optimizable; cadence or compute mode worth review.
+- WELL-OPTIMIZED: spend proportionate to active days and workload type with no
+  obvious waste signal.
+
+## Pipeline-Specific Signals
+
+- `Compute Mode` (serverless / classic / mixed) — serverless cost is complete;
+  classic carries an invisible-in-v1 cloud VM line (see rule 7).
+- Spend per active day (`Total Spend / Active Days`) — high per-day cost on a
+  materialized view suggests an aggressive refresh cadence.
+- `Distinct Workload Types` > 1 — the pipeline_id spans multiple products;
+  note that the badge reflects the cost-dominant one.
+- Metadata-missing (`Metadata Available: No`) — configuration analysis is
+  limited; report on cost shape only and note metadata is unavailable.
+
+## Missing Data Protocol
+
+1. No cost data -> analyze configuration only; note "no spend data available for $ impact estimates".
+2. Metadata missing -> configuration analysis disabled; report on cost shape only.
+3. Partial configuration -> analyze available fields; list missing fields explicitly.
+
+## Recommendations (max 3, ranked by estimated $ impact)
+
+- Each MUST reference >= 1 specific configuration or cost metric from input.
+- Each MUST include a dollar impact estimate when cost data is available.
+- For `dbu_only` / `partial`: all dollar-impact estimates are DBU-only; do not
+  invent cloud-VM savings.
+- For `full` (serverless): do NOT recommend cloud-VM / node-type changes.
+- Without cost data: describe qualitative impact; state "dollar impact requires cost data".
+- No duplicates. No filler.
+
+## Output Format (IMMUTABLE — do not add, remove, or rename sections)
+
+## 1. Overall Rating [CLASSIFICATION]
+## 2. Right-Sizing Assessment
+## 3. Cost Savings Opportunities (max 3, ranked by $ impact)
+## 4. Idle Waste Risk
+## 5. Configuration Gaps
+
+## Section 4 — Idle Waste Risk
+
+- For serverless workloads: assess refresh / run cadence vs active-day density;
+  there is no idle VM to waste, so frame this as "scheduling efficiency".
+- For classic / mixed workloads: assess idle compute and conclude with the
+  reminder that cloud VM cost (and any idle VM waste) is not visible in v1.
+
+## Formatting
+
+- Currency: $ prefix, comma separators, 2 decimals (e.g., $1,234.56)
+- Percentages: 1 decimal + % (e.g., 47.3%)
+- Always include units ($/day, % of total, $/month)
+- 2-4 bullet points per section"""
+
 
 class LLMService:
     """Service for LLM-powered cost and configuration analysis."""
@@ -436,6 +542,66 @@ class LLMService:
         except Exception as e:
             logger.error("Error in LLM instance-pool analysis: %s", str(e))
             return self._build_pool_fallback(pool_details, cost_summary)
+
+    async def analyze_pipeline_costs(
+        self,
+        pipeline_details: PipelineDetails,
+        cost_summary: Optional[dict] = None,
+    ) -> str:
+        """Analyze declarative-pipeline cost shape + workload via LLM.
+
+        Sibling of ``analyze_instance_pool_costs`` but bound to
+        ``PIPELINE_ANALYSIS_PROMPT``. The single prompt handles every workload
+        type (DLT / DBSQL MV / online table / vector search / ...) with no
+        per-product branching (plan §4.1 bug-surface control); the model
+        tailors itself off the ``Workload Type`` field in the message.
+
+        The ``Cost Basis`` context is the correctness-critical input: the
+        prompt MUST add the DBU-only caveat (``excludes cloud VM cost``) when
+        ``cost_basis != 'full'`` and MUST NOT add it for serverless
+        (``full``) pipelines (plan §3.2 / CP7 exit criterion #4 / §9 #14).
+        The structured fallback honours the same conditional so the invariant
+        holds on LLM failure.
+
+        Args:
+            pipeline_details: Snapshot + dimensions from
+                ``DatabricksService.get_pipeline_details``.
+            cost_summary: Pre-computed cost shape from
+                ``DatabricksService.get_pipeline_cost_summary``. ``None``
+                renders the "no cost data" branch of the prompt.
+
+        Returns:
+            LLM-generated analysis text, or a structured fallback on failure.
+        """
+        try:
+            user_message = self._build_pipeline_user_message(
+                pipeline_details, cost_summary
+            )
+
+            response = self.client.serving_endpoints.query(
+                name=self.model_name,
+                messages=[
+                    ChatMessage(
+                        role=ChatMessageRole.SYSTEM,
+                        content=PIPELINE_ANALYSIS_PROMPT,
+                    ),
+                    ChatMessage(
+                        role=ChatMessageRole.USER,
+                        content=user_message,
+                    ),
+                ],
+                max_tokens=PIPELINE_MAX_TOKENS,
+                temperature=LLM_TEMPERATURE,
+            )
+
+            if response.choices and len(response.choices) > 0:
+                return response.choices[0].message.content.strip()
+
+            return self._build_pipeline_fallback(pipeline_details, cost_summary)
+
+        except Exception as e:
+            logger.error("Error in LLM pipeline analysis: %s", str(e))
+            return self._build_pipeline_fallback(pipeline_details, cost_summary)
 
     # ------------------------------------------------------------------
     # User-message builders (data only — no instructions)
@@ -802,6 +968,136 @@ class LLMService:
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _pipeline_effective_cost_basis(
+        pipeline: PipelineDetails,
+        cost_summary: Optional[dict],
+    ) -> Optional[str]:
+        """Resolve the cost_basis that governs the DBU-only caveat.
+
+        Prefer the window-scoped value from the cost summary (it reflects the
+        rows actually in the lookback) and fall back to the pipeline snapshot's
+        dimension. ``None`` when neither is known (e.g. a made-up id) — the
+        caveat is then NOT forced, since we cannot claim the spend is classic.
+        """
+        if cost_summary and cost_summary.get("cost_basis"):
+            return cost_summary["cost_basis"]
+        return pipeline.cost_basis
+
+    @staticmethod
+    def _pipeline_caveat_applies(cost_basis: Optional[str]) -> bool:
+        """True when the DBU-only caveat MUST appear (classic / mixed spend)."""
+        return cost_basis in ("dbu_only", "partial")
+
+    def _build_pipeline_user_message(
+        self,
+        pipeline: PipelineDetails,
+        cost_summary: Optional[dict],
+    ) -> str:
+        """Assemble the data-only USER message for pipeline analysis.
+
+        Renders the workload/compute/cost-basis context, the §3.5 metadata
+        state, owner attribution, and the cost shape over the lookback window.
+        When the spend is classic/mixed the v1 DBU-only caveat is restated as a
+        `Notes` bullet so the model cannot miss it; when serverless it states
+        the figure is complete so the model does not falsely caveat it.
+        """
+        cost_basis = self._pipeline_effective_cost_basis(pipeline, cost_summary)
+        workload_type = (
+            (cost_summary or {}).get("workload_type")
+            or pipeline.workload_type
+            or "Unknown"
+        )
+        compute_mode = (
+            (cost_summary or {}).get("compute_mode")
+            or pipeline.compute_mode
+            or "Unknown"
+        )
+
+        if pipeline.metadata_missing:
+            metadata_state = (
+                "Metadata not available — `system.lakeflow.pipelines` has no "
+                "row for this pipeline (normal for Vector Search / cross-region "
+                "/ retention edge). DBU cost is still accurate; configuration "
+                "fields below may be NULL."
+            )
+        elif pipeline.pipeline_deleted_at is not None:
+            metadata_state = (
+                f"Deleted on {pipeline.pipeline_deleted_at.date().isoformat()} "
+                "— metadata reflects the configuration at delete time."
+            )
+        else:
+            metadata_state = "Active"
+
+        lines: list[str] = [
+            f"Metadata State: {metadata_state}",
+            f"Metadata Available: {'No' if pipeline.metadata_missing else 'Yes'}",
+            "",
+            "## Pipeline Configuration",
+            f"- Pipeline Name: {pipeline.pipeline_name or f'Pipeline {pipeline.pipeline_id}'}",
+            f"- Workload Type: {workload_type}",
+            f"- Compute Mode: {compute_mode}",
+            f"- Cost Basis: {cost_basis or 'Unknown'}",
+            f"- Pipeline Type: {pipeline.pipeline_type or 'Unknown'}",
+            f"- Created By: {pipeline.created_by or 'Unknown'}",
+            f"- Run As: {pipeline.run_as or 'Unknown'}",
+        ]
+
+        tags_str = self._filter_tags(pipeline.tags)
+        lines.extend(["", "## Tags", tags_str, ""])
+
+        if cost_summary is not None and cost_summary.get("active_days", 0) > 0:
+            lookback = cost_summary.get("lookback_days", LOOKBACK_DAYS)
+            lines.append(f"## Cost Summary ({lookback}-day window)")
+            lines.append(
+                f"- Total Spend (DBU): ${cost_summary['total_spend']:,.2f}"
+            )
+            lines.append(
+                f"- Databricks Cost: ${cost_summary['total_databricks_cost']:,.2f}"
+            )
+            lines.append(f"- Active Days: {cost_summary['active_days']}")
+            lines.append(
+                f"- Avg Cost / Active Day: ${cost_summary['avg_cost_per_day']:,.2f}"
+            )
+            lines.append(
+                "- Distinct Workload Types: "
+                f"{cost_summary.get('distinct_workload_count', 1)}"
+            )
+            first = cost_summary.get("first_active_date") or "N/A"
+            last = cost_summary.get("last_active_date") or "N/A"
+            lines.append(f"- Active Period: {first} to {last}")
+            if cost_summary.get("limited_history"):
+                lines.append(
+                    "- NOTE: limited history (<3 active days) — trend "
+                    "signals are unreliable."
+                )
+        elif cost_summary is not None:
+            lines.append(f"## Cost Summary ({LOOKBACK_DAYS}-day window)")
+            lines.append(
+                "No spend data available for this pipeline in the lookback "
+                "window."
+            )
+        else:
+            lines.append("## Cost Summary")
+            lines.append("Cost data unavailable.")
+
+        lines.append("")
+        lines.append("## Notes")
+        if self._pipeline_caveat_applies(cost_basis):
+            lines.append(
+                f"- v1 cost-basis caveat: this is {PIPELINE_DBU_ONLY_CAVEAT}. "
+                "All dollar-impact estimates must use DBU cost only; do not "
+                "invent cloud-VM savings."
+            )
+        else:
+            lines.append(
+                "- Cost basis is serverless (full): the DBU figure is the "
+                "complete cost — there is no separate cloud VM line, so do "
+                "NOT add a cloud-VM caveat or recommend node-type changes."
+            )
+
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------
     # Structured fallbacks (never expose raw exceptions)
     # ------------------------------------------------------------------
@@ -956,6 +1252,83 @@ class LLMService:
             "- Reminder: cloud VM cost (including idle capacity) is not "
             "visible in v1; recommendations would be DBU-only.",
         ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_pipeline_fallback(
+        pipeline_details: PipelineDetails,
+        cost_summary: Optional[dict],
+    ) -> str:
+        """Return structured fallback for pipeline analysis.
+
+        Honours the same conditional caveat as the prompt: the
+        ``excludes cloud VM cost`` string is embedded ONLY when the effective
+        cost_basis is classic/mixed, so plan §9 #14 / CP7 exit criterion #4
+        hold even when the LLM call fails — and a serverless pipeline does not
+        get a false caveat.
+        """
+        cost_basis = LLMService._pipeline_effective_cost_basis(
+            pipeline_details, cost_summary
+        )
+        caveat_applies = LLMService._pipeline_caveat_applies(cost_basis)
+        pipeline_name = (
+            pipeline_details.pipeline_name
+            or f"Pipeline {pipeline_details.pipeline_id}"
+        )
+        workload_type = pipeline_details.workload_type or "Unknown"
+        compute_mode = pipeline_details.compute_mode or "Unknown"
+
+        lines = [
+            "## 1. Overall Rating [DATA ONLY]",
+            f"- Pipeline: {pipeline_name}",
+            f"- Workload Type: {workload_type}",
+            f"- Compute Mode: {compute_mode}",
+            f"- Cost Basis: {cost_basis or 'Unknown'}",
+            "- Automated classification unavailable",
+            "",
+            "## 2. Right-Sizing Assessment",
+        ]
+        if (
+            cost_summary
+            and isinstance(cost_summary.get("total_spend"), (int, float))
+            and cost_summary["total_spend"] > 0
+        ):
+            lines.append(
+                f"- Total Spend (DBU): ${cost_summary['total_spend']:,.2f}"
+            )
+            lines.append(
+                f"- Active Days: {cost_summary.get('active_days', 'N/A')}"
+            )
+            lines.append(
+                f"- Avg Cost/Day: "
+                f"${cost_summary.get('avg_cost_per_day', 0):,.2f}"
+            )
+        else:
+            lines.append("- No cost data available for sizing assessment")
+        lines.extend([
+            "",
+            "## 3. Cost Savings Opportunities",
+            "- Automated recommendations unavailable",
+            "",
+            "## 4. Idle Waste Risk",
+        ])
+        if caveat_applies:
+            lines.append(
+                "- Detailed analysis unavailable. Note: this figure is "
+                f"{PIPELINE_DBU_ONLY_CAVEAT}."
+            )
+        else:
+            lines.append(
+                "- Detailed analysis unavailable. Serverless DBU cost is the "
+                "complete cost (no separate cloud VM line)."
+            )
+        lines.extend([
+            "",
+            "## 5. Configuration Gaps",
+            "- Automated analysis could not be generated",
+        ])
+        if caveat_applies:
+            lines.append(f"- Reminder: {PIPELINE_DBU_ONLY_CAVEAT}.")
         return "\n".join(lines)
 
     @staticmethod
