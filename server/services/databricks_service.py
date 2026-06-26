@@ -2587,10 +2587,16 @@ class DatabricksService:
     # so the §9 "per-day total equals per-cluster sum" invariant is
     # structural rather than asserted across two warehouse round-trips.
     #
-    # v1 cost model is DBU-only (plan §3.2). `cloud_cost` is reserved on
-    # every row but always NULL until v2 lights up the cloud-cost-explorer
-    # pool join; service-layer methods plumb the column through as None
-    # rather than coalescing to 0 so the wire-level shape stays honest.
+    # As of CP7 (plan §4.4/§4.6) the EC2/EBS `cloud_cost` is joined in from
+    # `dbspend360_pool_cloud_cost_explorer`: pool VM cost lands on the
+    # synthesized `__pool_overhead__` row (it is pool-level, not per attached
+    # cluster), so `SUM(cloud_cost)` over a pool-day is the real billed EC2
+    # for that pool. Service-layer methods preserve `NULL` for "unknown"
+    # (no pool-tag cloud row yet) and surface `0.0` only for genuine zero
+    # (plan §5 / decision #3) — per-cluster drill-down rows stay `None`
+    # because pool VM cost is not attributable to a specific attached
+    # cluster (AWS tags pool instances `DatabricksInstancePoolId`, not
+    # `ClusterId`).
     #
     # Creator info is not denormalized on the rollup table (plan §3.4 /
     # §4.1 — `system.compute.instance_pools.tags` excludes default tags so
@@ -2653,10 +2659,11 @@ class DatabricksService:
         `pool_snapshot_missing = TRUE` — surfaced as a KPI so operators
         can spot lost-metadata churn at a glance (plan §10 risk row).
 
-        `total_cloud_cost` is intentionally omitted from the SELECT in v1:
-        every row has `cloud_cost = NULL` so `SUM(...)` is always 0 and
-        the KPI would be misleading. The Pydantic field is `Optional` so
-        v2 can populate it without a wire-shape change.
+        As of CP7 `total_cloud_cost` is the summed pool EC2/EBS cost over
+        the window (plan §4.4/§4.6); it stays `None` only when no pool-day
+        in the window carries a cloud row yet (`SUM(cloud_cost)` over an
+        all-`NULL` slice is `NULL`), so the KPI is hidden rather than
+        showing a misleading `$0` (plan §5 / decision #3).
         """
         # `pool_snapshot_state` aggregates pool_snapshot_missing to one
         # row per pool via BOOL_AND so the orphan KPI counts only pools
@@ -2679,6 +2686,7 @@ class DatabricksService:
                 instance_pool_id,
                 usage_date,
                 SUM(databricks_cost) AS databricks_cost,
+                SUM(cloud_cost)      AS cloud_cost,
                 SUM(total_cost)      AS total_cost
             FROM filtered
             GROUP BY instance_pool_id, usage_date
@@ -2698,7 +2706,8 @@ class DatabricksService:
             COALESCE(AVG(total_cost), 0)       AS avg_cost_per_pool_day,
             COALESCE(MAX(total_cost), 0)       AS max_cost_per_pool_day,
             COALESCE(MIN(total_cost), 0)       AS min_cost_per_pool_day,
-            COALESCE(SUM(databricks_cost), 0)  AS total_databricks_cost
+            COALESCE(SUM(databricks_cost), 0)  AS total_databricks_cost,
+            SUM(cloud_cost)                    AS total_cloud_cost
         FROM pool_day_level
         """
 
@@ -2720,7 +2729,7 @@ class DatabricksService:
                 max_cost_per_pool_day=float(row[5]) if row[5] is not None else 0.0,
                 min_cost_per_pool_day=float(row[6]) if row[6] is not None else 0.0,
                 total_databricks_cost=float(row[7]) if row[7] is not None else 0.0,
-                total_cloud_cost=None,
+                total_cloud_cost=float(row[8]) if row[8] is not None else None,
                 date_range_days=date_range_days,
             )
 
@@ -2843,6 +2852,7 @@ class DatabricksService:
                 COUNT(DISTINCT cluster_id)                        AS cluster_count,
                 COUNT(DISTINCT usage_date)                        AS active_days,
                 SUM(databricks_cost)                              AS total_databricks_cost,
+                SUM(cloud_cost)                                   AS total_cloud_cost,
                 SUM(total_cost)                                   AS total_cost
             FROM filtered
             GROUP BY instance_pool_id
@@ -2860,6 +2870,7 @@ class DatabricksService:
                 a.cluster_count,
                 a.active_days,
                 a.total_databricks_cost,
+                a.total_cloud_cost,
                 a.total_cost
             FROM pool_agg a
             JOIN pool_meta m USING (instance_pool_id)
@@ -2870,7 +2881,7 @@ class DatabricksService:
             idle_instance_autotermination_minutes,
             pool_snapshot_missing, pool_deleted_at,
             cluster_count, active_days,
-            total_databricks_cost, total_cost,
+            total_databricks_cost, total_cloud_cost, total_cost,
             COUNT(*) OVER() AS total_matching
         FROM pool_level
         {search_clause}
@@ -2885,7 +2896,7 @@ class DatabricksService:
 
         total_count = 0
         if data_response.result and data_response.result.data_array:
-            total_count = int(data_response.result.data_array[0][12])
+            total_count = int(data_response.result.data_array[0][13])
 
         grouped: List[GroupedInstancePool] = []
         if data_response.result and data_response.result.data_array:
@@ -2908,8 +2919,8 @@ class DatabricksService:
                     cluster_count=int(row[8]) if row[8] is not None else 0,
                     active_days=int(row[9]) if row[9] is not None else 0,
                     total_databricks_cost=float(row[10]) if row[10] is not None else 0.0,
-                    total_cloud_cost=None,
-                    total_cost=float(row[11]) if row[11] is not None else 0.0,
+                    total_cloud_cost=float(row[11]) if row[11] is not None else None,
+                    total_cost=float(row[12]) if row[12] is not None else 0.0,
                     days=days_by_pool.get(pool_id, []),
                 ))
 
@@ -2944,6 +2955,13 @@ class DatabricksService:
         `total_cost` is summed from the same cluster rows the
         per-cluster array exposes so the §9 invariant is structural.
 
+        Pool EC2/EBS `cloud_cost` (CP7, plan §4.4) is surfaced at the
+        per-day level only: it sits on the synthesized `__pool_overhead__`
+        row in the rollup, so summing it across the day's cluster rows
+        yields the real pool-day EC2 while every per-cluster sub-row keeps
+        `cloud_cost = None` (rendered "—"). `NULL` is preserved when no
+        cloud row exists for the day (plan §5 / decision #3).
+
         Per-cluster rows arrive sorted DESC by `total_cost` (per the
         ORDER BY below), so the CP10 UI can `slice(0, 25)` + roll the
         long tail without resorting.
@@ -2967,7 +2985,7 @@ class DatabricksService:
             usage_date,
             cluster_id,
             SUM(databricks_cost)        AS databricks_cost,
-            SUM(COALESCE(cloud_cost,0)) AS cloud_cost,
+            SUM(cloud_cost)             AS cloud_cost,
             SUM(total_cost)             AS total_cost
         FROM {self.pool_table_name}
         WHERE instance_pool_id IN ({in_clause})
@@ -2992,6 +3010,13 @@ class DatabricksService:
                 usage_date = date.fromisoformat(row[1])
                 cluster_id = row[2]
                 dbx = float(row[3]) if row[3] is not None else 0.0
+                # `cloud` is NULL on per-cluster rows and carries the real
+                # pool EC2 only on the synthesized `__pool_overhead__` row
+                # (plan §4.4). It is accumulated to the day level so the
+                # drill-down surfaces EC2 at the (pool, day) level; per-cluster
+                # rows keep `cloud_cost = None` (rendered "—") because pool VM
+                # cost is not attributable to a specific attached cluster.
+                cloud = float(row[4]) if row[4] is not None else None
                 total = float(row[5]) if row[5] is not None else 0.0
 
                 pool_days = days_by_pool.setdefault(pool_id, {})
@@ -3008,6 +3033,8 @@ class DatabricksService:
                     pool_days[usage_date] = day
 
                 day.databricks_cost += dbx
+                if cloud is not None:
+                    day.cloud_cost = (day.cloud_cost or 0.0) + cloud
                 day.total_cost += total
                 day.clusters.append(InstancePoolClusterSpend(
                     cluster_id=cluster_id,
@@ -3078,6 +3105,7 @@ class DatabricksService:
                 COUNT(DISTINCT cluster_id)                        AS cluster_count,
                 COUNT(DISTINCT usage_date)                        AS active_days,
                 SUM(databricks_cost)                              AS total_databricks_cost,
+                SUM(cloud_cost)                                   AS total_cloud_cost,
                 SUM(total_cost)                                   AS total_cost
             FROM filtered
             GROUP BY instance_pool_id
@@ -3095,6 +3123,7 @@ class DatabricksService:
                 a.cluster_count,
                 a.active_days,
                 a.total_databricks_cost,
+                a.total_cloud_cost,
                 a.total_cost
             FROM pool_agg a
             JOIN pool_meta m USING (instance_pool_id)
@@ -3105,7 +3134,7 @@ class DatabricksService:
             idle_instance_autotermination_minutes,
             pool_snapshot_missing, pool_deleted_at,
             cluster_count, active_days,
-            total_databricks_cost, total_cost
+            total_databricks_cost, total_cloud_cost, total_cost
         FROM pool_level
         ORDER BY total_cost DESC
         LIMIT {limit}
@@ -3131,8 +3160,8 @@ class DatabricksService:
                     cluster_count=int(row[8]) if row[8] is not None else 0,
                     active_days=int(row[9]) if row[9] is not None else 0,
                     total_databricks_cost=float(row[10]) if row[10] is not None else 0.0,
-                    total_cloud_cost=None,
-                    total_cost=float(row[11]) if row[11] is not None else 0.0,
+                    total_cloud_cost=float(row[11]) if row[11] is not None else None,
+                    total_cost=float(row[12]) if row[12] is not None else 0.0,
                     days=[],
                 ))
 
@@ -3238,10 +3267,10 @@ class DatabricksService:
         with the pool-specific context plan §CP7 calls out: idle config
         vs observed peak concurrent attached clusters, ratio of distinct
         clusters to active days, and dollar context for the
-        recommendations. v1 reports only DBU spend — every row in the
-        underlying rollup has `cloud_cost = NULL` (plan §3.2), so the
-        cloud-cost slot is reserved with `None` and the LLM prompt's
-        cloud-cost caveat covers the gap.
+        recommendations. As of CP7 the pool EC2/EBS cloud cost is joined in
+        (plan §4.4/§4.6), so `total_cloud_cost` carries the real summed
+        value — `None` only when no pool-day in the window has a cloud row
+        yet (plan §5 / decision #3).
 
         Returns ``None`` only on query failure; an empty-window pool
         returns a zero-valued dict (with `limited_history=True`) so the
@@ -3266,6 +3295,7 @@ class DatabricksService:
                     usage_date,
                     COUNT(DISTINCT cluster_id) AS clusters_on_day,
                     SUM(databricks_cost)       AS day_databricks_cost,
+                    SUM(cloud_cost)            AS day_cloud_cost,
                     SUM(total_cost)            AS day_total_cost
                 FROM filtered
                 GROUP BY usage_date
@@ -3281,7 +3311,8 @@ class DatabricksService:
                 MIN(usage_date)                        AS first_active_date,
                 MAX(usage_date)                        AS last_active_date,
                 (SELECT COUNT(*) FROM filtered
-                   WHERE cluster_id = '__pool_overhead__') AS pool_overhead_rows
+                   WHERE cluster_id = '__pool_overhead__') AS pool_overhead_rows,
+                SUM(day_cloud_cost)                    AS total_cloud_cost
             FROM day_level
             """
 
@@ -3294,6 +3325,7 @@ class DatabricksService:
                 return {
                     "total_spend": 0.0,
                     "total_databricks_cost": 0.0,
+                    "total_cloud_cost": None,
                     "distinct_cluster_count": 0,
                     "active_days": 0,
                     "peak_concurrent_clusters": 0,
@@ -3314,6 +3346,7 @@ class DatabricksService:
             return {
                 "total_spend": total_spend,
                 "total_databricks_cost": total_databricks_cost,
+                "total_cloud_cost": float(row[9]) if row[9] is not None else None,
                 "distinct_cluster_count": distinct_cluster_count,
                 "active_days": active_days,
                 "peak_concurrent_clusters": int(row[4]) if row[4] is not None else 0,
@@ -3496,6 +3529,7 @@ class DatabricksService:
                    MAX(pipeline_deleted_at)       AS pipeline_deleted_at,
                    COUNT(DISTINCT usage_date)     AS active_days,
                    SUM(databricks_cost)           AS total_databricks_cost,
+                   SUM(cloud_cost)                AS total_cloud_cost,
                    SUM(total_cost)                AS total_cost
             FROM filtered
             GROUP BY workspace_id, pipeline_id
@@ -3504,7 +3538,7 @@ class DatabricksService:
                pl.pipeline_type, pl.created_by, pl.run_as,
                pl.compute_mode, pl.cost_basis, pl.metadata_missing,
                pl.pipeline_deleted_at, pl.active_days,
-               pl.total_databricks_cost, pl.total_cost,
+               pl.total_databricks_cost, pl.total_cloud_cost, pl.total_cost,
                wd.workload_type,
                COUNT(*) OVER() AS total_matching
         FROM pipeline_level pl
@@ -3521,7 +3555,7 @@ class DatabricksService:
 
         total_count = 0
         if data_response.result and data_response.result.data_array:
-            total_count = int(data_response.result.data_array[0][14])
+            total_count = int(data_response.result.data_array[0][15])
 
         grouped: List[GroupedPipeline] = []
         if data_response.result and data_response.result.data_array:
@@ -3548,9 +3582,9 @@ class DatabricksService:
                     pipeline_deleted_at=self._parse_timestamp(row[9]),
                     active_days=int(row[10]) if row[10] is not None else 0,
                     total_databricks_cost=float(row[11]) if row[11] is not None else 0.0,
-                    total_cloud_cost=None,
-                    total_cost=float(row[12]) if row[12] is not None else 0.0,
-                    workload_type=row[13],
+                    total_cloud_cost=float(row[12]) if row[12] is not None else None,
+                    total_cost=float(row[13]) if row[13] is not None else 0.0,
+                    workload_type=row[14],
                     days=days_by_pipeline.get((workspace_id, pipeline_id), []),
                 ))
 
@@ -3611,7 +3645,7 @@ class DatabricksService:
                SUM(databricks_cost)                        AS databricks_cost,
                CASE WHEN MIN(cost_basis) = MAX(cost_basis) THEN MAX(cost_basis)
                     ELSE 'partial' END                     AS cost_basis,
-               SUM(COALESCE(cloud_cost, 0))                AS cloud_cost,
+               SUM(cloud_cost)                             AS cloud_cost,
                SUM(total_cost)                             AS total_cost
         FROM {self.pipeline_table_name}
         WHERE pipeline_id IN ({in_clause})
@@ -3635,7 +3669,7 @@ class DatabricksService:
                     usage_date=date.fromisoformat(row[2]),
                     databricks_cost=float(row[3]) if row[3] is not None else 0.0,
                     cost_basis=row[4],
-                    cloud_cost=None,
+                    cloud_cost=float(row[5]) if row[5] is not None else None,
                     total_cost=float(row[6]) if row[6] is not None else 0.0,
                 ))
 
@@ -3701,6 +3735,7 @@ class DatabricksService:
                    MAX(pipeline_deleted_at)       AS pipeline_deleted_at,
                    COUNT(DISTINCT usage_date)     AS active_days,
                    SUM(databricks_cost)           AS total_databricks_cost,
+                   SUM(cloud_cost)                AS total_cloud_cost,
                    SUM(total_cost)                AS total_cost
             FROM filtered
             GROUP BY workspace_id, pipeline_id
@@ -3709,7 +3744,7 @@ class DatabricksService:
                pl.pipeline_type, pl.created_by, pl.run_as,
                pl.compute_mode, pl.cost_basis, pl.metadata_missing,
                pl.pipeline_deleted_at, pl.active_days,
-               pl.total_databricks_cost, pl.total_cost,
+               pl.total_databricks_cost, pl.total_cloud_cost, pl.total_cost,
                wd.workload_type
         FROM pipeline_level pl
         JOIN wl_dominant wd USING (workspace_id, pipeline_id)
@@ -3738,9 +3773,9 @@ class DatabricksService:
                     pipeline_deleted_at=self._parse_timestamp(row[9]),
                     active_days=int(row[10]) if row[10] is not None else 0,
                     total_databricks_cost=float(row[11]) if row[11] is not None else 0.0,
-                    total_cloud_cost=None,
-                    total_cost=float(row[12]) if row[12] is not None else 0.0,
-                    workload_type=row[13],
+                    total_cloud_cost=float(row[12]) if row[12] is not None else None,
+                    total_cost=float(row[13]) if row[13] is not None else 0.0,
+                    workload_type=row[14],
                     days=[],
                 ))
 
@@ -3798,6 +3833,7 @@ class DatabricksService:
                    BOOL_OR(metadata_missing)       AS metadata_missing,
                    SUM(total_cost)                 AS pipe_cost,
                    SUM(databricks_cost)            AS pipe_databricks_cost,
+                   SUM(cloud_cost)                 AS pipe_cloud_cost,
                    SUM(CASE WHEN compute_mode='serverless' THEN total_cost ELSE 0 END) AS serverless_cost,
                    SUM(CASE WHEN compute_mode='classic'    THEN total_cost ELSE 0 END) AS classic_cost,
                    SUM(CASE WHEN compute_mode='mixed'      THEN total_cost ELSE 0 END) AS mixed_cost
@@ -3815,7 +3851,8 @@ class DatabricksService:
             COALESCE(SUM(p.serverless_cost), 0)                           AS serverless_spend,
             COALESCE(SUM(p.classic_cost), 0)                             AS classic_spend,
             COALESCE(SUM(p.mixed_cost), 0)                               AS mixed_spend,
-            COALESCE(SUM(p.pipe_databricks_cost), 0)                      AS total_databricks_cost
+            COALESCE(SUM(p.pipe_databricks_cost), 0)                      AS total_databricks_cost,
+            SUM(p.pipe_cloud_cost)                                        AS total_cloud_cost
         FROM pipe p
         JOIN pipe_wl pw USING (workspace_id, pipeline_id)
         """
@@ -3863,7 +3900,7 @@ class DatabricksService:
                 classic_spend=float(row[7]) if row[7] is not None else 0.0,
                 mixed_spend=float(row[8]) if row[8] is not None else 0.0,
                 total_databricks_cost=float(row[9]) if row[9] is not None else 0.0,
-                total_cloud_cost=None,
+                total_cloud_cost=float(row[10]) if row[10] is not None else None,
                 workload_breakdown=workload_breakdown,
                 date_range_days=date_range_days,
             )
@@ -4011,10 +4048,11 @@ class DatabricksService:
 
         Feeds the LLM analyze endpoint (`/api/pipelines/{id}/analyze`) with
         the `workload_type` + `cost_basis` context plan §4.1 requires so the
-        model never gives confidently-wrong advice on incomplete numbers. v1
-        reports only DBU spend — every rollup row has `cloud_cost = NULL`
-        (plan §3.2), so the cloud-cost slot is reserved with `None` and the
-        prompt's DBU-only caveat covers the gap.
+        model never gives confidently-wrong advice on incomplete numbers. As
+        of CP2 the classic EC2/EBS cloud cost is joined in (plan §3.2), so
+        `total_cloud_cost` carries the real summed value — `None` only when
+        the pipeline is fully serverless (no separate VM line); the prompt's
+        `cost_basis` caveat still covers the serverless / partial gap.
 
         `workspace_id` scopes the read when supplied; otherwise resolved
         across workspaces (raises `AmbiguousPipelineError` on collision —
@@ -4047,6 +4085,7 @@ class DatabricksService:
             day_level AS (
                 SELECT usage_date,
                        SUM(databricks_cost) AS day_databricks_cost,
+                       SUM(cloud_cost)      AS day_cloud_cost,
                        SUM(total_cost)      AS day_total_cost
                 FROM filtered
                 GROUP BY usage_date
@@ -4064,7 +4103,8 @@ class DatabricksService:
                              ELSE MAX(compute_mode) END FROM filtered) AS compute_mode,
                 (SELECT CASE WHEN MIN(cost_basis) = MAX(cost_basis) THEN MAX(cost_basis)
                              ELSE 'partial' END FROM filtered)         AS cost_basis,
-                (SELECT COUNT(DISTINCT workload_type) FROM filtered)   AS distinct_workload_count
+                (SELECT COUNT(DISTINCT workload_type) FROM filtered)   AS distinct_workload_count,
+                SUM(day_cloud_cost)                    AS total_cloud_cost
             FROM day_level
             """
 
@@ -4077,6 +4117,7 @@ class DatabricksService:
                 return {
                     "total_spend": 0.0,
                     "total_databricks_cost": 0.0,
+                    "total_cloud_cost": None,
                     "active_days": 0,
                     "avg_cost_per_day": 0.0,
                     "first_active_date": None,
@@ -4096,6 +4137,7 @@ class DatabricksService:
             return {
                 "total_spend": float(row[0]) if row[0] is not None else 0.0,
                 "total_databricks_cost": float(row[1]) if row[1] is not None else 0.0,
+                "total_cloud_cost": float(row[10]) if row[10] is not None else None,
                 "active_days": active_days,
                 "avg_cost_per_day": float(row[3]) if row[3] is not None else 0.0,
                 "first_active_date": row[4],

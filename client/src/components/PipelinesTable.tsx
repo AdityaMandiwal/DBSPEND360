@@ -40,12 +40,16 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { usePipelines } from '@/hooks/usePipelines';
 import {
+  cloudMissingNote,
   computeModeClasses,
   costBasisCaveat,
+  MIXED_CLOUD_NOTE,
   workloadBadgeClasses,
 } from '@/lib/pipeline-display';
 import type { GroupedPipeline, PipelineDailySpend } from '@/types/pipeline';
 import type { DateRange } from '@/types/job-spend';
+import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 import { PipelineDetailsModal } from './PipelineDetailsModal';
 
 interface PipelinesTableProps {
@@ -87,11 +91,63 @@ const formatBadgeDate = (dateStr?: string | null): string | null => {
 
 const PAGE_SIZE = 25;
 
+// EC2/EBS cloud cell (plan §3.4 / §5). Renders the real $ when known
+// (including a genuine `$0.00`), or "—" + a typed note when the value is NULL
+// — distinguishing "no separate VM line by design" (serverless) from "data
+// not landed yet" (classic). A `mixed` row that carries a number gets an info
+// icon flagging that the figure is the classic portion only.
+const CloudCostCell = ({
+  cloudCost,
+  isServerless,
+  isMixed,
+}: {
+  cloudCost?: number | null;
+  isServerless: boolean;
+  isMixed: boolean;
+}) => {
+  if (cloudCost == null) {
+    const note = cloudMissingNote(isServerless);
+    return (
+      <span
+        className="text-muted-foreground cursor-help"
+        title={note}
+        aria-label={note}
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center justify-end gap-1">
+      {formatCurrency(cloudCost)}
+      {isMixed && (
+        <span
+          className="inline-flex text-amber-500"
+          title={MIXED_CLOUD_NOTE}
+          aria-label={MIXED_CLOUD_NOTE}
+        >
+          <Info className="h-3.5 w-3.5 shrink-0" />
+        </span>
+      )}
+    </span>
+  );
+};
+
 export const PipelinesTable = ({
   dateRange,
   searchTerm,
   selectedWorkloads,
 }: PipelinesTableProps) => {
+  const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  // Pipeline cloud cost is a single EC2/EBS bucket (no compute/storage/network
+  // segmentation — the cluster explorer's product split isn't carried into the
+  // pipeline rollup), so we always render ONE cloud column. Only the label is
+  // platform-aware (plan §3.4 / §1.4): `EC2 / EBS` on AWS, otherwise the
+  // provider's generic compute-service name.
+  const cloudLabel = isAws
+    ? AWS_CLOUD_LABEL
+    : `Total ${cloudConfig?.compute_service || 'Cloud'}`;
   const [page, setPage] = useState(1);
   const [expandedPipelines, setExpandedPipelines] = useState<Set<string>>(
     new Set(),
@@ -134,8 +190,8 @@ export const PipelinesTable = ({
     });
   };
 
-  // 7 data columns + 1 expander.
-  const columnCount = 8;
+  // 8 data columns (incl. EC2/EBS cloud) + 1 expander.
+  const columnCount = 9;
 
   return (
     <div className="space-y-4">
@@ -155,6 +211,7 @@ export const PipelinesTable = ({
               <TableHead className="px-4">Compute</TableHead>
               <TableHead className="px-4">Creator</TableHead>
               <TableHead className="px-4 text-right">Active Days</TableHead>
+              <TableHead className="px-4 text-right">{cloudLabel}</TableHead>
               <TableHead className="px-4 text-right">DBU Cost</TableHead>
               <TableHead className="px-4 text-right">Total Cost</TableHead>
             </TableRow>
@@ -267,6 +324,13 @@ export const PipelinesTable = ({
                       <TableCell className="px-4 text-right text-sm">
                         {pipeline.active_days}
                       </TableCell>
+                      <TableCell className="px-4 text-right font-medium text-blue-600">
+                        <CloudCostCell
+                          cloudCost={pipeline.total_cloud_cost}
+                          isServerless={pipeline.compute_mode === 'serverless'}
+                          isMixed={pipeline.compute_mode === 'mixed'}
+                        />
+                      </TableCell>
                       <TableCell className="px-4 text-right font-medium text-red-600">
                         <span className="inline-flex items-center justify-end gap-1">
                           {formatCurrency(pipeline.total_databricks_cost)}
@@ -298,7 +362,10 @@ export const PipelinesTable = ({
                         className="bg-muted/30"
                       >
                         <TableCell colSpan={columnCount} className="p-0">
-                          <PipelineDayBreakdown pipeline={pipeline} />
+                          <PipelineDayBreakdown
+                            pipeline={pipeline}
+                            cloudLabel={cloudLabel}
+                          />
                         </TableCell>
                       </TableRow>
                     )}
@@ -412,7 +479,13 @@ const PipelineStateBadge = ({ pipeline }: { pipeline: GroupedPipeline }) => {
 // Per-day expansion panel for one pipeline. Renders one row per usage_date.
 // The §9 invariant "sum of days[].total_cost == pipeline total_cost" is
 // structural (plan §5.2), so no separate reconciliation is shown.
-const PipelineDayBreakdown = ({ pipeline }: { pipeline: GroupedPipeline }) => {
+const PipelineDayBreakdown = ({
+  pipeline,
+  cloudLabel,
+}: {
+  pipeline: GroupedPipeline;
+  cloudLabel: string;
+}) => {
   if (pipeline.days.length === 0) {
     return (
       <div className="p-4 border-l-4 border-l-blue-500 bg-muted/20 text-sm text-muted-foreground">
@@ -434,6 +507,7 @@ const PipelineDayBreakdown = ({ pipeline }: { pipeline: GroupedPipeline }) => {
             <DayRow
               key={`${pipeline.pipeline_id}|${day.usage_date}`}
               day={day}
+              cloudLabel={cloudLabel}
             />
           ))}
       </div>
@@ -441,7 +515,13 @@ const PipelineDayBreakdown = ({ pipeline }: { pipeline: GroupedPipeline }) => {
   );
 };
 
-const DayRow = ({ day }: { day: PipelineDailySpend }) => {
+const DayRow = ({
+  day,
+  cloudLabel,
+}: {
+  day: PipelineDailySpend;
+  cloudLabel: string;
+}) => {
   const caveat = costBasisCaveat(day.cost_basis);
   return (
     <div className="rounded-md border bg-background overflow-hidden">
@@ -459,6 +539,14 @@ const DayRow = ({ day }: { day: PipelineDailySpend }) => {
           )}
         </div>
         <div className="flex items-center space-x-4">
+          <div className="text-sm text-blue-600">
+            {cloudLabel}:{' '}
+            <CloudCostCell
+              cloudCost={day.cloud_cost}
+              isServerless={day.cost_basis === 'full'}
+              isMixed={day.cost_basis === 'partial'}
+            />
+          </div>
           <div className="text-sm text-red-600">
             DBU: {formatCurrency(day.databricks_cost)}
           </div>

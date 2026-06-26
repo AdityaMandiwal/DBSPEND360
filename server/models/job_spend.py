@@ -560,12 +560,16 @@ class PaginatedAllPurposeUsers(BaseModel):
 # usage_date)`. Two-level drill-down: pool row -> per-day expansion ->
 # per-cluster expansion (see plan §3.3, §5.2).
 #
-# v1 cost model is DBU-only: `cloud_cost` is structurally reserved on every
-# row but always None until v2 lights up the cloud-cost-explorer pool join
-# (plan §3.2). `total_cost` is a plain field rather than a computed_field
-# because the §5.2 service-layer rollup increments it directly during
-# day-level aggregation, and `cloud_cost = None` would otherwise force
-# NoneType arithmetic in a computed expression.
+# As of CP7 (plan §4.4/§4.6) pool EC2/EBS `cloud_cost` is joined in from
+# `dbspend360_pool_cloud_cost_explorer` and surfaced at the pool and per-day
+# level; it is `None` only when no pool-tag cloud row exists yet (plan §5 /
+# decision #3). Per-cluster sub-rows keep `cloud_cost = None` because pool VM
+# cost is pool-level, not attributable to a specific attached cluster (AWS
+# tags pool instances `DatabricksInstancePoolId`, not `ClusterId`).
+# `total_cost` is a plain field rather than a computed_field because the §5.2
+# service-layer rollup increments it directly during day-level aggregation,
+# and `cloud_cost = None` would otherwise force NoneType arithmetic in a
+# computed expression.
 #
 # Creator info is intentionally absent from list-shape models. The
 # `system.compute.instance_pools.tags` column excludes default tags so the
@@ -583,8 +587,11 @@ class InstancePoolClusterSpend(BaseModel):
     per cluster that attached to the pool on a given `usage_date`.
     `cluster_id == '__pool_overhead__'` represents pool-level bootstrap
     charges that have no attributable cluster (plan §3.3 edge case); the UI
-    renders that row as italicized "Pool overhead". `cloud_cost` is reserved
-    for v2 and is always None in v1.
+    renders that row as italicized "Pool overhead". `cloud_cost` is always
+    `None` on per-cluster rows even after CP7: pool EC2/EBS is pool-level, not
+    attributable to a specific attached cluster (AWS tags pool instances
+    `DatabricksInstancePoolId`, not `ClusterId`), so the UI renders "—" here
+    and surfaces the EC2 figure at the pool/day level instead (plan §4.4).
     """
 
     cluster_id: str
@@ -600,8 +607,10 @@ class InstancePoolDailySpend(BaseModel):
     second-level expansion (plan §3.3) listing per-cluster contributions for
     that day, sorted DESC by `total_cost` (per the §5.2 SQL ORDER BY).
     `cluster_count_on_day` equals `len(clusters)` by construction in the
-    service-layer rollup. `cloud_cost` is reserved for v2 and is always
-    None in v1; `total_cost` is plumbed straight through from the SQL
+    service-layer rollup. `cloud_cost` is the pool EC2/EBS cost for the day
+    (CP7, plan §4.4) — summed from the `__pool_overhead__` row where the pool
+    VM cost lands — and is `None` when no cloud row exists for the day (UI
+    renders "—", §5); `total_cost` is plumbed straight through from the SQL
     projection rather than computed (see module docstring rationale).
     """
 
@@ -651,9 +660,10 @@ class InstancePoolSummaryMetrics(BaseModel):
     day on a single pool cost on average". `orphaned_pools` is the count of
     distinct pools with `pool_snapshot_missing = TRUE`, surfaced as a KPI so
     operators can spot lost-metadata churn at a glance (plan §10 risk).
-    `total_cloud_cost` is intentionally left optional: in v1 every row has
-    `cloud_cost = NULL` so the SUM is always 0 and the KPI is hidden;
-    keeping it nullable in the wire shape avoids a v2 schema migration.
+    `total_cloud_cost` is the summed pool EC2/EBS cost over the window (CP7,
+    plan §4.4/§4.6); it stays optional and is `None` only when no pool-day in
+    the window carries a cloud row yet, so the KPI is hidden rather than
+    showing a misleading `$0` (plan §5 / decision #3).
     """
 
     total_pools: int
@@ -708,10 +718,11 @@ class InstancePoolDetails(BaseModel):
 class InstancePoolAnalysis(BaseModel):
     """LLM-generated configuration analysis for an instance pool.
 
-    Returned by `/api/instance-pools/{id}/analyze`. The analysis text is
-    expected to include the v1 cloud-cost caveat (plan §10 risks row, CP7
-    exit criterion #4) since idle and active cloud VM cost is invisible to
-    v1 (plan §3.2). The output structure mirrors `ClusterAnalysis`'s
+    Returned by `/api/instance-pools/{id}/analyze`. As of CP8
+    (plan_pool_pipeline_ec2_cost.md §4.4) pool EC2/EBS cost is in the
+    summary, so the analysis text now carries only the remaining
+    idle-vs-active-split caveat (plan §4.5) rather than the old DBU-only
+    caveat. The output structure mirrors `ClusterAnalysis`'s
     config-shape sections (Overall Rating / Right-Sizing / Cost Savings /
     Idle Waste Risk / Configuration Gaps) rather than the run-cost trend
     structure used by `CostAnalysis`.
@@ -753,11 +764,14 @@ class PaginatedInstancePools(BaseModel):
 #                        serverless (the 96% majority), so the headline number
 #                        is the complete cost for most rows.
 #
-# v1 cost model is DBU-only: `cloud_cost` is structurally reserved but always
-# None until v2 lights up the classic cloud-cost join (plan §3.2). `total_cost`
-# is a plain field rather than a computed_field — `cloud_cost = None` would
-# force NoneType arithmetic, and the service-layer rollup plumbs it straight
-# from the SQL projection (mirrors the Instance Pool models' rationale).
+# Cloud cost (CP2): the classic-cluster EC2/EBS join is live (plan §3.2), so
+# `cloud_cost` carries the real `SUM(cloud_cost)` for classic pipeline-days and
+# stays `None` for fully-serverless rows (no separate VM line — the UI renders
+# "—" + note, §5; `None` means "unknown / not separable", not "$0"). `total_cost`
+# is a plain field rather than a computed_field — preserving `None` for unknown
+# would force NoneType arithmetic, and the service-layer rollup plumbs
+# `total_cost` straight from the SQL projection (mirrors the Instance Pool
+# models' rationale).
 #
 # Owner attribution (`created_by`/`run_as`) comes straight from
 # `system.lakeflow.pipelines` — no REST API, no GUID resolution (verified
@@ -774,8 +788,10 @@ class PipelineDailySpend(BaseModel):
     within each `usage_date` before the service nests it here — the UI still
     sees exactly one row per pipeline-day. `cost_basis` is collapsed to one
     label for the day ('partial' when the day straddles full + dbu_only).
-    `cloud_cost` is reserved for v2 and is always None in v1; `total_cost` is
-    plumbed straight through from the SQL projection rather than computed.
+    `cloud_cost` is the classic EC2/EBS cost for the day (CP2, plan §3.2) and
+    is `None` for fully-serverless days (no separate VM line — UI renders "—",
+    §5); `total_cost` is plumbed straight through from the SQL projection
+    rather than computed.
     """
 
     usage_date: date
@@ -802,7 +818,9 @@ class GroupedPipeline(BaseModel):
     etc., rendered neutral, not alarming). `pipeline_name` falls back to
     `Pipeline {pipeline_id}` in the metadata-missing path (plan §5.5).
     `created_by`/`run_as`/`pipeline_type` are None ("Unknown") when absent.
-    `total_cloud_cost` is reserved for v2 and is always None in v1.
+    `total_cloud_cost` is the summed classic EC2/EBS cost across the window
+    (CP2, plan §3.2); `None` when the pipeline is fully serverless (no
+    separate VM line — UI renders "—" + note, §5), not `$0`.
     """
 
     workspace_id: str
@@ -841,8 +859,10 @@ class PipelineSummaryMetrics(BaseModel):
     plan §3.1/§5.3). `metadata_unavailable` counts only DLT/SQL/Online-Table
     pipelines that *should* carry a `system.lakeflow.pipelines` snapshot but
     don't — workloads that never have metadata (Vector Search) are excluded so
-    the number stays meaningful (plan §3.5). `total_cloud_cost` is reserved
-    for v2 and is always None in v1.
+    the number stays meaningful (plan §3.5). `total_cloud_cost` is the summed
+    classic EC2/EBS cost across the window (CP2, plan §3.2); `None` when every
+    matched pipeline is fully serverless (no separate VM line — KPI hidden),
+    not `$0`.
     """
 
     total_pipelines: int

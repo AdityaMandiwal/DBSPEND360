@@ -27,7 +27,7 @@
 
 import {
   Activity,
-  BarChart3,
+  Cloud,
   DollarSign,
   FileQuestion,
   Layers,
@@ -39,6 +39,8 @@ import { Badge } from '@/components/ui/badge';
 import { usePipelineSummary, useTopPipelines } from '@/hooks/usePipelines';
 import { workloadBadgeClasses } from '@/lib/pipeline-display';
 import type { DateRange } from '@/types/job-spend';
+import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 
 interface PipelineSummaryCardsProps {
   dateRange: DateRange;
@@ -61,6 +63,11 @@ export const PipelineSummaryCards = ({
   dateRange,
   selectedWorkloads,
 }: PipelineSummaryCardsProps) => {
+  const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  const cloudLabel = isAws
+    ? AWS_CLOUD_LABEL
+    : `${cloudConfig?.compute_service || 'Cloud'} Cost`;
   const workloadFilter =
     selectedWorkloads.length > 0 ? selectedWorkloads : undefined;
   const { data: metrics, isLoading: isMetricsLoading } = usePipelineSummary(
@@ -120,26 +127,67 @@ export const PipelineSummaryCards = ({
 
   const hasMetadataGap = metrics.metadata_unavailable > 0;
 
+  // CP3: classic + mixed pipelines now carry EC2/EBS cloud cost, so the
+  // headline is total spend (DBU + cloud), not DBU alone. `total_cloud_cost`
+  // is NULL when every matched pipeline is fully serverless (no separate VM
+  // line) — surfaced as "—" + note, not a misleading $0 (plan §5).
+  const cloudCost = metrics.total_cloud_cost;
+  const cloudPctOfTotal =
+    cloudCost != null && metrics.total_spend > 0
+      ? formatPercent(cloudCost, metrics.total_spend)
+      : null;
+
   return (
     <div className="space-y-6">
-      {/* KPI cards: Total DBU Spend / Pipelines / Avg daily spend /
+      {/* KPI cards: Total Spend / EC2-EBS cloud / Pipelines /
           Metadata unavailable */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Total DBU Spend
-            </CardTitle>
+            <CardTitle className="text-sm font-medium">Total Spend</CardTitle>
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-600">
-              {formatCurrency(metrics.total_databricks_cost)}
+            <div className="text-2xl font-bold text-blue-600">
+              {formatCurrency(metrics.total_spend)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               {metrics.date_range_days} day
-              {metrics.date_range_days !== 1 ? 's' : ''} period · v1: DBU only
+              {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
+              {formatCurrency(dailyAverageSpend)}/day avg
             </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">{cloudLabel}</CardTitle>
+            <Cloud className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            {cloudCost != null ? (
+              <>
+                <div className="text-2xl font-bold text-sky-600">
+                  {formatCurrency(cloudCost)}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {cloudPctOfTotal} of total · classic VM cost (DBU is{' '}
+                  {formatCurrency(metrics.total_databricks_cost)})
+                </p>
+              </>
+            ) : (
+              <>
+                <div
+                  className="text-2xl font-bold text-muted-foreground cursor-help"
+                  title="No matched pipeline carries a separate VM line in this window — serverless DBU already bundles infrastructure cost (plan §5)."
+                >
+                  —
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  all serverless — no separate VM line
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -149,7 +197,7 @@ export const PipelineSummaryCards = ({
             <Layers className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-blue-600">
+            <div className="text-2xl font-bold text-purple-600">
               {formatNumber(metrics.total_pipelines)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
@@ -157,23 +205,6 @@ export const PipelineSummaryCards = ({
               {formatNumber(metrics.classic_pipelines)} classic
               {metrics.mixed_pipelines > 0 &&
                 ` · ${formatNumber(metrics.mixed_pipelines)} mixed`}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Avg Daily Spend
-            </CardTitle>
-            <BarChart3 className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-amber-600">
-              {formatCurrency(dailyAverageSpend)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {formatCurrency(metrics.total_spend)} total / day avg
             </p>
           </CardContent>
         </Card>
@@ -206,7 +237,9 @@ export const PipelineSummaryCards = ({
       </div>
 
       {/* Compute-mode $ split footnote — three buckets summing to total so the
-          wording stays exact even when mixed rows exist (plan §3.2 / §5.3). */}
+          wording stays exact even when mixed rows exist (plan §3.2 / §5.3).
+          CP3: classic/mixed now include EC2/EBS cloud cost; serverless is the
+          full cost because its DBU rate already bundles infrastructure. */}
       <Card>
         <CardContent className="p-4">
           <p className="text-xs text-muted-foreground leading-relaxed">
@@ -214,20 +247,20 @@ export const PipelineSummaryCards = ({
               {formatPercent(metrics.serverless_spend, metrics.total_spend)}
             </span>{' '}
             of shown spend ({formatCurrency(metrics.serverless_spend)}) is
-            serverless (full cost);{' '}
+            serverless (full cost — VM bundled in the DBU rate);{' '}
             <span className="font-medium text-foreground">
               {formatPercent(metrics.classic_spend, metrics.total_spend)}
             </span>{' '}
-            ({formatCurrency(metrics.classic_spend)}) is classic (DBU only —
-            excludes cloud VM cost)
+            ({formatCurrency(metrics.classic_spend)}) is classic (DBU +
+            EC2/EBS)
             {metrics.mixed_spend > 0 && (
               <>
                 ;{' '}
                 <span className="font-medium text-foreground">
                   {formatPercent(metrics.mixed_spend, metrics.total_spend)}
                 </span>{' '}
-                ({formatCurrency(metrics.mixed_spend)}) is mixed (classic
-                portion DBU only)
+                ({formatCurrency(metrics.mixed_spend)}) is mixed (serverless +
+                classic DBU + EC2/EBS)
               </>
             )}
             .

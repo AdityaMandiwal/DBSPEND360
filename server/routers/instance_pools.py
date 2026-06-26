@@ -13,8 +13,8 @@ Clusters routers in `dashboard.py` and `all_purpose.py`):
 - `/{id}/details`      — pool config + REST-resolved creator GUID
                           for the pool details modal
 - `/{id}/analyze`      — pool-tuned LLM configuration analysis with
-                          the mandatory v1 cloud-cost caveat
-                          (plan §3.2 / §9 acceptance criterion #10)
+                          the mandatory idle-vs-active-split caveat
+                          (CP8 / plan_pool_pipeline_ec2_cost.md §4.5)
 - `/health`            — smoke test for StaticFiles ordering
 
 Per plan §3.4 / §4.1 the list endpoint deliberately does NOT enrich
@@ -240,13 +240,13 @@ async def analyze_instance_pool(pool_id: str):
     question closer to `analyze_cluster_configuration` than to a
     per-run trend analysis.
 
-    The prompt MANDATES the v1 cloud-cost caveat — pool DBU consumption
-    only appears in `system.billing.usage` when a cluster is actively
-    attached, and warm-but-idle pool capacity emits zero usage rows
-    (plan §3.2). Per plan §9 acceptance criterion #10 and CP7 exit
-    criterion #4 the response must include the caveat string; the
-    structured fallback (`_build_pool_fallback`) carries it too so the
-    invariant holds on LLM failure.
+    As of CP8 (plan_pool_pipeline_ec2_cost.md §4.4) pool EC2/EBS cost is
+    joined into the cost summary, so the prompt MANDATES only the remaining
+    idle-vs-active-split caveat ("the idle-vs-active VM cost split is not
+    available yet" — §4.5) rather than the old DBU-only caveat; the response
+    must include that string and the structured fallback
+    (`_build_pool_fallback`) carries it too so the invariant holds on LLM
+    failure.
     """
     try:
         service = get_databricks_service()

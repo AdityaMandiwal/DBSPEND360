@@ -31,6 +31,16 @@ PIPELINE_DBU_ONLY_CAVEAT = (
     "Databricks DBU cost only — excludes cloud VM cost"
 )
 
+# Mandatory honesty string for instance-pool analysis. As of CP8
+# (plan_pool_pipeline_ec2_cost.md §4.4) pool EC2/EBS cost — idle + active
+# combined — IS joined into the cost summary, so dollar estimates may use total
+# cost. The one remaining gap is the idle-vs-active split (deferred to §4.5 via
+# `system.compute.instance_events`), so idle-specific VM waste cannot be
+# quantified. The prompt MANDATES this phrase and the fallback embeds it too.
+POOL_IDLE_SPLIT_CAVEAT = (
+    "the idle-vs-active VM cost split is not available yet"
+)
+
 # ---------------------------------------------------------------------------
 # System prompts — stable instruction sets, never change per request.
 # ---------------------------------------------------------------------------
@@ -180,16 +190,16 @@ must earn its place.
 4. If data is insufficient for an assessment, state: "Insufficient data for this assessment"
 5. If no optimization exists, state: "No actionable optimizations identified" and briefly explain why.
 6. NEVER fabricate cost estimates or reference external benchmarks.
-7. **v1 cloud-cost caveat (MANDATORY).** Idle and active cloud VM cost is
-   structurally invisible to this v1 analysis — pool DBU consumption only
-   appears in `system.billing.usage` when a cluster is actively attached,
-   and warm-but-idle pool capacity emits zero usage rows. Your
-   recommendations MUST be qualified accordingly and all dollar-impact
-   estimates MUST use DBU cost only. You MUST include the exact phrase
-   "cloud VM cost (including idle capacity) is not visible in v1" at
-   least once in your output, as a standalone caveat bullet under
-   Configuration Gaps or as a parenthetical inside any recommendation
-   that touches idle capacity. Do not invent idle-VM savings figures.
+7. **Cloud-cost scope (MANDATORY).** Pool EC2/EBS VM cost (idle + active
+   combined) IS included in the cost summary below as the cloud cost line, so
+   dollar-impact estimates MAY use total cost (DBU + EC2/EBS). The one gap is
+   that the idle-vs-active VM cost split is not available yet — the cost
+   cannot be separated into "wasted idle capacity" vs "actively used"
+   dollars. You MUST include the exact phrase "the idle-vs-active VM cost
+   split is not available yet" at least once in your output, as a standalone
+   caveat bullet under Configuration Gaps or as a parenthetical inside any
+   recommendation that touches idle capacity. Do not fabricate an
+   idle-specific savings figure.
 
 ## Classification Rubric
 
@@ -208,8 +218,9 @@ ratio of distinct attached clusters to active days:
 
 - `min_idle_instances` vs `peak_concurrent_clusters` — if min idle persistently
   exceeds peak attachment, the pool is paying to keep warm capacity that is
-  never claimed. Flag with the qualifier "DBU savings only — idle VM cost not
-  visible in v1".
+  never claimed. Quantify the over-provisioning in instances and reference the
+  total cost; note the idle-vs-active VM cost split is not available yet, so
+  the idle-specific dollar waste cannot be isolated.
 - `idle_instance_autotermination_minutes` — long values keep VMs warm
   unnecessarily for sporadic workloads; short values defeat the point of
   pooling under bursty workloads. Cross-reference with `active_days` and
@@ -236,8 +247,9 @@ ratio of distinct attached clusters to active days:
 
 - Each MUST reference >= 1 specific configuration or cost metric from input.
 - Each MUST include a dollar impact estimate when cost data is available.
-- All dollar-impact estimates are DBU-only (per the v1 cloud-cost caveat
-  above). Do not invent idle-VM savings.
+- Dollar-impact estimates MAY use total cost (DBU + EC2/EBS) from the cost
+  summary; do NOT fabricate idle-specific VM savings (the idle-vs-active
+  split is not available yet).
 - Without cost data: describe qualitative impact; state "dollar impact requires cost data".
 - No duplicates. No filler.
 
@@ -253,7 +265,8 @@ ratio of distinct attached clusters to active days:
 
 - Assess using `min_idle_instances`, `idle_instance_autotermination_minutes`,
   `peak_concurrent_clusters`, and `active_days`. Always conclude this section
-  with an explicit reminder that idle cloud VM cost is not visible in v1.
+  with an explicit reminder that the idle-vs-active VM cost split is not
+  available yet, so idle waste cannot be quantified in dollars.
 
 ## Formatting
 
@@ -497,9 +510,10 @@ class LLMService:
         ``INSTANCE_POOL_ANALYSIS_PROMPT`` and the pool-specific
         signals plan §CP7 calls out (idle config vs observed peak
         concurrent attachment, autotermination tuning, cluster-fanout
-        ratio). The prompt MANDATES the v1 cloud-cost caveat — if the
-        model drops it, ``CP7`` exit criterion #4 and ``§9`` acceptance
-        criterion #10 will catch the regression in the smoke tests.
+        ratio). As of CP8 (plan_pool_pipeline_ec2_cost.md §4.4) pool EC2/EBS
+        cost is in the cost summary, so the prompt MANDATES the remaining
+        ``POOL_IDLE_SPLIT_CAVEAT`` (idle-vs-active split not available yet)
+        rather than the old "DBU-only" caveat.
 
         Args:
             pool_details: Pool snapshot + REST-resolved creator GUID
@@ -510,8 +524,8 @@ class LLMService:
 
         Returns:
             LLM-generated analysis text, or a structured fallback on
-            failure (the fallback also carries the v1 cloud-cost caveat
-            so the §10 acceptance criterion holds even on error).
+            failure (the fallback also carries the idle-split caveat so the
+            honesty guarantee holds even on error).
         """
         try:
             user_message = self._build_pool_user_message(
@@ -908,11 +922,22 @@ class LLMService:
             lookback = cost_summary.get("lookback_days", LOOKBACK_DAYS)
             lines.append(f"## Cost Summary ({lookback}-day window)")
             lines.append(
-                f"- Total Spend (DBU only): ${cost_summary['total_spend']:,.2f}"
+                f"- Total Spend (DBU + EC2/EBS): ${cost_summary['total_spend']:,.2f}"
             )
             lines.append(
-                f"- Databricks Cost: ${cost_summary['total_databricks_cost']:,.2f}"
+                f"- Databricks Cost (DBU): ${cost_summary['total_databricks_cost']:,.2f}"
             )
+            pool_cloud = cost_summary.get("total_cloud_cost")
+            if pool_cloud is not None:
+                lines.append(
+                    f"- Cloud VM Cost (EC2/EBS, idle + active combined): "
+                    f"${pool_cloud:,.2f}"
+                )
+            else:
+                lines.append(
+                    "- Cloud VM Cost (EC2/EBS): not available for this window "
+                    "(no pool-tag cloud row landed yet)"
+                )
             lines.append(
                 f"- Distinct Clusters Attached: {cost_summary['distinct_cluster_count']}"
             )
@@ -961,9 +986,10 @@ class LLMService:
         lines.extend([
             "",
             "## Notes",
-            "- v1 cloud-cost caveat: cloud VM cost (including idle "
-            "capacity) is not visible in v1. All dollar-impact estimates "
-            "must use DBU cost only.",
+            "- Cloud-cost scope: pool EC2/EBS VM cost (idle + active combined) "
+            "is included above, so dollar-impact estimates may use total cost. "
+            f"However, {POOL_IDLE_SPLIT_CAVEAT}, so idle-specific VM waste "
+            "cannot be quantified.",
         ])
 
         return "\n".join(lines)
@@ -1182,8 +1208,8 @@ class LLMService:
     ) -> str:
         """Return structured fallback for instance-pool analysis.
 
-        The §10 acceptance criterion #10 requires that the v1 cloud-cost
-        caveat appears in the analysis output. We embed it under
+        CP8 requires the ``POOL_IDLE_SPLIT_CAVEAT`` (idle-vs-active split not
+        available yet) to appear in the analysis output. We embed it under
         Configuration Gaps so the assertion holds even when the LLM call
         itself fails.
         """
@@ -1222,8 +1248,13 @@ class LLMService:
             and cost_summary["total_spend"] > 0
         ):
             lines.append(
-                f"- Total Spend (DBU): ${cost_summary['total_spend']:,.2f}"
+                f"- Total Spend (DBU + EC2/EBS): ${cost_summary['total_spend']:,.2f}"
             )
+            pool_cloud = cost_summary.get("total_cloud_cost")
+            if pool_cloud is not None:
+                lines.append(
+                    f"- Cloud VM Cost (EC2/EBS): ${pool_cloud:,.2f}"
+                )
             lines.append(
                 f"- Distinct Clusters: "
                 f"{cost_summary.get('distinct_cluster_count', 'N/A')}"
@@ -1244,13 +1275,13 @@ class LLMService:
             "",
             "## 4. Idle Waste Risk",
             f"- Idle Autotermination: {autoterm}",
-            "- Detailed analysis unavailable. Note: cloud VM cost "
-            "(including idle capacity) is not visible in v1.",
+            "- Detailed analysis unavailable. Note: pool EC2/EBS cost is "
+            f"included in totals, but {POOL_IDLE_SPLIT_CAVEAT}.",
             "",
             "## 5. Configuration Gaps",
             "- Automated analysis could not be generated",
-            "- Reminder: cloud VM cost (including idle capacity) is not "
-            "visible in v1; recommendations would be DBU-only.",
+            f"- Reminder: {POOL_IDLE_SPLIT_CAVEAT}; idle-specific VM waste "
+            "cannot be quantified.",
         ])
         return "\n".join(lines)
 

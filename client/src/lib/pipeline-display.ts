@@ -62,3 +62,20 @@ export const costBasisCaveat = (costBasis?: string | null): string | null => {
       return null;
   }
 };
+
+// §5 "data not present" notes for the EC2/EBS cloud cell (CP3). The cloud
+// number is kept NULL when unknown vs `0.0` only when genuinely zero
+// (decision #3), so the UI can tell "we don't have it yet" from a real $0.
+// A NULL cloud cell renders "—" + one of these typed reasons depending on
+// whether the row/day is serverless (the absence is by-design) or classic
+// (the absence is a data gap — Cost Explorer lag or an untagged cluster).
+export const cloudMissingNote = (isServerless: boolean): string =>
+  isServerless
+    ? 'Serverless — EC2 cost is bundled into the serverless DBU rate; no separate VM line.'
+    : 'EC2 cost not yet available for this cluster/day (Cost Explorer lag or untagged cluster).';
+
+// Badge/tooltip for a `mixed` row that DOES carry a cloud number: the figure
+// covers the classic portion only; the serverless portion has no separate VM
+// line (§5).
+export const MIXED_CLOUD_NOTE =
+  'Classic portion only; serverless portion has no separate VM line.';

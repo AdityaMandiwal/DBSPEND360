@@ -80,24 +80,34 @@ Configure local Databricks authentication using **either**:
 The Databricks App reads from `dbspend360_total_job_spends`, which is produced by a multi-task Databricks Job. **Deploy and run this pipeline before deploying the app**, otherwise the dashboard renders empty and the AI insights have no data to analyze.
 
 1. Import everything under `jobs/notebooks/` and `jobs/ddls/` into your Databricks workspace.
-2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. This orchestrator notebook invokes every DDL under `jobs/ddls/` and creates: `dbspend360_audit_log`, `dbspend360_error_log`, `dbspend360_cloud_cost_explorer`, `dbspend360_dbu_cost`, `dbspend360_other_cost_breakdown`, `dbspend360_total_job_spends`, `dbspend360_all_purpose_dbu_cost`, and `dbspend360_total_all_purpose_spends`. The last two back the upcoming All-Purpose Clusters tab; they are populated by the parallel pipeline branch described in step 3 below.
-3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines five tasks across two parallel branches that fan out from a shared cloud-cost-ingest task:
+2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. This orchestrator notebook invokes every DDL under `jobs/ddls/` and creates: `dbspend360_audit_log`, `dbspend360_error_log`, `dbspend360_cloud_cost_explorer`, `dbspend360_pool_cloud_cost_explorer`, `dbspend360_dbu_cost`, `dbspend360_other_cost_breakdown`, `dbspend360_total_job_spends`, `dbspend360_all_purpose_dbu_cost`, `dbspend360_total_all_purpose_spends`, `dbspend360_pool_dbu_cost`, `dbspend360_total_pool_spends`, `dbspend360_pipeline_dbu_cost`, and `dbspend360_total_pipeline_spends`. These back the four cost tabs in the app — Job Clusters, All-Purpose Clusters, Instance Pools, and Pipeline Compute — each populated by its own parallel branch described in step 3 below.
+3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines nine tasks across four parallel branches that fan out from a shared cloud-cost-ingest task:
 
    ```
    cloud_cost_explorer
    ├─ Dbspend360dbu_costs ──────────────── databricks_job_spends       (Job Clusters branch)
-   └─ Dbspend360_all_purpose_dbu_costs ─── all_purpose_spends           (All-Purpose Clusters branch)
+   ├─ Dbspend360_all_purpose_dbu_costs ─── all_purpose_spends          (All-Purpose Clusters branch)
+   └─ Dbspend360_pool_dbu_costs ────────── pool_spends                 (Instance Pools branch)
+
+   Dbspend360_pipeline_dbu_costs ───┐
+   cloud_cost_explorer ─────────────┴──── pipeline_spends              (Pipeline Compute branch)
    ```
 
-   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app` — cloud-source-agnostic; feeds both branches.
+   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app` — cloud-source-agnostic; feeds every branch. On AWS it now writes **two** explorer tables: `dbspend360_cloud_cost_explorer` (grouped by `ClusterId`, feeds Job/All-Purpose/Pipeline) and `dbspend360_pool_cloud_cost_explorer` (grouped by `DatabricksInstancePoolId`, feeds Instance Pools).
    * Job Clusters branch (writes `dbspend360_total_job_spends`):
      * `Dbspend360dbu_costs` → `dbspend360_dbu_cost_app`
      * `databricks_job_spends` → `databricks_job_spends_app`
    * All-Purpose Clusters branch (writes `dbspend360_total_all_purpose_spends`):
      * `Dbspend360_all_purpose_dbu_costs` → `dbspend360_all_purpose_dbu_cost_app`
      * `all_purpose_spends` → `all_purpose_spends_app`
+   * Instance Pools branch (writes `dbspend360_total_pool_spends`):
+     * `Dbspend360_pool_dbu_costs` → `dbspend360_pool_dbu_cost_app`
+     * `pool_spends` → `pool_spends_app`
+   * Pipeline Compute branch (writes `dbspend360_total_pipeline_spends`):
+     * `Dbspend360_pipeline_dbu_costs` → `dbspend360_pipeline_dbu_cost_app`
+     * `pipeline_spends` → `pipeline_spends_app` (depends on both its DBU task **and** `cloud_cost_explorer`)
 
-   The two branches are independent — failures in one do not block the other — and the app reads each branch's output table through its respective tab. See `docs/plan_all_purpose_clusters_tab.md` for the design rationale (cluster-source filter, owner-based attribution, no apportionment in v1).
+   The branches are independent — failures in one do not block the others — and the app reads each branch's output table through its respective tab. See `docs/plan_all_purpose_clusters_tab.md`, `docs/plan_instance_pools_tab.md`, and `docs/plan_pool_pipeline_ec2_cost.md` for the design rationale (cluster-source filter, owner-based attribution, EC2/EBS cloud-cost joins, and the cross-tab overlap model documented in section 4 below).
 
    **Update the hard-coded `notebook_path` values** in the YAML to match where you imported the notebooks (the template currently points at a developer workspace path), and review the default `parameters` block (`catalog`, `cloud_provider`, `overlap_days`, `schema`, `workspace_ids`) before deploying.
 4. Create the job either via the Databricks Workflows UI using the YAML as a reference, or by wrapping it in a Databricks Asset Bundle.
@@ -223,3 +233,79 @@ The chosen `platform` value drives, end-to-end:
    "EC2 Cost", "Azure Compute Cost", or "GCE Cost" dynamically.
 4. **LLM prompts** — cluster-analysis prompts in `server/services/llm_service.py`
    substitute the active provider's name so insights stay grounded.
+
+
+
+## 4. Cost attribution across tabs (and why they don't sum to the AWS bill)
+
+The app exposes four cost tabs — **Job Clusters**, **All-Purpose Clusters**,
+**Instance Pools**, and **Pipeline Compute**. Each one looks at the *same*
+underlying compute through a different lens, so **the tabs intentionally overlap
+and are not meant to add up to your AWS invoice.** Treat each tab as a focused
+view, not a slice of a pie. This is the same already-accepted behavior the DBU
+numbers have always had.
+
+### 4.1 DBU overlap is by design
+
+A single run can be counted in more than one tab depending on how you ask about
+it. For example, a job whose cluster borrows VMs from an instance pool shows DBU
+in both the **Job Clusters** tab (attributed to the job) and the **Instance
+Pools** tab (attributed to the pool). That is not double-billing — it is the same
+spend described from two angles. Per-tab DBU is correct *within* its lens; summing
+DBU *across* tabs is not meaningful. (See `docs/plan_instance_pools_tab.md` §3.6
+for the full cross-tab DBU overlap analysis.)
+
+### 4.2 EC2 / EBS cloud cost overlap
+
+Cloud (EC2/EBS) cost is attributed by AWS resource tag, and the two explorer
+tables are kept **disjoint** so the cloud numbers do not double-count across tabs:
+
+* `dbspend360_cloud_cost_explorer` groups EC2/EBS by the **`ClusterId`** tag and
+  feeds the Job Clusters, All-Purpose Clusters, and Pipeline Compute tabs.
+* `dbspend360_pool_cloud_cost_explorer` groups EC2/EBS by the
+  **`DatabricksInstancePoolId`** tag and feeds the Instance Pools tab. On this
+  account, pooled instances carry the pool tag but **not** `ClusterId` (verified
+  empirically — see `docs/plan_pool_pipeline_ec2_cost.md` §4.3, "Case B"), and the
+  pool explorer additionally **nets out** any cost that *also* carries
+  `ClusterId` (the §4.3 guard). So **pool EC2 cost is disjoint from cluster EC2
+  cost — for cloud cost the Instance Pools tab is additive, not overlapping, with
+  the other three tabs.**
+
+Even so, **no tab — and no sum of tabs — equals the AWS EC2 bill.** Only
+tag-attributable compute is captured; account-wide shared infrastructure (NAT
+gateways, S3, ELB, VPC, data transfer, and any untagged compute) is deliberately
+**not** allocated onto jobs, clusters, pools, or pipelines. Proportional
+allocation of that shared infra is tracked separately in
+`docs/plan_aws_cost_attribution_reconciliation.md` and is intentionally out of
+scope here.
+
+A few honest-by-design gaps you will see rendered as `—` (a dash) plus a tooltip,
+never as a misleading `$0`:
+
+* **Serverless pipelines** — EC2 cost is bundled into the serverless DBU rate;
+  there is no separate VM line to show.
+* **Per-cluster rows inside a pool drill-down** — pool VM cost is tracked at the
+  pool level (AWS tags pool instances with `DatabricksInstancePoolId`, not
+  `ClusterId`), not per attached cluster.
+* **A classic cluster / pool-day with no matching explorer row yet** — Cost
+  Explorer lag or an untagged resource; the value is *unknown*, not zero.
+
+### 4.3 Reconciliation and monitoring
+
+Every cloud-cost join is reconciled back to its explorer source and is
+self-monitoring:
+
+* **Reconciliation invariant** — for each `(cluster_id, day, currency)`
+  (pipeline) and each `(instance_pool_id, day, currency)` (pools), the cloud cost
+  written to the rollup must equal the explorer source within **$0.01**. The
+  rollup notebooks assert this on the intermediate join (before the grain
+  collapse) and write any mismatch to `dbspend360_error_log` instead of failing
+  silently.
+* **Post-write monitors** — if a window's pool (or cluster) `cloud_cost`
+  collapses to ~0 while DBU is non-zero — the classic signature of a dropped
+  billing tag — the explorer and rollup notebooks raise a non-silent alarm rather
+  than quietly writing zeros.
+* **Audit + error logs** — `dbspend360_audit_log` records per-run row counts and
+  windows; `dbspend360_error_log` captures reconciliation mismatches and isolated
+  failures (e.g. the pool-tag CE call is wrapped in its own `try/except` so a
+  pool-tag failure never breaks the cluster explorer path or the job DAG).

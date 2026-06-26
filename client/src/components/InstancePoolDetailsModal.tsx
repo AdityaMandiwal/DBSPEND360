@@ -3,8 +3,9 @@
 // Distinct from `ClusterDetailsModal` (used elsewhere in the app to render
 // cluster-level config + analysis) because pools and clusters have
 // different upstream sources (`system.compute.instance_pools` vs
-// `system.compute.clusters`) and different LLM prompts (pool prompt
-// includes the v1 cloud-cost caveat per plan §3.2 / §9 / CP7).
+// `system.compute.clusters`) and different LLM prompts (the pool prompt
+// includes pool EC2/EBS cost and the remaining idle-vs-active split caveat
+// per plan §4.5 / CP8).
 //
 // Renders the §3.5 three-state info banner at the top of the modal:
 //   - Active                : no banner.
