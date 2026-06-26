@@ -15,6 +15,14 @@ import {
   InstancePoolSummaryMetrics,
   PaginatedInstancePools,
 } from '@/types/instance-pool';
+import {
+  GroupedPipeline,
+  PaginatedPipelines,
+  PipelineAnalysis,
+  PipelineDetails,
+  PipelineFilter,
+  PipelineSummaryMetrics,
+} from '@/types/pipeline';
 import { API_BASE_URL } from '@/lib/api-config';
 
 class ApiClient {
@@ -291,6 +299,91 @@ class ApiClient {
   ): Promise<InstancePoolAnalysis> {
     return this.fetchApi<InstancePoolAnalysis>(
       `/instance-pools/${encodeURIComponent(poolId)}/analyze`,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Pipeline Compute tab
+  //
+  // Mirrors the instance-pools surface above; all under `/api/pipelines/*`.
+  // See `server/routers/pipelines.py` and plan §6 / CP9
+  // (`docs/plan_dlt_tab.md`) for endpoint contracts.
+  //
+  // `workload_type` is an optional MULTI-VALUE chip filter on the summary
+  // and grouped endpoints — it only labels / narrows the view, never drops
+  // spend (plan §3.1). Each selected value is appended as its own
+  // `workload_type=` param so FastAPI parses it as `List[str]`.
+  //
+  // `pipeline_id` is only unique within a workspace (plan §3.3/§6), so the
+  // two id-keyed endpoints accept an optional `workspaceId`; when omitted
+  // and the id is ambiguous across workspaces the backend returns HTTP 409
+  // (surfaced as a thrown Error by `fetchApi`) rather than silently picking
+  // a workspace.
+  // ---------------------------------------------------------------------
+
+  async getPipelineSummary(
+    dateRange: DateRange,
+    workloadType?: string[],
+  ): Promise<PipelineSummaryMetrics> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+    });
+    workloadType?.forEach((wt) => params.append('workload_type', wt));
+    return this.fetchApi<PipelineSummaryMetrics>(`/pipelines/summary?${params}`);
+  }
+
+  async getPipelines(filter: PipelineFilter): Promise<PaginatedPipelines> {
+    const params = new URLSearchParams({
+      start_date: filter.start_date,
+      end_date: filter.end_date,
+      page: filter.page.toString(),
+      per_page: filter.per_page.toString(),
+    });
+
+    if (filter.search) {
+      params.append('search', filter.search);
+    }
+    filter.workload_type?.forEach((wt) => params.append('workload_type', wt));
+
+    return this.fetchApi<PaginatedPipelines>(`/pipelines/grouped?${params}`);
+  }
+
+  async getTopPipelines(
+    dateRange: DateRange,
+    limit: number = 5,
+    workloadType?: string[],
+  ): Promise<GroupedPipeline[]> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+      limit: limit.toString(),
+    });
+    workloadType?.forEach((wt) => params.append('workload_type', wt));
+    return this.fetchApi<GroupedPipeline[]>(`/pipelines/top-pipelines?${params}`);
+  }
+
+  async getPipelineDetails(
+    pipelineId: string,
+    workspaceId?: string,
+  ): Promise<PipelineDetails> {
+    const params = new URLSearchParams();
+    if (workspaceId) params.set('workspace_id', workspaceId);
+    const qs = params.toString();
+    return this.fetchApi<PipelineDetails>(
+      `/pipelines/${encodeURIComponent(pipelineId)}/details${qs ? `?${qs}` : ''}`,
+    );
+  }
+
+  async getPipelineAnalysis(
+    pipelineId: string,
+    workspaceId?: string,
+  ): Promise<PipelineAnalysis> {
+    const params = new URLSearchParams();
+    if (workspaceId) params.set('workspace_id', workspaceId);
+    const qs = params.toString();
+    return this.fetchApi<PipelineAnalysis>(
+      `/pipelines/${encodeURIComponent(pipelineId)}/analyze${qs ? `?${qs}` : ''}`,
     );
   }
 }

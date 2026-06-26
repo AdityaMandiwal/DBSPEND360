@@ -155,6 +155,32 @@ class AppConfig:
             )
         return f"{schema}.dbspend360_total_pool_spends"
 
+    @property
+    def pipeline_table_name(self) -> str:
+        """Get the pipeline-compute spends table name.
+
+        Defaults to `<schema_name>.dbspend360_total_pipeline_spends` derived
+        from the configured `[databricks] schema_name` when not explicitly
+        set. Source for the Pipeline Compute tab; written by
+        `jobs/notebooks/pipeline_spends_app.ipynb`. Same loud-failure
+        semantics as `pool_table_name` — neither key set raises
+        ConfigurationError so the Pipeline Compute tab fails fast on
+        misconfiguration rather than silently querying a non-existent table.
+        """
+        explicit = self.config.get(
+            "databricks", "pipeline_table_name", fallback=None
+        )
+        if explicit:
+            return explicit
+        schema = self.schema_name
+        if not schema:
+            raise ConfigurationError(
+                "Cannot resolve pipeline_table_name: neither "
+                "[databricks] pipeline_table_name nor [databricks] "
+                "schema_name is set. Set one in the active app config."
+            )
+        return f"{schema}.dbspend360_total_pipeline_spends"
+
     # Feature Flags
     @property
     def enable_cost_analysis(self) -> bool:
@@ -272,7 +298,8 @@ class AppConfig:
                 "table_name": self.table_name,
                 "schema_name": self.schema_name,
                 "all_purpose_table_name": self.all_purpose_table_name,
-                "pool_table_name": self.pool_table_name
+                "pool_table_name": self.pool_table_name,
+                "pipeline_table_name": self.pipeline_table_name
             },
             "features": {
                 "enable_cost_analysis": self.enable_cost_analysis,

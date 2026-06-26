@@ -43,6 +43,16 @@ resources:
           notebook_task:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/pool_spends_app
             source: WORKSPACE
+        - task_key: Dbspend360_pipeline_dbu_costs
+          notebook_task:
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/dbspend360_pipeline_dbu_cost_app
+            source: WORKSPACE
+        - task_key: pipeline_spends
+          depends_on:
+            - task_key: Dbspend360_pipeline_dbu_costs
+          notebook_task:
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/pipeline_spends_app
+            source: WORKSPACE
       queue:
         enabled: true
       parameters:

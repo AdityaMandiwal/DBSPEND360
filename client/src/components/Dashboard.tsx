@@ -4,8 +4,9 @@ import { ThemeToggle } from './ThemeToggle';
 import JobClustersDashboard from './JobClustersDashboard';
 import AllPurposeDashboard from './AllPurposeDashboard';
 import InstancePoolsDashboard from './InstancePoolsDashboard';
+import PipelineDashboard from './PipelineDashboard';
 
-const VALID_TABS = ['job-clusters', 'all-purpose', 'instance-pools'] as const;
+const VALID_TABS = ['job-clusters', 'all-purpose', 'instance-pools', 'pipelines'] as const;
 type TabValue = (typeof VALID_TABS)[number];
 const DEFAULT_TAB: TabValue = 'job-clusters';
 
@@ -60,6 +61,7 @@ const Dashboard = () => {
             <TabsTrigger value="job-clusters">Job Clusters</TabsTrigger>
             <TabsTrigger value="all-purpose">All-Purpose Clusters</TabsTrigger>
             <TabsTrigger value="instance-pools">Instance Pools</TabsTrigger>
+            <TabsTrigger value="pipelines">Pipeline Compute</TabsTrigger>
           </TabsList>
 
           <TabsContent value="job-clusters" className="mt-0">
@@ -72,6 +74,10 @@ const Dashboard = () => {
 
           <TabsContent value="instance-pools" className="mt-0">
             <InstancePoolsDashboard />
+          </TabsContent>
+
+          <TabsContent value="pipelines" className="mt-0">
+            <PipelineDashboard />
           </TabsContent>
         </Tabs>
       </div>

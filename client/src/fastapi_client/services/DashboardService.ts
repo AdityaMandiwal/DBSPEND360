@@ -9,6 +9,7 @@ import type { CostAnalysis } from '../models/CostAnalysis';
 import type { CostBreakdown } from '../models/CostBreakdown';
 import type { CoverageTrendResponse } from '../models/CoverageTrendResponse';
 import type { GroupedJob } from '../models/GroupedJob';
+import type { JobRun } from '../models/JobRun';
 import type { OtherCostBreakdownResponse } from '../models/OtherCostBreakdownResponse';
 import type { PaginatedGroupedJobs } from '../models/PaginatedGroupedJobs';
 import type { PaginatedJobSpends } from '../models/PaginatedJobSpends';
@@ -83,6 +84,42 @@ export class DashboardService {
                 'job_name': jobName,
                 'page': page,
                 'per_page': perPage,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Job Runs
+     * Get recent runs for a single job within a date range.
+     *
+     * Powers the lazy-loaded run breakdown shown when a job row is expanded in the
+     * Job Spending Details table. `/api/grouped-job-spends` no longer embeds runs,
+     * so this endpoint is fetched on-demand per job to keep the list query fast.
+     * @param jobId
+     * @param startDate Start date for filtering (YYYY-MM-DD)
+     * @param endDate End date for filtering (YYYY-MM-DD)
+     * @param limit Max runs to return
+     * @returns JobRun Successful Response
+     * @throws ApiError
+     */
+    public static getJobRunsApiJobJobIdRunsGet(
+        jobId: string,
+        startDate: string,
+        endDate: string,
+        limit: number = 10,
+    ): CancelablePromise<Array<JobRun>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/job/{job_id}/runs',
+            path: {
+                'job_id': jobId,
+            },
+            query: {
+                'start_date': startDate,
+                'end_date': endDate,
+                'limit': limit,
             },
             errors: {
                 422: `Validation Error`,
@@ -302,15 +339,17 @@ export class DashboardService {
      *
      * ``cluster_kind`` threads through to ``get_cluster_cost_summary`` so the
      * LLM's cost context comes from the rollup table that matches the cluster's
-     * source (job clusters vs all-purpose / interactive clusters).
+     * source (job clusters vs all-purpose / interactive clusters). When
+     * ``cluster_kind`` is omitted the service layer probes
+     * ``system.compute.clusters.cluster_source`` to pick the right rollup.
      * @param clusterId
-     * @param clusterKind Which rollup table to pull the cluster's cost summary from. Defaults to 'job' so existing call sites are byte-identical; the All-Purpose tab passes 'all_purpose' to route to `dbspend360_total_all_purpose_spends` (see plan §6 / CP10).
+     * @param clusterKind Which rollup table to pull the cluster's cost summary from. Omit to auto-detect from `system.compute.clusters.cluster_source` — required for the Instance Pools drill-down where the cluster's source isn't known client-side. Job-tab and All-Purpose-tab callers still pass 'job' / 'all_purpose' explicitly to skip the detection round-trip (see plan §6 / CP10 review #2).
      * @returns ClusterAnalysis Successful Response
      * @throws ApiError
      */
     public static analyzeClusterConfigurationApiClusterClusterIdAnalyzeGet(
         clusterId: string,
-        clusterKind: 'job' | 'all_purpose' = 'job',
+        clusterKind?: ('job' | 'all_purpose' | null),
     ): CancelablePromise<ClusterAnalysis> {
         return __request(OpenAPI, {
             method: 'GET',

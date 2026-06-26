@@ -732,3 +732,185 @@ class PaginatedInstancePools(BaseModel):
     total_pages: int
     has_next: bool
     has_previous: bool
+
+
+# ---------------------------------------------------------------------------
+# Pipeline Compute models
+#
+# Wire-level types for the Pipeline Compute tab (plan_dlt_tab.md). Source table
+# is `dbspend360_total_pipeline_spends`, keyed `(workspace_id, pipeline_id,
+# usage_date, billing_origin_product)`. The read collapses the product grain
+# away, so the UI sees one row per pipeline (`GroupedPipeline`) with a single
+# drill-down to per-day rows (`PipelineDailySpend`); see plan §3.3 / §5.1-5.2.
+#
+# This tab covers ALL `usage_metadata.dlt_pipeline_id` spend — not just DLT —
+# dimensioned by `workload_type` (DLT is only ~25% of it; plan §0/§3.1). The
+# three honesty signals are carried as plain fields:
+#   - `workload_type`  : friendly label of the cost-dominant workload (badge).
+#   - `compute_mode`   : serverless / classic / mixed.
+#   - `cost_basis`     : full / dbu_only / partial — which numbers exclude
+#                        cloud VM (plan §3.2). `cost_basis = 'full'` <=>
+#                        serverless (the 96% majority), so the headline number
+#                        is the complete cost for most rows.
+#
+# v1 cost model is DBU-only: `cloud_cost` is structurally reserved but always
+# None until v2 lights up the classic cloud-cost join (plan §3.2). `total_cost`
+# is a plain field rather than a computed_field — `cloud_cost = None` would
+# force NoneType arithmetic, and the service-layer rollup plumbs it straight
+# from the SQL projection (mirrors the Instance Pool models' rationale).
+#
+# Owner attribution (`created_by`/`run_as`) comes straight from
+# `system.lakeflow.pipelines` — no REST API, no GUID resolution (verified
+# 99.94% populated for DLT in plan §0). Absent metadata falls back to None
+# ("Unknown" in the UI) with `metadata_missing = True` (plan §3.4/§3.5).
+# ---------------------------------------------------------------------------
+
+
+class PipelineDailySpend(BaseModel):
+    """Per-day cost contribution within a pipeline grouping.
+
+    Drill-down sub-row inside `GroupedPipeline.days`. The rollup is at product
+    grain (plan §3.3), so the §5.2 read sums across `billing_origin_product`
+    within each `usage_date` before the service nests it here — the UI still
+    sees exactly one row per pipeline-day. `cost_basis` is collapsed to one
+    label for the day ('partial' when the day straddles full + dbu_only).
+    `cloud_cost` is reserved for v2 and is always None in v1; `total_cost` is
+    plumbed straight through from the SQL projection rather than computed.
+    """
+
+    usage_date: date
+    databricks_cost: float
+    cost_basis: str
+    cloud_cost: Optional[float] = None
+    total_cost: float = 0.0
+
+
+class GroupedPipeline(BaseModel):
+    """Pipeline-level rollup for the By-Pipeline list view.
+
+    One row per pipeline within the queried window (plan §5.1). `days` is the
+    single drill-down expansion (plan §3.3). `workload_type` is the
+    cost-dominant workload label across the window (sum-then-`max_by`, not the
+    largest single row — plan §3.1). `compute_mode` is
+    serverless/classic/mixed and `cost_basis` is full/dbu_only/partial; both
+    are pre-computed in the rollup and collapsed deterministically on read.
+
+    `metadata_missing` and `pipeline_deleted_at` encode the plan §3.5
+    three-state badge: active (both falsy), "Deleted YYYY-MM-DD"
+    (`pipeline_deleted_at` set, flag false), "Metadata not available" (flag
+    true, `pipeline_deleted_at` NULL — the *expected* state for Vector Search
+    etc., rendered neutral, not alarming). `pipeline_name` falls back to
+    `Pipeline {pipeline_id}` in the metadata-missing path (plan §5.5).
+    `created_by`/`run_as`/`pipeline_type` are None ("Unknown") when absent.
+    `total_cloud_cost` is reserved for v2 and is always None in v1.
+    """
+
+    workspace_id: str
+    pipeline_id: str
+    pipeline_name: Optional[str] = None
+    pipeline_type: Optional[str] = None
+    created_by: Optional[str] = None
+    run_as: Optional[str] = None
+    workload_type: str
+    compute_mode: str
+    cost_basis: str
+    metadata_missing: bool = False
+    pipeline_deleted_at: Optional[datetime] = None
+    active_days: int
+    total_databricks_cost: float
+    total_cloud_cost: Optional[float] = None
+    total_cost: float
+    days: list[PipelineDailySpend] = Field(default_factory=list)
+
+
+class PipelineSummaryMetrics(BaseModel):
+    """Summary metrics for the Pipeline Compute tab KPI strip.
+
+    The pipeline-count split is exhaustive of THREE buckets —
+    `serverless_pipelines + classic_pipelines + mixed_pipelines ==
+    total_pipelines` — so mode-switching pipelines land in `mixed` and are
+    never double-counted (plan §5.3). The `$` split is likewise three buckets
+    that sum to `total_spend`: `serverless_spend` (full cost) +
+    `classic_spend` (DBU only — excludes cloud VM) + `mixed_spend` (partial),
+    so the summary footnote stays exact even when mixed rows exist.
+
+    `workload_breakdown` is the per-`workload_type` `$` map (e.g.
+    {"DLT Pipeline": ..., "DBSQL Materialized View": ...}); because
+    `billing_origin_product` is kept in the rollup grain it is EXACT and
+    reconciles row-for-row with staging (no dominant-product approximation —
+    plan §3.1/§5.3). `metadata_unavailable` counts only DLT/SQL/Online-Table
+    pipelines that *should* carry a `system.lakeflow.pipelines` snapshot but
+    don't — workloads that never have metadata (Vector Search) are excluded so
+    the number stays meaningful (plan §3.5). `total_cloud_cost` is reserved
+    for v2 and is always None in v1.
+    """
+
+    total_pipelines: int
+    serverless_pipelines: int
+    classic_pipelines: int
+    mixed_pipelines: int
+    metadata_unavailable: int
+    total_spend: float
+    serverless_spend: float
+    classic_spend: float
+    mixed_spend: float
+    total_databricks_cost: float
+    total_cloud_cost: Optional[float] = None
+    workload_breakdown: dict[str, float] = Field(default_factory=dict)
+    date_range_days: int
+
+
+class PipelineDetails(BaseModel):
+    """Pipeline configuration details for the pipeline details modal.
+
+    Sourced from `system.lakeflow.pipelines` (most-recent SCD snapshot via
+    QUALIFY ROW_NUMBER() per (workspace_id, pipeline_id) — plan §5.5 / CP6).
+    No REST API and no GUID resolution: `created_by`/`run_as` are the
+    human-readable values straight from the system table (plan §3.4).
+    `workload_type`/`compute_mode`/`cost_basis` are joined in from the rollup
+    so the modal can render the workload badge and the DBU-only caveat
+    consistently with the list. `metadata_missing=True` indicates no
+    `system.lakeflow.pipelines` row was found (normal for Vector Search /
+    cross-region); in that case the config fields fall back to None and the
+    modal renders the neutral §3.5 banner.
+    """
+
+    workspace_id: str
+    pipeline_id: str
+    pipeline_name: Optional[str] = None
+    pipeline_type: Optional[str] = None
+    created_by: Optional[str] = None
+    run_as: Optional[str] = None
+    workload_type: Optional[str] = None
+    compute_mode: Optional[str] = None
+    cost_basis: Optional[str] = None
+    tags: Optional[dict[str, str]] = None
+    metadata_missing: bool = False
+    pipeline_deleted_at: Optional[datetime] = None
+
+
+class PipelineAnalysis(BaseModel):
+    """LLM-generated cost analysis for a pipeline.
+
+    Returned by `/api/pipelines/{id}/analyze`. The analysis is fed
+    `workload_type` + `cost_basis` context so it never gives confidently-wrong
+    advice on incomplete numbers — it MUST state the DBU-only caveat when
+    `cost_basis != 'full'` and must not recommend cloud-VM changes on numbers
+    it knows are DBU-only (plan §4.1 / CP7).
+    """
+
+    pipeline_id: str
+    analysis: str
+    timestamp: str = Field(default_factory=lambda: date.today().isoformat())
+
+
+class PaginatedPipelines(BaseModel):
+    """Paginated response for the By-Pipeline list view."""
+
+    data: list[GroupedPipeline]
+    total_count: int
+    page: int
+    per_page: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
