@@ -20,7 +20,9 @@ import type { PipelineDailySpend } from './PipelineDailySpend';
  * etc., rendered neutral, not alarming). `pipeline_name` falls back to
  * `Pipeline {pipeline_id}` in the metadata-missing path (plan §5.5).
  * `created_by`/`run_as`/`pipeline_type` are None ("Unknown") when absent.
- * `total_cloud_cost` is reserved for v2 and is always None in v1.
+ * `total_cloud_cost` is the summed classic EC2/EBS cost across the window
+ * (CP2, plan §3.2); `None` when the pipeline is fully serverless (no
+ * separate VM line — UI renders "—" + note, §5), not `$0`.
  */
 export type GroupedPipeline = {
     workspace_id: string;

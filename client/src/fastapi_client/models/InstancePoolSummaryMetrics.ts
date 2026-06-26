@@ -11,9 +11,10 @@
  * day on a single pool cost on average". `orphaned_pools` is the count of
  * distinct pools with `pool_snapshot_missing = TRUE`, surfaced as a KPI so
  * operators can spot lost-metadata churn at a glance (plan §10 risk).
- * `total_cloud_cost` is intentionally left optional: in v1 every row has
- * `cloud_cost = NULL` so the SUM is always 0 and the KPI is hidden;
- * keeping it nullable in the wire shape avoids a v2 schema migration.
+ * `total_cloud_cost` is the summed pool EC2/EBS cost over the window (CP7,
+ * plan §4.4/§4.6); it stays optional and is `None` only when no pool-day in
+ * the window carries a cloud row yet, so the KPI is hidden rather than
+ * showing a misleading `$0` (plan §5 / decision #3).
  */
 export type InstancePoolSummaryMetrics = {
     total_pools: number;

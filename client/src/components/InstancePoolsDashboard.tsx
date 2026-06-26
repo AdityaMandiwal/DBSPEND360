@@ -57,9 +57,9 @@ const InstancePoolsDashboard = () => {
             pool config and AI analysis.
           </p>
           <p className="text-xs text-muted-foreground mt-2">
-            v1 surfaces DBU cost only — pool cloud VM cost (idle + active) is
-            tracked separately in the cloud-cost explorers and is a v2
-            follow-up. Pool spend may overlap with the Job Clusters and
+            Total Cost combines pool DBU and EC2/EBS VM cost (idle + active),
+            joined from the pool cloud-cost explorer. The idle-vs-active split
+            is a follow-up. Pool spend may overlap with the Job Clusters and
             All-Purpose tabs — see README for the three-lens cost model.
           </p>
         </CardHeader>

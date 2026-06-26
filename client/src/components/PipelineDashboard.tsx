@@ -6,9 +6,9 @@
 // controls) so the summary KPI strip and the By-Pipeline table stay in
 // lock-step — toggling a workload chip narrows BOTH at once (plan §3.1).
 //
-// The global tab footnote discloses the v1 honesty caveats per plan §3.2 /
-// §3.7 / CP10: list price (≠ invoice), DBU-only for classic (excludes cloud
-// VM), and the instance-pool overlap for classic pipelines.
+// The global tab footnote discloses the honesty caveats per plan §3.2 /
+// §3.7 / CP3: list price (≠ invoice), the classic EC2/EBS VM cost now shown
+// alongside DBU, and the instance-pool overlap for classic pipelines.
 //
 // See plan §4.1 / CP10 (`docs/plan_dlt_tab.md`).
 
@@ -65,12 +65,13 @@ const PipelineDashboard = () => {
             config and AI analysis.
           </p>
           <p className="text-xs text-muted-foreground mt-2">
-            Costs are Databricks list-price DBU — they exclude account-level
-            discounts (list ≠ your invoice). For classic pipelines the figure is
-            DBU only and excludes cloud VM cost (a v2 follow-up); serverless DBU
-            already bundles infrastructure, so it is the full cost. Classic
-            pipelines on instance pools may also appear under the Instance Pools
-            tab — see README for the cost model.
+            Databricks DBU is list price — it excludes account-level discounts
+            (list ≠ your invoice). Classic pipelines also show their EC2/EBS VM
+            cost (from AWS Cost Explorer, keyed by ClusterId), included in Total
+            Cost; serverless DBU already bundles infrastructure, so it has no
+            separate VM line and shows "—". Classic pipelines on instance pools
+            may also appear under the Instance Pools tab — see README for the
+            cost model.
           </p>
         </CardHeader>
         <CardContent>

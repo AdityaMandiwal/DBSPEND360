@@ -10,7 +10,11 @@
 // See plan §3 / §4.1 / §5 (`docs/plan_instance_pools_tab.md`) for the data
 // model rationale:
 //   - `instance_pool_id IS NOT NULL` is the sole pool filter (§3.1)
-//   - v1 is DBU-only; `cloud_cost` is always null but plumbed for v2 (§3.2)
+//   - `cloud_cost` carries pool EC2/EBS VM cost joined from
+//     `dbspend360_pool_cloud_cost_explorer` (CP8 /
+//     plan_pool_pipeline_ec2_cost.md §4.4). It is pool-level: it lands on the
+//     pool-day total, stays NULL on per-cluster rows (rendered "—"), and is
+//     NULL when no pool-tag cloud row landed yet (plan §5 / decision #3).
 //   - Two-level drill-down: pool -> per-day -> per-cluster (§3.3 / §5.2)
 //   - Three-state snapshot encoding via `pool_snapshot_missing` +
 //     `pool_deleted_at` (§3.5)
@@ -81,9 +85,10 @@ export interface GroupedInstancePool {
 // `orphaned_pools` is the count of distinct pools with
 // `pool_snapshot_missing = true` — surfaced as a KPI so operators can
 // spot lost-metadata churn at a glance (cross-region or pre-Oct-2023
-// deleted-pool retention; §10 risks). `total_cloud_cost` is always null
-// in v1 (every row has `cloud_cost = NULL`); the optional shape keeps
-// v2 forward-compatible with no wire-level migration.
+// deleted-pool retention; §10 risks). `total_cloud_cost` is the summed
+// pool EC2/EBS cost over the window (CP8); it is null only when no pool-day
+// in the window carries a cloud row yet, so the KPI renders "—" + note
+// rather than a misleading $0 (plan §5 / decision #3).
 export interface InstancePoolSummaryMetrics {
   total_pools: number;
   total_clusters: number;
@@ -131,9 +136,9 @@ export interface InstancePoolDetails {
   pool_deleted_at?: string | null;
 }
 
-// LLM-generated configuration analysis. The `analysis` text is expected
-// to include the v1 cloud-cost caveat string per §9 acceptance criterion
-// #10 / CP7 exit criterion #4.
+// LLM-generated configuration analysis. As of CP8 the analysis includes the
+// real pool EC2/EBS cost; the only remaining caveat is that the idle-vs-active
+// VM cost split is not yet available (plan §4.5).
 export interface InstancePoolAnalysis {
   instance_pool_id: string;
   analysis: string;

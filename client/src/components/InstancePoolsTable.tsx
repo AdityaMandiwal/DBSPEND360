@@ -52,6 +52,12 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useInstancePools } from '@/hooks/useInstancePools';
 import { useDatabricksHost } from '@/hooks/useDatabricksHost';
+import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
+import {
+  POOL_CLOUD_MISSING_NOTE,
+  POOL_PER_CLUSTER_CLOUD_NOTE,
+} from '@/lib/pool-display';
 import type {
   GroupedInstancePool,
   InstancePoolClusterSpend,
@@ -107,10 +113,53 @@ const PAGE_SIZE = 25;
 // arrive already sorted DESC by `total_cost` per the §5.2 SQL.
 const CLUSTER_DISPLAY_CAP = 25;
 
+// EC2/EBS cloud cell for the pool + per-day grain (plan §4.4 / §5). Renders the
+// real $ when known — including a genuine `$0.00` — or "—" + a typed note when
+// the value is NULL (no pool-tag cloud row landed yet). Pool VM cost is
+// pool-level, so this cell never appears on per-cluster rows (those use
+// `PerClusterCloudCell`).
+const PoolCloudCostCell = ({ cloudCost }: { cloudCost?: number | null }) => {
+  if (cloudCost == null) {
+    return (
+      <span
+        className="text-muted-foreground cursor-help"
+        title={POOL_CLOUD_MISSING_NOTE}
+        aria-label={POOL_CLOUD_MISSING_NOTE}
+      >
+        —
+      </span>
+    );
+  }
+  return <span>{formatCurrency(cloudCost)}</span>;
+};
+
+// Per-cluster cloud cell — always "—". Pool VM cost is tracked at the pool
+// level (on the synthesized `__pool_overhead__` row), not attributable to a
+// specific attached cluster (plan §4.4).
+const PerClusterCloudCell = () => (
+  <span
+    className="text-muted-foreground cursor-help"
+    title={POOL_PER_CLUSTER_CLOUD_NOTE}
+    aria-label={POOL_PER_CLUSTER_CLOUD_NOTE}
+  >
+    —
+  </span>
+);
+
 export const InstancePoolsTable = ({
   dateRange,
   searchTerm,
 }: InstancePoolsTableProps) => {
+  const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  // Pool cloud cost is a single EC2/EBS bucket (no compute/storage/network
+  // segmentation — the pool explorer lands one `cloud_cost` per pool-day), so
+  // we always render ONE cloud column. Only the label is platform-aware
+  // (plan §4.7 / §1.4): `EC2 / EBS` on AWS, otherwise the provider's generic
+  // compute-service name.
+  const cloudLabel = isAws
+    ? AWS_CLOUD_LABEL
+    : `Total ${cloudConfig?.compute_service || 'Cloud'}`;
   const { data: databricksHost } = useDatabricksHost();
   const [page, setPage] = useState(1);
   const [expandedPools, setExpandedPools] = useState<Set<string>>(new Set());
@@ -170,8 +219,8 @@ export const InstancePoolsTable = ({
   const poolUrl = (poolId: string) =>
     workspaceHost ? `${workspaceHost}/compute/instance-pools/${poolId}` : '#';
 
-  // 7 data columns + 1 expander.
-  const columnCount = 8;
+  // 8 data columns (incl. EC2/EBS cloud) + 1 expander.
+  const columnCount = 9;
 
   return (
     <div className="space-y-4">
@@ -191,6 +240,7 @@ export const InstancePoolsTable = ({
               <TableHead className="px-4 text-right">Clusters</TableHead>
               <TableHead className="px-4 text-right">Active Days</TableHead>
               <TableHead className="px-4 text-right">Min Idle</TableHead>
+              <TableHead className="px-4 text-right">{cloudLabel}</TableHead>
               <TableHead className="px-4 text-right">DBU Cost</TableHead>
               <TableHead className="px-4 text-right">Total Cost</TableHead>
             </TableRow>
@@ -299,6 +349,9 @@ export const InstancePoolsTable = ({
                           </div>
                         )}
                       </TableCell>
+                      <TableCell className="px-4 text-right font-medium text-blue-600">
+                        <PoolCloudCostCell cloudCost={pool.total_cloud_cost} />
+                      </TableCell>
                       <TableCell className="px-4 text-right font-medium text-red-600">
                         {formatCurrency(pool.total_databricks_cost)}
                       </TableCell>
@@ -321,6 +374,7 @@ export const InstancePoolsTable = ({
                         <TableCell colSpan={columnCount} className="p-0">
                           <PoolDayBreakdown
                             pool={pool}
+                            cloudLabel={cloudLabel}
                             expandedDays={expandedDays}
                             onToggleDay={toggleDay}
                             onSelectCluster={setActiveClusterModal}
@@ -452,11 +506,13 @@ const PoolStateBadge = ({ pool }: { pool: GroupedInstancePool }) => {
 // the day total minus rounding.
 const PoolDayBreakdown = ({
   pool,
+  cloudLabel,
   expandedDays,
   onToggleDay,
   onSelectCluster,
 }: {
   pool: GroupedInstancePool;
+  cloudLabel: string;
   expandedDays: Set<string>;
   onToggleDay: (key: string) => void;
   onSelectCluster: (clusterId: string) => void;
@@ -512,6 +568,10 @@ const PoolDayBreakdown = ({
                     </Badge>
                   </div>
                   <div className="flex items-center space-x-4">
+                    <div className="text-sm text-blue-600">
+                      {cloudLabel}:{' '}
+                      <PoolCloudCostCell cloudCost={day.cloud_cost} />
+                    </div>
                     <div className="text-sm text-red-600">
                       DBU: {formatCurrency(day.databricks_cost)}
                     </div>
@@ -568,6 +628,7 @@ const DayClusterBreakdown = ({
         <TableHeader>
           <TableRow>
             <TableHead className="px-4 py-2 text-xs">Cluster</TableHead>
+            <TableHead className="px-4 py-2 text-xs text-right">EC2</TableHead>
             <TableHead className="px-4 py-2 text-xs text-right">DBU</TableHead>
             <TableHead className="px-4 py-2 text-xs text-right">
               Total
@@ -589,6 +650,9 @@ const DayClusterBreakdown = ({
                 <span className="ml-2 text-muted-foreground/80 not-italic">
                   · top-{CLUSTER_DISPLAY_CAP} shown
                 </span>
+              </TableCell>
+              <TableCell className="px-4 py-2 text-xs text-right">
+                <PerClusterCloudCell />
               </TableCell>
               <TableCell className="px-4 py-2 text-xs text-right text-red-600">
                 {formatCurrency(overflowDbu)}
@@ -637,6 +701,9 @@ const ClusterRow = ({
             {cluster.cluster_id}
           </button>
         )}
+      </TableCell>
+      <TableCell className="px-4 py-2 text-right text-sm">
+        <PerClusterCloudCell />
       </TableCell>
       <TableCell className="px-4 py-2 text-right text-sm text-red-600">
         {formatCurrency(cluster.databricks_cost)}

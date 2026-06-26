@@ -10,8 +10,10 @@ import type { InstancePoolClusterSpend } from './InstancePoolClusterSpend';
  * second-level expansion (plan §3.3) listing per-cluster contributions for
  * that day, sorted DESC by `total_cost` (per the §5.2 SQL ORDER BY).
  * `cluster_count_on_day` equals `len(clusters)` by construction in the
- * service-layer rollup. `cloud_cost` is reserved for v2 and is always
- * None in v1; `total_cost` is plumbed straight through from the SQL
+ * service-layer rollup. `cloud_cost` is the pool EC2/EBS cost for the day
+ * (CP7, plan §4.4) — summed from the `__pool_overhead__` row where the pool
+ * VM cost lands — and is `None` when no cloud row exists for the day (UI
+ * renders "—", §5); `total_cost` is plumbed straight through from the SQL
  * projection rather than computed (see module docstring rationale).
  */
 export type InstancePoolDailySpend = {

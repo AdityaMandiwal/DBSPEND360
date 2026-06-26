@@ -24,9 +24,12 @@ from pathlib import Path
 BASE = os.environ.get("DBSPEND360_BASE_URL", "http://localhost:8000")
 WINDOW_DAYS = int(os.environ.get("DBSPEND360_CP7_WINDOW_DAYS", "33"))
 
+# CP8 (plan_pool_pipeline_ec2_cost.md §4.4/§4.5) replaced the old "DBU-only"
+# caveat with the idle-vs-active split caveat — pool EC2/EBS cost is now joined
+# in, so only the split remains unavailable.
 CAVEAT_CANDIDATES = (
-    "cloud VM cost (including idle capacity) is not visible in v1",
-    "Cloud VM cost (including idle capacity) is not visible in v1",
+    "the idle-vs-active VM cost split is not available yet",
+    "The idle-vs-active VM cost split is not available yet",
 )
 
 
@@ -72,10 +75,9 @@ def main() -> int:
         for key in ("total_pools", "total_clusters", "orphaned_pools", "total_spend"):
             if key not in summary:
                 failures.append(f"/summary missing field {key!r}")
-        if summary.get("total_cloud_cost") is not None:
-            failures.append(
-                f"/summary.total_cloud_cost must be None in v1 (got {summary.get('total_cloud_cost')})"
-            )
+        # CP8: total_cloud_cost is now the real summed pool EC2/EBS cost (or
+        # None when no pool-day in the window has a cloud row yet) — no longer
+        # forced to None.
         print(
             f"   total_pools={summary.get('total_pools')} "
             f"total_clusters={summary.get('total_clusters')} "

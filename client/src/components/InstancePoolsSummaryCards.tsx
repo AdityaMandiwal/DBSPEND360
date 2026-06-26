@@ -3,11 +3,12 @@
 // Parallels `AllPurposeSummaryCards.tsx`, but tuned to the pool data
 // model (plan §4.1, CP10):
 //
-//   - Pool DBU spend ONLY in v1 — `total_cloud_cost` is always null
-//     because pool idle/active cloud cost lives outside
-//     `system.billing.usage` and is deferred to v2 (plan §3.2). The
-//     KPI strip surfaces "Total DBU Spend" instead of the multi-line
-//     cloud/DBU split that the all-purpose tab carries.
+//   - Total Spend (DBU + EC2/EBS) and a dedicated cloud KPI. CP8
+//     (plan_pool_pipeline_ec2_cost.md §4.4) joins pool VM cost in from
+//     `dbspend360_pool_cloud_cost_explorer`, so `total_cloud_cost` now
+//     carries the real summed EC2/EBS — `null` only when no pool-day in the
+//     window has a cloud row yet, surfaced as "—" + note (plan §5), never a
+//     misleading $0.
 //   - Distinct pool count + distinct cluster count are both first-class
 //     KPIs (plan §4.1) — the "cluster count" half is the closest lens on
 //     "how many workloads are this pool serving" that v1 has, given
@@ -22,7 +23,7 @@
 import {
   Activity,
   AlertTriangle,
-  BarChart3,
+  Cloud,
   DollarSign,
   Layers,
   Server,
@@ -34,6 +35,8 @@ import {
   useTopInstancePools,
 } from '@/hooks/useInstancePools';
 import type { DateRange } from '@/types/job-spend';
+import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 
 interface InstancePoolsSummaryCardsProps {
   dateRange: DateRange;
@@ -51,10 +54,17 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
 const integerFormatter = new Intl.NumberFormat('en-US');
 const formatCurrency = (amount: number) => currencyFormatter.format(amount);
 const formatNumber = (n: number) => integerFormatter.format(n);
+const formatPercent = (part: number, whole: number) =>
+  whole > 0 ? `${Math.round((part / whole) * 100)}%` : '0%';
 
 export const InstancePoolsSummaryCards = ({
   dateRange,
 }: InstancePoolsSummaryCardsProps) => {
+  const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  const cloudLabel = isAws
+    ? AWS_CLOUD_LABEL
+    : `${cloudConfig?.compute_service || 'Cloud'} Cost`;
   const { data: metrics, isLoading: isMetricsLoading } =
     useInstancePoolSummary(dateRange);
   const { data: topPools, isLoading: isTopPoolsLoading } = useTopInstancePools(
@@ -99,25 +109,66 @@ export const InstancePoolsSummaryCards = ({
     metrics.total_spend / Math.max(metrics.date_range_days, 1);
   const hasOrphanedPools = metrics.orphaned_pools > 0;
 
+  // CP8: pool EC2/EBS cloud cost is now joined into the rollup (plan §4.4),
+  // so the headline is total spend (DBU + cloud), not DBU alone.
+  // `total_cloud_cost` is NULL only when no pool-day in the window carries a
+  // cloud row yet — surfaced as "—" + note, never a misleading $0 (plan §5).
+  const cloudCost = metrics.total_cloud_cost;
+  const cloudPctOfTotal =
+    cloudCost != null && metrics.total_spend > 0
+      ? formatPercent(cloudCost, metrics.total_spend)
+      : null;
+
   return (
     <div className="space-y-6">
-      {/* KPI cards: Total DBU Spend / Active Pools / Active Clusters / Avg per pool-day */}
+      {/* KPI cards: Total Spend / EC2-EBS cloud / Active Pools / Active Clusters */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Total DBU Spend
-            </CardTitle>
+            <CardTitle className="text-sm font-medium">Total Spend</CardTitle>
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-600">
-              {formatCurrency(metrics.total_databricks_cost)}
+            <div className="text-2xl font-bold text-blue-600">
+              {formatCurrency(metrics.total_spend)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               {metrics.date_range_days} day
-              {metrics.date_range_days !== 1 ? 's' : ''} period · v1: DBU only
+              {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
+              {formatCurrency(dailyAverageSpend)}/day avg
             </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">{cloudLabel}</CardTitle>
+            <Cloud className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            {cloudCost != null ? (
+              <>
+                <div className="text-2xl font-bold text-sky-600">
+                  {formatCurrency(cloudCost)}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {cloudPctOfTotal} of total · pool VM cost (DBU is{' '}
+                  {formatCurrency(metrics.total_databricks_cost)})
+                </p>
+              </>
+            ) : (
+              <>
+                <div
+                  className="text-2xl font-bold text-muted-foreground cursor-help"
+                  title="No pool-tag cloud row landed in this window — confirm the DatabricksInstancePoolId tag is enabled and Cost Explorer has caught up (plan §5)."
+                >
+                  —
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  no pool VM cost available yet
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -127,11 +178,12 @@ export const InstancePoolsSummaryCards = ({
             <Layers className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-blue-600">
+            <div className="text-2xl font-bold text-purple-600">
               {formatNumber(metrics.total_pools)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              {formatCurrency(dailyAverageSpend)}/day avg
+              {formatCurrency(metrics.avg_cost_per_pool_day)}/pool-day avg · max{' '}
+              {formatCurrency(metrics.max_cost_per_pool_day)}
             </p>
           </CardContent>
         </Card>
@@ -149,23 +201,6 @@ export const InstancePoolsSummaryCards = ({
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               distinct clusters attached
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Avg per Pool-Day
-            </CardTitle>
-            <BarChart3 className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-amber-600">
-              {formatCurrency(metrics.avg_cost_per_pool_day)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              max {formatCurrency(metrics.max_cost_per_pool_day)}
             </p>
           </CardContent>
         </Card>

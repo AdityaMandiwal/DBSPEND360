@@ -20,8 +20,10 @@
  * plan §3.1/§5.3). `metadata_unavailable` counts only DLT/SQL/Online-Table
  * pipelines that *should* carry a `system.lakeflow.pipelines` snapshot but
  * don't — workloads that never have metadata (Vector Search) are excluded so
- * the number stays meaningful (plan §3.5). `total_cloud_cost` is reserved
- * for v2 and is always None in v1.
+ * the number stays meaningful (plan §3.5). `total_cloud_cost` is the summed
+ * classic EC2/EBS cost across the window (CP2, plan §3.2); `None` when every
+ * matched pipeline is fully serverless (no separate VM line — KPI hidden),
+ * not `$0`.
  */
 export type PipelineSummaryMetrics = {
     total_pipelines: number;

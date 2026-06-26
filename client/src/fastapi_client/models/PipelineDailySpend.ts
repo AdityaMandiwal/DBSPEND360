@@ -10,8 +10,10 @@
  * within each `usage_date` before the service nests it here — the UI still
  * sees exactly one row per pipeline-day. `cost_basis` is collapsed to one
  * label for the day ('partial' when the day straddles full + dbu_only).
- * `cloud_cost` is reserved for v2 and is always None in v1; `total_cost` is
- * plumbed straight through from the SQL projection rather than computed.
+ * `cloud_cost` is the classic EC2/EBS cost for the day (CP2, plan §3.2) and
+ * is `None` for fully-serverless days (no separate VM line — UI renders "—",
+ * §5); `total_cost` is plumbed straight through from the SQL projection
+ * rather than computed.
  */
 export type PipelineDailySpend = {
     usage_date: string;

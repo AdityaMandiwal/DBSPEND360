@@ -127,8 +127,9 @@ export const useInstancePoolDetails = (poolId: string) => {
 
 // Hook: LLM-powered pool configuration analysis
 // (`/api/instance-pools/{id}/analyze`). Mirrors `useClusterAnalysis`.
-// The analysis text is expected to include the v1 cloud-cost caveat
-// (plan §9 acceptance criterion #10 / CP7 exit criterion #4).
+// As of CP8 the analysis includes real pool EC2/EBS cost; the only caveat
+// it carries is that the idle-vs-active VM cost split is not available yet
+// (plan_pool_pipeline_ec2_cost.md §4.5).
 export const useInstancePoolAnalysis = (poolId: string) => {
   return useQuery({
     queryKey: ['instance-pool-analysis', poolId],

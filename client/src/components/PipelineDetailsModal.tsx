@@ -163,16 +163,21 @@ export const PipelineDetailsModal = ({
               </div>
             )}
 
-            {/* Cost-basis caveat banner — only when the $ excludes cloud VM
-                cost (classic / mixed — plan §3.2). */}
+            {/* Cost-basis caveat banner — only for classic / mixed rows whose
+                DBU figure alone excludes cloud VM cost (plan §3.2). The VM
+                cost itself is now surfaced in the EC2/EBS column (CP3), so the
+                banner clarifies where it lives rather than calling it a v2
+                gap. */}
             {caveat && (
               <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
                 <Info className="h-4 w-4 mt-0.5 shrink-0" />
                 <div>
                   <div className="font-semibold">{caveat}.</div>
                   <div className="text-xs mt-1 opacity-90">
-                    v1 surfaces Databricks DBU cost only. Cloud VM cost for
-                    classic pipelines is a v2 follow-up.
+                    The classic VM cost is shown separately in the EC2/EBS
+                    column and is included in Total Cost. Serverless portions
+                    have no separate VM line — their DBU rate already bundles
+                    infrastructure.
                   </div>
                 </div>
               </div>
