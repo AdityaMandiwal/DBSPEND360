@@ -25,6 +25,21 @@ import {
 } from '@/types/pipeline';
 import { API_BASE_URL } from '@/lib/api-config';
 
+// Error thrown by `fetchApi` for any non-2xx response. Subclasses `Error`
+// (so existing `error.message` rendering keeps working) but also carries the
+// HTTP `status`, letting callers branch on specific codes — e.g. the pipeline
+// modal renders a disambiguation hint on a 409 instead of a raw message
+// (plan §7.1).
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 class ApiClient {
   private async fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -37,7 +52,10 @@ class ApiClient {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+      throw new ApiError(
+        response.status,
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+      );
     }
 
     return response.json();
@@ -131,8 +149,17 @@ class ApiClient {
     return this.fetchApi<OtherCostBreakdownResponse>(`/other-cost-breakdown?${params}`);
   }
 
-  async getCoverageTrend(limit: number = 30): Promise<CoverageTrendResponse> {
+  async getCoverageTrend(
+    dateRange?: DateRange,
+    limit: number = 100,
+  ): Promise<CoverageTrendResponse> {
     const params = new URLSearchParams({ limit: limit.toString() });
+    if (dateRange?.start_date) {
+      params.append('start_date', dateRange.start_date);
+    }
+    if (dateRange?.end_date) {
+      params.append('end_date', dateRange.end_date);
+    }
     return this.fetchApi<CoverageTrendResponse>(`/classification-coverage-trend?${params}`);
   }
 

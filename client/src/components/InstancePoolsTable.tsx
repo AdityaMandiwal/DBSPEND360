@@ -33,12 +33,7 @@
 // there's no real cluster behind them.
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import {
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  ChevronRight as ChevronRightIcon,
-} from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -64,6 +59,7 @@ import type {
   InstancePoolDailySpend,
 } from '@/types/instance-pool';
 import type { DateRange } from '@/types/job-spend';
+import { formatCalendarDate, formatLocalISODate } from '@/lib/utils';
 import { ClusterDetailsModal } from './JobBreakdownModal';
 import { InstancePoolDetailsModal } from './InstancePoolDetailsModal';
 
@@ -80,30 +76,14 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
 });
 const formatCurrency = (amount: number) => currencyFormatter.format(amount);
 
-const formatDate = (dateStr: string) => {
-  try {
-    // The `usage_date` field is an ISO date (YYYY-MM-DD); parsing it
-    // directly as `new Date(...)` would shift it to local TZ midnight
-    // UTC and occasionally roll back a day on negative-offset zones.
-    // Append `T00:00:00` so the parse stays calendar-stable.
-    return new Date(`${dateStr}T00:00:00`).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  } catch {
-    return dateStr;
-  }
-};
+// `usage_date` is a calendar date (YYYY-MM-DD); `formatCalendarDate` anchors it
+// to local midnight so it stays calendar-stable on negative-UTC zones.
+const formatDate = (dateStr: string) => formatCalendarDate(dateStr);
 
-const formatBadgeDate = (dateStr?: string | null): string | null => {
-  if (!dateStr) return null;
-  try {
-    return new Date(dateStr).toISOString().slice(0, 10);
-  } catch {
-    return dateStr;
-  }
-};
+// `pool_deleted_at` is a timestamp; render its LOCAL calendar day as ISO so the
+// badge label doesn't shift a day vs. the user's timezone (plan §3.4).
+const formatBadgeDate = (dateStr?: string | null): string | null =>
+  dateStr ? formatLocalISODate(dateStr) : null;
 
 const PAGE_SIZE = 25;
 
@@ -174,6 +154,10 @@ export const InstancePoolsTable = ({
   // `AllPurposeClustersTable` / `GroupedJobTable`.
   useEffect(() => {
     setPage(1);
+    // Filter changes can swap the underlying pool/day set entirely, so drop all
+    // expansion state to avoid showing stale or mismatched drill-downs (#P2).
+    setExpandedPools(new Set());
+    setExpandedDays(new Set());
   }, [searchTerm, dateRange.start_date, dateRange.end_date]);
 
   const { data, isLoading, isFetching, error } = useInstancePools({
@@ -194,8 +178,26 @@ export const InstancePoolsTable = ({
   const togglePool = (poolId: string) => {
     setExpandedPools((prev) => {
       const next = new Set(prev);
-      if (next.has(poolId)) next.delete(poolId);
-      else next.add(poolId);
+      if (next.has(poolId)) {
+        next.delete(poolId);
+        // Collapsing a pool drops its per-day expansion state so re-expanding
+        // the pool later starts clean instead of restoring stale day rows.
+        // Day keys are prefixed with `${poolId}|` (see PoolDayBreakdown).
+        setExpandedDays((days) => {
+          const prefix = `${poolId}|`;
+          let changed = false;
+          const nextDays = new Set(days);
+          for (const key of days) {
+            if (key.startsWith(prefix)) {
+              nextDays.delete(key);
+              changed = true;
+            }
+          }
+          return changed ? nextDays : days;
+        });
+      } else {
+        next.add(poolId);
+      }
       return next;
     });
   };
@@ -284,14 +286,15 @@ export const InstancePoolsTable = ({
                           size="sm"
                           onClick={() => togglePool(pool.instance_pool_id)}
                           className="h-8 w-8 p-0"
+                          aria-expanded={isExpanded}
                           aria-label={
                             isExpanded ? 'Collapse pool' : 'Expand pool'
                           }
                         >
                           {isExpanded ? (
-                            <ChevronDown className="h-4 w-4" />
+                            <ChevronDown className="h-4 w-4" aria-hidden="true" />
                           ) : (
-                            <ChevronRightIcon className="h-4 w-4" />
+                            <ChevronRight className="h-4 w-4" aria-hidden="true" />
                           )}
                         </Button>
                       </TableCell>
@@ -517,6 +520,13 @@ const PoolDayBreakdown = ({
   onToggleDay: (key: string) => void;
   onSelectCluster: (clusterId: string) => void;
 }) => {
+  // Sort once per `pool.days` change rather than on every render (#P3).
+  const sortedDays = useMemo(
+    () =>
+      [...pool.days].sort((a, b) => a.usage_date.localeCompare(b.usage_date)),
+    [pool.days],
+  );
+
   if (pool.days.length === 0) {
     return (
       <div className="p-4 border-l-4 border-l-blue-500 bg-muted/20 text-sm text-muted-foreground">
@@ -532,9 +542,7 @@ const PoolDayBreakdown = ({
         {pool.days.length === 1 ? '' : 's'})
       </h4>
       <div className="space-y-2">
-        {[...pool.days]
-          .sort((a, b) => a.usage_date.localeCompare(b.usage_date))
-          .map((day) => {
+        {sortedDays.map((day) => {
             const key = `${pool.instance_pool_id}|${day.usage_date}`;
             const isDayExpanded = expandedDays.has(key);
             return (
@@ -549,14 +557,15 @@ const PoolDayBreakdown = ({
                       size="sm"
                       onClick={() => onToggleDay(key)}
                       className="h-7 w-7 p-0"
+                      aria-expanded={isDayExpanded}
                       aria-label={
                         isDayExpanded ? 'Collapse day' : 'Expand day'
                       }
                     >
                       {isDayExpanded ? (
-                        <ChevronDown className="h-4 w-4" />
+                        <ChevronDown className="h-4 w-4" aria-hidden="true" />
                       ) : (
-                        <ChevronRightIcon className="h-4 w-4" />
+                        <ChevronRight className="h-4 w-4" aria-hidden="true" />
                       )}
                     </Button>
                     <div className="text-sm font-medium">
@@ -583,6 +592,7 @@ const PoolDayBreakdown = ({
                 {isDayExpanded && (
                   <DayClusterBreakdown
                     day={day}
+                    cloudLabel={cloudLabel}
                     onSelectCluster={onSelectCluster}
                   />
                 )}
@@ -600,9 +610,11 @@ const PoolDayBreakdown = ({
 // hundreds of clusters per day are common on shared job substrate).
 const DayClusterBreakdown = ({
   day,
+  cloudLabel,
   onSelectCluster,
 }: {
   day: InstancePoolDailySpend;
+  cloudLabel: string;
   onSelectCluster: (clusterId: string) => void;
 }) => {
   if (day.clusters.length === 0) {
@@ -628,7 +640,9 @@ const DayClusterBreakdown = ({
         <TableHeader>
           <TableRow>
             <TableHead className="px-4 py-2 text-xs">Cluster</TableHead>
-            <TableHead className="px-4 py-2 text-xs text-right">EC2</TableHead>
+            <TableHead className="px-4 py-2 text-xs text-right">
+              {cloudLabel}
+            </TableHead>
             <TableHead className="px-4 py-2 text-xs text-right">DBU</TableHead>
             <TableHead className="px-4 py-2 text-xs text-right">
               Total

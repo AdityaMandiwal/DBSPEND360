@@ -6,19 +6,19 @@
 //
 // The chip set is sourced from the *unfiltered* summary's `workload_breakdown`
 // keys (sorted by $ descending) so it always reflects exactly the workloads
-// present in the window — and stays stable as the user toggles chips (toggling
-// narrows the table + KPI summary, but the chip list itself is derived from
-// the unfiltered breakdown so options never disappear under you). Workload
-// chips only *narrow*; they never drop spend (plan §3.1) — an empty selection
-// means "all".
+// present in the window — and stays stable as the user toggles chips (the chip
+// list itself is derived from the unfiltered breakdown so options never
+// disappear under you). The chips are an OR (server-side `IN (...)`) include
+// filter: an empty selection means "all"; selecting chips includes only those
+// types, and selecting MORE chips shows MORE rows (plan §3.1 / §7.3). Spend is
+// never hidden — it always stays attributed under its own type.
 //
 // The search box hits the `search` query param on `/api/pipelines/grouped`,
 // which matches pipeline name (case-insensitive substring), pipeline_id
 // (exact), and created_by (case-insensitive substring) — plan §5.1.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Search } from 'lucide-react';
-import { format } from 'date-fns';
+import { Search, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -27,7 +27,7 @@ import type { DateRange } from '@/types/job-spend';
 import { useDatePresets } from '@/hooks/useJobSpends';
 import { usePipelineSummary } from '@/hooks/usePipelines';
 import { workloadBadgeClasses } from '@/lib/pipeline-display';
-import { cn } from '@/lib/utils';
+import { cn, formatCalendarDate, isInvalidDateRange } from '@/lib/utils';
 
 interface PipelineFilterControlsProps {
   dateRange: DateRange;
@@ -98,13 +98,7 @@ export const PipelineFilterControls = ({
     }
   };
 
-  const formatDisplayDate = (dateStr: string) => {
-    try {
-      return format(new Date(dateStr), 'MMM dd, yyyy');
-    } catch {
-      return dateStr;
-    }
-  };
+  const dateRangeInvalid = isInvalidDateRange(dateRange.start_date, dateRange.end_date);
 
   return (
     <div className="space-y-6">
@@ -166,19 +160,27 @@ export const PipelineFilterControls = ({
                       end_date: e.target.value,
                     })
                   }
-                  className="mt-1"
+                  aria-invalid={dateRangeInvalid}
+                  className={cn('mt-1', dateRangeInvalid && 'border-red-500 focus-visible:ring-red-500')}
                 />
               </div>
             </div>
+            {dateRangeInvalid && (
+              <div className="flex items-center gap-1.5 text-xs text-red-600" role="alert">
+                <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Start date must be on or before the end date.</span>
+              </div>
+            )}
           </div>
         </div>
 
         <div className="space-y-4">
-          <Label className="text-sm font-semibold">Search Pipelines</Label>
+          <Label htmlFor="pl-search" className="text-sm font-semibold">Search Pipelines</Label>
 
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden="true" />
             <Input
+              id="pl-search"
               placeholder="Search by pipeline name, pipeline ID, or creator..."
               value={localFilter}
               onChange={(e) => handleFilterChange(e.target.value)}
@@ -189,8 +191,8 @@ export const PipelineFilterControls = ({
           <div className="text-xs text-muted-foreground space-y-1">
             <div>
               <strong>Date Range:</strong>{' '}
-              {formatDisplayDate(dateRange.start_date)} to{' '}
-              {formatDisplayDate(dateRange.end_date)}
+              {formatCalendarDate(dateRange.start_date)} to{' '}
+              {formatCalendarDate(dateRange.end_date)}
             </div>
             {searchTerm && (
               <div>
@@ -201,8 +203,10 @@ export const PipelineFilterControls = ({
         </div>
       </div>
 
-      {/* Workload-type filter chips — narrow only, never drop spend
-          (plan §3.1). Empty selection = all workloads. */}
+      {/* Workload-type filter chips — an OR (IN) include filter: empty
+          selection = all workloads; selecting chips includes only those
+          types, and selecting more includes more. Spend is never hidden —
+          it stays attributed under its own type (plan §3.1 / §7.3). */}
       {availableWorkloads.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
@@ -248,8 +252,8 @@ export const PipelineFilterControls = ({
           </div>
           <p className="text-xs text-muted-foreground">
             {selectedWorkloads.length === 0
-              ? 'Showing all workload types. Click a chip to narrow.'
-              : 'Filtering — workload chips narrow the view but never hide spend (it stays attributed under its own type).'}
+              ? 'Showing all workload types. Select one or more chips to include only those types.'
+              : 'Including the selected workload type(s) — chips are an OR filter, so selecting more shows more. Spend always stays attributed under its own type.'}
           </p>
         </div>
       )}

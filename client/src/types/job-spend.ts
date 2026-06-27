@@ -122,6 +122,10 @@ export interface JobSpendFilter {
   job_name?: string;
   page: number;
   per_page: number;
+  // Server-side sort for the grouped-job-spends table. Optional so the
+  // simpler /job-spends consumers can keep ignoring it.
+  sort_by?: string;
+  sort_dir?: 'asc' | 'desc';
 }
 
 export interface CostAnalysis {

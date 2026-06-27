@@ -14,14 +14,13 @@
 // (which would defeat the table's caching story).
 
 import { useEffect, useRef, useState } from 'react';
-import { Search } from 'lucide-react';
-import { format } from 'date-fns';
+import { Search, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { DateRange } from '@/types/job-spend';
 import { useDatePresets } from '@/hooks/useJobSpends';
-import { cn } from '@/lib/utils';
+import { cn, formatCalendarDate, isInvalidDateRange } from '@/lib/utils';
 
 interface InstancePoolFilterControlsProps {
   dateRange: DateRange;
@@ -66,13 +65,7 @@ export const InstancePoolFilterControls = ({
     });
   };
 
-  const formatDisplayDate = (dateStr: string) => {
-    try {
-      return format(new Date(dateStr), 'MMM dd, yyyy');
-    } catch {
-      return dateStr;
-    }
-  };
+  const dateRangeInvalid = isInvalidDateRange(dateRange.start_date, dateRange.end_date);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -133,19 +126,27 @@ export const InstancePoolFilterControls = ({
                     end_date: e.target.value,
                   })
                 }
-                className="mt-1"
+                aria-invalid={dateRangeInvalid}
+                className={cn('mt-1', dateRangeInvalid && 'border-red-500 focus-visible:ring-red-500')}
               />
             </div>
           </div>
+          {dateRangeInvalid && (
+            <div className="flex items-center gap-1.5 text-xs text-red-600" role="alert">
+              <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Start date must be on or before the end date.</span>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="space-y-4">
-        <Label className="text-sm font-semibold">Search Pools</Label>
+        <Label htmlFor="ip-search" className="text-sm font-semibold">Search Pools</Label>
 
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden="true" />
           <Input
+            id="ip-search"
             placeholder="Search by pool name, pool ID, or cluster ID..."
             value={localFilter}
             onChange={(e) => handleFilterChange(e.target.value)}
@@ -156,8 +157,8 @@ export const InstancePoolFilterControls = ({
         <div className="text-xs text-muted-foreground space-y-1">
           <div>
             <strong>Date Range:</strong>{' '}
-            {formatDisplayDate(dateRange.start_date)} to{' '}
-            {formatDisplayDate(dateRange.end_date)}
+            {formatCalendarDate(dateRange.start_date)} to{' '}
+            {formatCalendarDate(dateRange.end_date)}
           </div>
           {searchTerm && (
             <div>

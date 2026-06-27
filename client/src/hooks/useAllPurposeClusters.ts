@@ -134,6 +134,7 @@ export const useAllPurposeSummary = (dateRange: DateRange) => {
     queryKey: ['all-purpose-summary', dateRange],
     queryFn: () => apiClient.getAllPurposeSummaryMetrics(dateRange),
     staleTime: STALE_TIME_MS,
+    refetchOnWindowFocus: false,
     enabled: !!(dateRange.start_date && dateRange.end_date),
   });
 };
@@ -148,6 +149,7 @@ export const useAllPurposeTopClusters = (
     queryKey: ['all-purpose-top-clusters', dateRange, limit],
     queryFn: () => apiClient.getAllPurposeTopClusters(dateRange, limit),
     staleTime: STALE_TIME_MS,
+    refetchOnWindowFocus: false,
     enabled: !!(dateRange.start_date && dateRange.end_date),
   });
 };
@@ -162,6 +164,7 @@ export const useAllPurposeTopUsers = (
     queryKey: ['all-purpose-top-users', dateRange, limit],
     queryFn: () => apiClient.getAllPurposeTopUsers(dateRange, limit),
     staleTime: STALE_TIME_MS,
+    refetchOnWindowFocus: false,
     enabled: !!(dateRange.start_date && dateRange.end_date),
   });
 };

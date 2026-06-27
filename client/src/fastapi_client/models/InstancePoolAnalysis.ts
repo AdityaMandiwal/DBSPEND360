@@ -5,10 +5,11 @@
 /**
  * LLM-generated configuration analysis for an instance pool.
  *
- * Returned by `/api/instance-pools/{id}/analyze`. The analysis text is
- * expected to include the v1 cloud-cost caveat (plan §10 risks row, CP7
- * exit criterion #4) since idle and active cloud VM cost is invisible to
- * v1 (plan §3.2). The output structure mirrors `ClusterAnalysis`'s
+ * Returned by `/api/instance-pools/{id}/analyze`. As of CP8
+ * (plan_pool_pipeline_ec2_cost.md §4.4) pool EC2/EBS cost is in the
+ * summary, so the analysis text now carries only the remaining
+ * idle-vs-active-split caveat (plan §4.5) rather than the old DBU-only
+ * caveat. The output structure mirrors `ClusterAnalysis`'s
  * config-shape sections (Overall Rating / Right-Sizing / Cost Savings /
  * Idle Waste Risk / Configuration Gaps) rather than the run-cost trend
  * structure used by `CostAnalysis`.

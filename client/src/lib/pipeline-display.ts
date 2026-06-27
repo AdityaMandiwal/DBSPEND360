@@ -79,3 +79,15 @@ export const cloudMissingNote = (isServerless: boolean): string =>
 // line (§5).
 export const MIXED_CLOUD_NOTE =
   'Classic portion only; serverless portion has no separate VM line.';
+
+// NaN-safe USD formatter. A missing/undefined numeric field would otherwise
+// render "$NaN"; guard so non-finite values fall back to $0.00 (plan §0.4).
+const usdFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+export const formatCurrency = (n: number): string =>
+  usdFormatter.format(Number.isFinite(n) ? n : 0);

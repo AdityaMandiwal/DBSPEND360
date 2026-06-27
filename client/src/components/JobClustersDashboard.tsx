@@ -64,7 +64,12 @@ const JobClustersDashboard = () => {
           </p>
         </CardHeader>
         <CardContent>
+          {/* Remount the table on any filter change (date range / committed
+              search) so pagination resets to page 1 and the expansion set
+              clears in the same render pass — no flash of the old page slice
+              and no stale expanded rows (plan §3.2 / §3.3). */}
           <GroupedJobTable
+            key={`${dateRange.start_date}|${dateRange.end_date}|${jobFilter}`}
             dateRange={dateRange}
             jobFilter={jobFilter}
             onRunClick={handleRunClick}

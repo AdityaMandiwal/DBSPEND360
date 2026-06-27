@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/table';
 import { useOtherCostBreakdown } from '@/hooks/useJobSpends';
 import { DateRange } from '@/types/job-spend';
+import { closeOnly } from '@/lib/utils';
 
 interface OtherCostBreakdownModalProps {
   dateRange: DateRange;
@@ -76,7 +77,7 @@ export const OtherCostBreakdownModal = ({
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={closeOnly(onClose)}>
       <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-xl font-semibold flex items-center">
@@ -159,8 +160,8 @@ export const OtherCostBreakdownModal = ({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.items.map((item, idx) => (
-                    <TableRow key={idx}>
+                  {data.items.map((item) => (
+                    <TableRow key={`${item.source_system}:${item.service_name}`}>
                       <TableCell className="font-medium max-w-[250px] truncate" title={item.service_name}>
                         {item.service_name}
                       </TableCell>

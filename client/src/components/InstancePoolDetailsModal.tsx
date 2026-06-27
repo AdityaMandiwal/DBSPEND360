@@ -46,6 +46,8 @@ import {
   useInstancePoolAnalysis,
   useInstancePoolDetails,
 } from '@/hooks/useInstancePools';
+import { closeOnly, formatCalendarDate } from '@/lib/utils';
+import { AnalysisMarkdown } from './AnalysisMarkdown';
 
 interface InstancePoolDetailsModalProps {
   poolId: string;
@@ -53,18 +55,16 @@ interface InstancePoolDetailsModalProps {
   onClose: () => void;
 }
 
-const formatDeleteDate = (dateStr?: string | null): string | null => {
-  if (!dateStr) return null;
-  try {
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  } catch {
-    return dateStr;
-  }
-};
+// `pool_deleted_at` is a timestamp; `formatCalendarDate` renders its LOCAL
+// calendar day so the banner never shows the wrong date on negative-UTC zones.
+const formatDeleteDate = (dateStr?: string | null): string | null =>
+  dateStr
+    ? formatCalendarDate(dateStr, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      })
+    : null;
 
 export const InstancePoolDetailsModal = ({
   poolId,
@@ -85,7 +85,7 @@ export const InstancePoolDetailsModal = ({
   const deletedDateLabel = formatDeleteDate(details?.pool_deleted_at);
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={closeOnly(onClose)}>
       <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-xl font-semibold flex items-center gap-2">
@@ -354,29 +354,7 @@ export const InstancePoolDetailsModal = ({
                       <div className="space-y-4">
                         <div className="flex items-start space-x-2">
                           <Lightbulb className="h-4 w-4 text-amber-500 mt-1 flex-shrink-0" />
-                          <div className="prose prose-sm max-w-none">
-                            <div
-                              className="text-sm leading-relaxed whitespace-pre-line"
-                              // Same lightweight markdown massage as
-                              // `ClusterDetailsModal` / `JobBreakdownModal`
-                              // so the three analysis surfaces feel
-                              // consistent and we don't add a markdown
-                              // renderer dependency for one panel.
-                              dangerouslySetInnerHTML={{
-                                __html: analysis.analysis
-                                  .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                                  .replace(
-                                    /### (.*?)$/gm,
-                                    '<h3 class="font-semibold text-base mb-2 mt-4">$1</h3>',
-                                  )
-                                  .replace(
-                                    /## (.*?)$/gm,
-                                    '<h2 class="font-bold text-lg mb-3 mt-4">$1</h2>',
-                                  )
-                                  .replace(/• /g, '• '),
-                              }}
-                            />
-                          </div>
+                          <AnalysisMarkdown>{analysis.analysis}</AnalysisMarkdown>
                         </div>
                         <div className="text-xs text-muted-foreground border-t pt-2">
                           Generated on{' '}

@@ -95,6 +95,7 @@ export const usePipelineSummary = (
     queryKey: ['pipelines-summary', dateRange, workloadType ?? null],
     queryFn: () => apiClient.getPipelineSummary(dateRange, workloadType),
     staleTime: STALE_TIME_MS,
+    refetchOnWindowFocus: false,
     enabled: !!(dateRange.start_date && dateRange.end_date),
   });
 };
@@ -112,6 +113,7 @@ export const useTopPipelines = (
     queryKey: ['pipelines-top-pipelines', dateRange, limit, workloadType ?? null],
     queryFn: () => apiClient.getTopPipelines(dateRange, limit, workloadType),
     staleTime: STALE_TIME_MS,
+    refetchOnWindowFocus: false,
     enabled: !!(dateRange.start_date && dateRange.end_date),
   });
 };
@@ -136,14 +138,19 @@ export const usePipelineDetails = (
 // (`/api/pipelines/{id}/analyze`). Mirrors `useInstancePoolAnalysis`. The
 // analysis text is expected to include the DBU-only caveat iff
 // `cost_basis != 'full'` (plan §3.2 / §9 acceptance criterion #14).
+//
+// `enabled` lets the caller defer the (LLM-charging) analysis request until
+// details resolve successfully — so an ambiguous (409) or failed pipeline
+// never fires/charges analysis (plan §7.1).
 export const usePipelineAnalysis = (
   pipelineId: string,
   workspaceId?: string,
+  options?: { enabled?: boolean },
 ) => {
   return useQuery({
     queryKey: ['pipeline-analysis', pipelineId, workspaceId ?? null],
     queryFn: () => apiClient.getPipelineAnalysis(pipelineId, workspaceId),
     staleTime: ANALYSIS_STALE_TIME_MS,
-    enabled: !!pipelineId,
+    enabled: !!pipelineId && (options?.enabled ?? true),
   });
 };

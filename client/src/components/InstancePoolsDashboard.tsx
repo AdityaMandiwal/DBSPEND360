@@ -64,7 +64,11 @@ const InstancePoolsDashboard = () => {
           </p>
         </CardHeader>
         <CardContent>
+          {/* Remount the table on any filter change (date range / committed
+              search) so pagination + pool/day expansion reset cleanly in one
+              render pass (plan §3.2 / §3.3 / §6.2). */}
           <InstancePoolsTable
+            key={`${dateRange.start_date}|${dateRange.end_date}|${searchTerm}`}
             dateRange={dateRange}
             searchTerm={searchTerm}
           />

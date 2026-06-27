@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TrendingUp } from 'lucide-react';
 import { useCoverageTrend } from '@/hooks/useJobSpends';
+import { DateRange } from '@/types/job-spend';
 
 const formatDate = (dateStr: string) => {
   try {
@@ -38,8 +39,12 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
-export const CoverageTrendChart = () => {
-  const { data, isLoading } = useCoverageTrend(30);
+interface CoverageTrendChartProps {
+  dateRange: DateRange;
+}
+
+export const CoverageTrendChart = ({ dateRange }: CoverageTrendChartProps) => {
+  const { data, isLoading } = useCoverageTrend(dateRange);
 
   if (isLoading) {
     return (

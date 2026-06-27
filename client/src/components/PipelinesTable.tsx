@@ -43,6 +43,7 @@ import {
   cloudMissingNote,
   computeModeClasses,
   costBasisCaveat,
+  formatCurrency,
   MIXED_CLOUD_NOTE,
   workloadBadgeClasses,
 } from '@/lib/pipeline-display';
@@ -50,6 +51,7 @@ import type { GroupedPipeline, PipelineDailySpend } from '@/types/pipeline';
 import type { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
+import { formatCalendarDate, formatLocalISODate } from '@/lib/utils';
 import { PipelineDetailsModal } from './PipelineDetailsModal';
 
 interface PipelinesTableProps {
@@ -58,38 +60,21 @@ interface PipelinesTableProps {
   selectedWorkloads: string[];
 }
 
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-const formatCurrency = (amount: number) => currencyFormatter.format(amount);
+// `usage_date` is a calendar date (YYYY-MM-DD); `formatCalendarDate` anchors it
+// to local midnight so it never rolls back a day on negative-UTC zones.
+const formatDate = (dateStr: string) => formatCalendarDate(dateStr);
 
-const formatDate = (dateStr: string) => {
-  try {
-    // Append `T00:00:00` so an ISO date (YYYY-MM-DD) parse stays
-    // calendar-stable on negative-offset zones (mirrors the pool table).
-    return new Date(`${dateStr}T00:00:00`).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  } catch {
-    return dateStr;
-  }
-};
-
-const formatBadgeDate = (dateStr?: string | null): string | null => {
-  if (!dateStr) return null;
-  try {
-    return new Date(dateStr).toISOString().slice(0, 10);
-  } catch {
-    return dateStr;
-  }
-};
+// `pipeline_deleted_at` is a timestamp; render its LOCAL calendar day as ISO so
+// the badge label doesn't shift a day vs. the user's timezone (plan §3.4).
+const formatBadgeDate = (dateStr?: string | null): string | null =>
+  dateStr ? formatLocalISODate(dateStr) : null;
 
 const PAGE_SIZE = 25;
+
+// Composite key: `pipeline_id` alone can collide across workspaces (plan §2.2),
+// so every place that keys/tracks a pipeline uses workspace + id together.
+const pkey = (p: { workspace_id?: string | null; pipeline_id: string }) =>
+  `${p.workspace_id ?? ''}:${p.pipeline_id}`;
 
 // EC2/EBS cloud cell (plan §3.4 / §5). Renders the real $ when known
 // (including a genuine `$0.00`), or "—" + a typed note when the value is NULL
@@ -181,11 +166,11 @@ export const PipelinesTable = ({
   const totalCount = data?.total_count ?? 0;
   const totalPages = data?.total_pages ?? 0;
 
-  const togglePipeline = (pipelineId: string) => {
+  const togglePipeline = (key: string) => {
     setExpandedPipelines((prev) => {
       const next = new Set(prev);
-      if (next.has(pipelineId)) next.delete(pipelineId);
-      else next.add(pipelineId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -240,7 +225,8 @@ export const PipelinesTable = ({
               ))
             ) : rows.length > 0 ? (
               rows.map((pipeline) => {
-                const isExpanded = expandedPipelines.has(pipeline.pipeline_id);
+                const rowKey = pkey(pipeline);
+                const isExpanded = expandedPipelines.has(rowKey);
                 const hasName =
                   !!pipeline.pipeline_name &&
                   pipeline.pipeline_name.trim().length > 0;
@@ -249,14 +235,15 @@ export const PipelinesTable = ({
                   : `Pipeline ${pipeline.pipeline_id}`;
                 const caveat = costBasisCaveat(pipeline.cost_basis);
                 return (
-                  <Fragment key={pipeline.pipeline_id}>
+                  <Fragment key={rowKey}>
                     <TableRow className="hover:bg-muted/50">
                       <TableCell className="px-2">
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => togglePipeline(pipeline.pipeline_id)}
+                          onClick={() => togglePipeline(rowKey)}
                           className="h-8 w-8 p-0"
+                          aria-expanded={isExpanded}
                           aria-label={
                             isExpanded
                               ? 'Collapse pipeline'
@@ -264,9 +251,9 @@ export const PipelinesTable = ({
                           }
                         >
                           {isExpanded ? (
-                            <ChevronDown className="h-4 w-4" />
+                            <ChevronDown className="h-4 w-4" aria-hidden="true" />
                           ) : (
-                            <ChevronRightIcon className="h-4 w-4" />
+                            <ChevronRightIcon className="h-4 w-4" aria-hidden="true" />
                           )}
                         </Button>
                       </TableCell>
@@ -358,7 +345,7 @@ export const PipelinesTable = ({
                     </TableRow>
                     {isExpanded && (
                       <TableRow
-                        key={`${pipeline.pipeline_id}-expanded`}
+                        key={`${rowKey}-expanded`}
                         className="bg-muted/30"
                       >
                         <TableCell colSpan={columnCount} className="p-0">
@@ -505,7 +492,7 @@ const PipelineDayBreakdown = ({
           .sort((a, b) => a.usage_date.localeCompare(b.usage_date))
           .map((day) => (
             <DayRow
-              key={`${pipeline.pipeline_id}|${day.usage_date}`}
+              key={`${pkey(pipeline)}|${day.usage_date}`}
               day={day}
               cloudLabel={cloudLabel}
             />
