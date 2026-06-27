@@ -295,3 +295,6 @@ mlartifacts/
 
 # Generated client
 client/src/client/
+
+# Internal planning docs (kept locally, not shipped in the repo)
+docs/plan_*.md

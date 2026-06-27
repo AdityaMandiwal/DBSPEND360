@@ -6,8 +6,9 @@ required to run the AWS cloud cost explorer ETL
 (`jobs/notebooks/aws_cloud_cost_explorer_app.ipynb`) and to power the DBSPEND360
 dashboard when `[cloud] platform = AWS` is set in `config/app.<env>.config`.
 
-> NOTE: Replace this Markdown with a `.docx` once the doc team has formatted it.
-> The Markdown source is checked in so the IAM policy JSON snippet stays
+> NOTE: The Azure equivalent ships as a formatted document,
+> `Azure Credentials and Permissions Setup.docx`, in this same `release/` folder.
+> This AWS guide is kept as Markdown so the IAM policy JSON snippet stays
 > reviewable in pull requests.
 
 ## 1. Required AWS APIs

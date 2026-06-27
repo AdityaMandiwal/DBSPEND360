@@ -1,158 +1,160 @@
-# Product Requirements Document - DBSpend360
+# Product Requirements Document - DBSPEND360
 
 ## Executive Summary
 
 **Problem Statement:**
-Managers and administrators need a comprehensive, interactive dashboard to monitor and analyze Databricks job costs for daily operational decisions and senior management reporting.
+Teams running Databricks workloads need clear, interactive visibility into both
+the cloud (VM) cost and the Databricks (DBU) cost of their compute, across every
+way that compute is consumed — jobs, interactive clusters, instance pools, and
+pipelines — so they can monitor spend, find cost drivers, and act on
+optimization recommendations.
 
 **Solution:**
-DBSpend360 is an interactive cost analytics dashboard that provides real-time visibility into Databricks job spending with drill-down capabilities, automated alerting, and executive reporting features.
+DBSPEND360 is a Databricks-native cost analytics app that consolidates per-cloud
+cost (AWS Cost Explorer today; Azure functional; GCP wired but stubbed) with
+DBU cost from Databricks system billing tables. It presents the data through
+four focused cost domains and adds AI-driven cost and configuration
+recommendations powered by a Databricks foundation model.
 
 ## Target Users
 
 ### Primary Users
-- **Managers**: Daily monitoring of job costs, trend analysis, and cost optimization decisions
-- **Administrators**: System oversight, threshold management, and operational cost control
+- **Platform / FinOps owners**: monitor cloud + DBU spend across all compute
+  types and identify the most expensive jobs, clusters, pools, and pipelines.
+- **Engineering managers**: review their team's workloads and drill into
+  individual runs to understand cost breakdowns.
 
 ### Secondary Users
-- **Senior Management**: Recipients of automated cost reports and executive summaries
+- **Administrators**: oversee cost attribution health and reconciliation
+  (audit/error logs, cross-tab overlap behavior).
 
 ### User Scenarios
-- **Daily Operations**: Managers check dashboard each morning to review overnight job costs and identify anomalies
-- **Executive Reporting**: Weekly/monthly automated reports sent to senior leadership with cost summaries
-- **Cost Optimization**: Administrators use drill-down analytics to identify high-cost jobs for optimization
-- **Alert Response**: Teams respond to real-time alerts for jobs exceeding cost thresholds
+- **Cost monitoring**: open the relevant tab, scan summary cards, and review the
+  top-N most expensive entities for a chosen date range.
+- **Drill-down analysis**: click an entity to see its Cloud vs DBU cost
+  breakdown and per-run / per-entity details.
+- **Optimization**: run the AI "Analyze" action on a job, cluster, pool, or
+  pipeline to get grounded cost and configuration recommendations.
 
 ## Core Features
 
-### 1. Interactive Data Table
-- **Data Source**: `pritam_demo.dbcost360.databricks_job_spends` table
-- **SQL Warehouse**: "dbdemos-shared-endpoint"
-- **Display**: All columns from the source table
-- **Functionality**:
-  - Sort on all fields
-  - Filter by job name
-  - Pagination for large datasets
-  - Date range filtering with presets (Today, This Week, This Month)
-  - Default view: Last 30 days
+### 1. Four cost domains (tabs)
+The app is organized into four tabs (see `client/src/components/Dashboard.tsx`),
+each backed by its own rollup table and Databricks Job branch:
 
-### 2. Cost Breakdown Drill-Down
-- **Trigger**: Click any row in the main table
-- **Display**: Modal/popup window with:
-  - Pie chart showing Cloud (EC2 / Azure VM / GCE) vs Databricks (DBU) cost breakdown
-  - Additional job details (duration, cluster size, etc.)
-  - Job-specific metrics and performance data
+| Tab | Rollup table (`config/app.dev.config`) |
+|---|---|
+| **Job Clusters** | `dbspend360.04june.dbspend360_total_job_spends` |
+| **All-Purpose Clusters** | `dbspend360.04june.dbspend360_total_all_purpose_spends` |
+| **Instance Pools** | `dbspend360.04june.dbspend360_total_pool_spends` |
+| **Pipeline Compute** | `dbspend360.04june.dbspend360_total_pipeline_spends` |
 
-### 3. Summary Dashboard Cards
-- **Key Metrics**:
-  - Total spend (today/week/month)
-  - Top 5 costliest jobs
-  - Average cost per job
-  - Cost trends and comparisons
-- **Dynamic Updates**: Cards update based on selected date range filter
+Each tab provides summary cards, a grouped/interactive table (sorting,
+filtering, pagination), date-range presets, a top-N view, and a drill-down with
+a Cloud vs DBU cost breakdown.
 
-### 4. Smart Alerting System
-- **Triggers**:
-  - Dollar amount thresholds (configurable)
-  - Percentage increase thresholds (configurable)
-- **Delivery Methods**:
-  - Email notifications
-  - Dashboard highlights/badges
-- **Configuration**: User-configurable threshold settings
+> **Cross-tab cost model:** the four tabs intentionally look at the same compute
+> through different lenses, so they **overlap by design and do not sum to the
+> AWS bill**. See `README.md` §4 for the full DBU overlap and EC2/EBS
+> attribution model.
 
-### 5. Export & Reporting
-- **PDF Export**: Table data with current filters applied
-- **Email Distribution**:
-  - Manual export and email by users
-  - Scheduled automated reports (daily/weekly/monthly)
-  - Customizable recipient lists for senior management
+### 2. Data source & warehouse
+- **SQL Warehouse**: `warehouse_id = 8baced1ff014912d`
+  (`config/app.dev.config` → `[databricks]`).
+- **Schema**: `dbspend360.04june`.
+- The four rollup tables above are produced by the DBSPEND360 Databricks Job
+  (per-cloud cost explorer fan-out → per-domain DBU + spend tasks). The app also
+  reads `system.lakeflow.jobs` and `system.compute.clusters` to enrich names and
+  cluster details when granted.
 
-### 6. Data Refresh
-- **Update Frequency**: Real-time connection to current state of databricks_job_spends table
-- **Performance**: Optimized queries for responsive dashboard experience
+### 3. Interactive data table
+- All relevant columns from each domain's rollup table.
+- Sort on fields, filter by name, pagination for large datasets.
+- Date-range filtering with presets (Today, This Week, This Month, Last 30
+  Days); default view is the last 30 days.
+
+### 4. Cost breakdown drill-down
+- **Trigger**: click a row / entity in a tab's table.
+- **Display**: a modal with a pie chart of Cloud (EC2 / Azure Compute / GCE) vs
+  Databricks (DBU) cost, plus entity-specific details (runs, cluster details,
+  pool/pipeline metadata).
+
+### 5. Summary dashboard cards
+- Per-tab key metrics: total spend, cloud vs DBU split, top contributors, and
+  counts for the selected date range. Cards update with the date filter.
+
+### 6. AI cost & configuration analysis
+- Per-entity **Analyze** actions generate grounded recommendations using the
+  `databricks-claude-sonnet-4` foundation model
+  (`server/services/llm_service.py`):
+  - Job cost analysis (`/api/job/{job_id}/analyze`)
+  - Cluster configuration analysis (`/api/cluster/{cluster_id}/analyze`)
+  - Instance pool analysis (`/api/instance-pools/{pool_id}/analyze`)
+  - Pipeline analysis (`/api/pipelines/{pipeline_id}/analyze`)
+- Prompts substitute the active cloud provider so insights stay grounded.
+- Gated by `enable_cost_analysis` / `enable_cluster_analysis` /
+  `enable_ai_insights` flags in `config/app.dev.config`.
+
+### 7. Cloud-provider awareness
+- `[cloud] platform` (AWS / Azure / GCP) drives notebook selection, cluster
+  attribute reads, dynamic UI labels (via `/api/cloud-platform`), and LLM prompt
+  wording. AWS and Azure are functional end-to-end; GCP is wired through config
+  and the UI/LLM layers but its cost-explorer ETL is a stub.
 
 ## User Stories
 
-### Manager Daily Workflow
-1. **As a manager**, I want to see a summary of yesterday's job costs when I open the dashboard, so I can quickly assess spending patterns
-2. **As a manager**, I want to click on high-cost jobs to see their Cloud (EC2 / Azure VM / GCE) vs Databricks (DBU) cost breakdown, so I can understand cost drivers
-3. **As a manager**, I want to filter jobs by name and date range, so I can analyze specific workloads or time periods
-4. **As a manager**, I want to receive email alerts when jobs exceed cost thresholds, so I can take immediate action
+### Cost monitoring
+1. **As a platform owner**, I want to switch between Job Clusters, All-Purpose
+   Clusters, Instance Pools, and Pipeline Compute, so I can see spend through the
+   lens that matches my question.
+2. **As a manager**, I want to filter by name and date range, so I can analyze
+   specific workloads or time periods.
 
-### Administrator Operations
-1. **As an administrator**, I want to configure cost alert thresholds, so I can customize monitoring based on our budget constraints
-2. **As an administrator**, I want to export filtered data as PDF, so I can share specific cost reports with stakeholders
-3. **As an administrator**, I want to schedule automated weekly reports, so senior management receives regular updates without manual intervention
+### Drill-down & breakdown
+1. **As a user**, I want to click an entity to see its Cloud vs DBU cost split
+   and details, so I can understand its cost drivers.
 
-### Executive Reporting
-1. **As a senior manager**, I want to receive automated monthly cost summaries via email, so I can track spending trends without accessing the dashboard
-2. **As a budget owner**, I want to see trending data in summary cards, so I can understand if costs are increasing or decreasing over time
+### Optimization
+1. **As an engineer**, I want AI recommendations for a job/cluster/pool/pipeline,
+   so I can act on concrete optimization suggestions.
 
 ## Success Metrics
 
 ### User Engagement
-- Daily active users (target: 100% of managers/administrators)
-- Average session duration (target: 5+ minutes for meaningful analysis)
-- Feature adoption rate (target: 80% usage of drill-down and filtering features)
+- Feature adoption across all four tabs and the AI Analyze actions.
+- Average session duration sufficient for meaningful drill-down analysis.
 
 ### Operational Impact
-- Time to identify cost anomalies (target: <5 minutes from dashboard access)
-- Response time to cost alerts (target: <30 minutes average)
-- Reduction in manual cost reporting effort (target: 75% time savings)
+- Time to identify the top cost drivers for a given window.
+- Adoption of AI recommendations for optimization.
 
 ### Data Quality & Performance
-- Dashboard load time (target: <3 seconds)
-- Data freshness (target: real-time reflection of source table)
-- Export generation time (target: <10 seconds for PDF)
-
-## Implementation Priority
-
-### Phase 1: Core Dashboard (High Priority)
-1. **Interactive Data Table**: Basic table with all columns, sorting, and pagination
-2. **Date Range Filtering**: Default 30-day view with preset options
-3. **Summary Cards**: Total spend, average cost, top 5 jobs
-4. **Professional UI**: Clean, professional color scheme and layout
-
-### Phase 2: Advanced Analytics (High Priority)
-1. **Drill-Down Modal**: Click-to-expand pie chart with Cloud (EC2 / Azure VM / GCE) vs Databricks (DBU) cost breakdown
-2. **Job Filtering**: Filter by job name functionality
-3. **Additional Job Details**: Duration, cluster size in drill-down view
-4. **Data Refresh**: Real-time connection to source table
-
-### Phase 3: Alerting & Export (Medium Priority)
-1. **Alert Configuration**: User-configurable thresholds (dollar amount and percentage)
-2. **Email Notifications**: Alert delivery system
-3. **PDF Export**: Table data export functionality
-4. **Dashboard Highlights**: Visual indicators for threshold breaches
-
-### Phase 4: Automation & Reporting (Medium Priority)
-1. **Scheduled Reports**: Automated daily/weekly/monthly email reports
-2. **Advanced Summary Metrics**: Trending data and comparisons
-3. **Enhanced Filtering**: Additional filter options and search capabilities
-4. **Performance Optimization**: Caching and query optimization
-
-### Phase 5: Enhancement & Scale (Low Priority)
-1. **Advanced Visualizations**: Additional chart types and analytics
-2. **User Management**: Role-based access and permissions
-3. **API Integration**: External system connectivity
-4. **Mobile Responsiveness**: Mobile-friendly dashboard design
+- Dashboard load time target: < 3 seconds.
+- Cost attribution reconciles to its explorer source within $0.01 per grain
+  (see `README.md` §4.3).
 
 ## Technical Requirements
 
 ### Data Integration
-- **Primary Table**: `pritam_demo.dbcost360.databricks_job_spends`
-- **SQL Warehouse**: "dbdemos-shared-endpoint"
-- **Query Pattern**: Real-time queries with efficient caching
-- **Data Columns**: All columns displayed with appropriate formatting
+- **Rollup tables**: the four `dbspend360.04june.dbspend360_total_*` tables.
+- **SQL Warehouse**: `8baced1ff014912d`.
+- **System tables** (optional, requires grants): `system.lakeflow.jobs`,
+  `system.compute.clusters`.
+- **Query pattern**: parameterized SQL via the Databricks SDK; React Query
+  caching on the frontend.
 
 ### Performance Requirements
-- **Response Time**: <3 seconds for dashboard load
-- **Concurrent Users**: Support 10+ simultaneous users
-- **Data Volume**: Handle 10,000+ job records efficiently
-- **Export Performance**: PDF generation <10 seconds
+- Dashboard load: < 3 seconds.
+- Handle large rollup tables efficiently with pagination and grouping.
 
 ### User Experience
-- **Professional Design**: Clean, business-appropriate color scheme
-- **Responsive Layout**: Works on desktop and tablet devices
-- **Intuitive Navigation**: Minimal learning curve for business users
-- **Accessibility**: Meets basic web accessibility standards
+- Professional shadcn/ui + Tailwind design with light/dark theme toggle.
+- Responsive layout; intuitive tab navigation; deep-linkable tabs via `?tab=`.
+
+## Roadmap note
+
+This document describes the **currently shipped** product. Features that have
+been discussed but are **not implemented** (e.g. threshold-based alerting, PDF/
+CSV export, email/scheduled reports) are intentionally not described here. Note
+that `config/app.dev.config` ships `enable_export = true`, but no export
+functionality is currently wired to that flag.

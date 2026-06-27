@@ -107,7 +107,7 @@ The Databricks App reads from `dbspend360_total_job_spends`, which is produced b
      * `Dbspend360_pipeline_dbu_costs` → `dbspend360_pipeline_dbu_cost_app`
      * `pipeline_spends` → `pipeline_spends_app` (depends on both its DBU task **and** `cloud_cost_explorer`)
 
-   The branches are independent — failures in one do not block the others — and the app reads each branch's output table through its respective tab. See `docs/plan_all_purpose_clusters_tab.md`, `docs/plan_instance_pools_tab.md`, and `docs/plan_pool_pipeline_ec2_cost.md` for the design rationale (cluster-source filter, owner-based attribution, EC2/EBS cloud-cost joins, and the cross-tab overlap model documented in section 4 below).
+   The branches are independent — failures in one do not block the others — and the app reads each branch's output table through its respective tab. Each branch applies its own attribution logic (cluster-source filter, owner-based attribution, EC2/EBS cloud-cost joins, and the cross-tab overlap model documented in section 4 below).
 
    **Update the hard-coded `notebook_path` values** in the YAML to match where you imported the notebooks (the template currently points at a developer workspace path), and review the default `parameters` block (`catalog`, `cloud_provider`, `overlap_days`, `schema`, `workspace_ids`) before deploying.
 4. Create the job either via the Databricks Workflows UI using the YAML as a reference, or by wrapping it in a Databricks Asset Bundle.
@@ -121,6 +121,8 @@ The Databricks App reads from `dbspend360_total_job_spends`, which is produced b
     2. `warehouse_id` — the SQL warehouse the app should query.
     3. `table_name` — fully qualified `catalog.schema.table` for `dbspend360_total_job_spends`.
     4. `schema_name` — fully qualified `catalog.schema` used by the app.
+
+> **Note:** `config/app.dev.config` also ships `all_purpose_table_name`, `pool_table_name`, and `pipeline_table_name` — the rollup tables behind the All-Purpose Clusters, Instance Pools, and Pipeline Compute tabs. The app reads **four** rollup tables, not one. If you omit these keys, `server/config/config_loader.py` derives them from `schema_name` (e.g. `<schema_name>.dbspend360_total_pool_spends`); set them explicitly if your tables don't follow that naming.
 
 
 ![app_dev_config](release/readme_images/app_dev_config.png)
@@ -252,8 +254,7 @@ it. For example, a job whose cluster borrows VMs from an instance pool shows DBU
 in both the **Job Clusters** tab (attributed to the job) and the **Instance
 Pools** tab (attributed to the pool). That is not double-billing — it is the same
 spend described from two angles. Per-tab DBU is correct *within* its lens; summing
-DBU *across* tabs is not meaningful. (See `docs/plan_instance_pools_tab.md` §3.6
-for the full cross-tab DBU overlap analysis.)
+DBU *across* tabs is not meaningful.
 
 ### 4.2 EC2 / EBS cloud cost overlap
 
@@ -265,9 +266,8 @@ tables are kept **disjoint** so the cloud numbers do not double-count across tab
 * `dbspend360_pool_cloud_cost_explorer` groups EC2/EBS by the
   **`DatabricksInstancePoolId`** tag and feeds the Instance Pools tab. On this
   account, pooled instances carry the pool tag but **not** `ClusterId` (verified
-  empirically — see `docs/plan_pool_pipeline_ec2_cost.md` §4.3, "Case B"), and the
-  pool explorer additionally **nets out** any cost that *also* carries
-  `ClusterId` (the §4.3 guard). So **pool EC2 cost is disjoint from cluster EC2
+  empirically), and the pool explorer additionally **nets out** any cost that
+  *also* carries `ClusterId`. So **pool EC2 cost is disjoint from cluster EC2
   cost — for cloud cost the Instance Pools tab is additive, not overlapping, with
   the other three tabs.**
 
@@ -275,9 +275,7 @@ Even so, **no tab — and no sum of tabs — equals the AWS EC2 bill.** Only
 tag-attributable compute is captured; account-wide shared infrastructure (NAT
 gateways, S3, ELB, VPC, data transfer, and any untagged compute) is deliberately
 **not** allocated onto jobs, clusters, pools, or pipelines. Proportional
-allocation of that shared infra is tracked separately in
-`docs/plan_aws_cost_attribution_reconciliation.md` and is intentionally out of
-scope here.
+allocation of that shared infra is intentionally out of scope here.
 
 A few honest-by-design gaps you will see rendered as `—` (a dash) plus a tooltip,
 never as a misleading `$0`:
