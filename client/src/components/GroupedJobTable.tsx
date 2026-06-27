@@ -1,15 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import {
   ColumnDef,
   flexRender,
   getCoreRowModel,
   getPaginationRowModel,
-  getSortedRowModel,
+  OnChangeFn,
   SortingState,
   useReactTable,
-  Row,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon, Eye, Search, Loader2, Info } from 'lucide-react';
+import { ArrowUpDown, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon, Eye, Loader2, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -25,11 +24,10 @@ import { useGroupedJobSpends } from '@/hooks/useGroupedJobSpends';
 import { useJobRuns } from '@/hooks/useJobRuns';
 import { useDatabricksHost } from '@/hooks/useDatabricksHost';
 import { DateRange, GroupedJob, JobRun } from '@/types/job-spend';
-import { cn } from '@/lib/utils';
+import { formatCalendarDate, HIGH_COST_USD } from '@/lib/utils';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 
 const formatRunCurrency = (amount: number) =>
   new Intl.NumberFormat('en-US', {
@@ -39,17 +37,9 @@ const formatRunCurrency = (amount: number) =>
     maximumFractionDigits: 2,
   }).format(amount);
 
-const formatRunDay = (dateStr: string) => {
-  try {
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  } catch {
-    return dateStr;
-  }
-};
+// Run start/end are calendar dates; `formatCalendarDate` anchors them to local
+// midnight so display never rolls back a day on negative-UTC zones (plan §3.4).
+const formatRunDay = (dateStr: string) => formatCalendarDate(dateStr);
 
 const formatRunRange = (startDate: string, endDate: string) =>
   startDate === endDate
@@ -68,12 +58,23 @@ interface ExpandedJobRunsProps {
 // Renders the per-job run breakdown. Runs are fetched lazily on expand (the
 // grouped list query no longer embeds them), so this row shows its own loading
 // and error states while the request is in flight.
+// Initial number of runs fetched on expand; can be raised on demand via the
+// "Show all" control below. The /api/job/{id}/runs endpoint caps at 100.
+const RUNS_INITIAL_LIMIT = 10;
+const RUNS_MAX_LIMIT = 100;
+
 const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, isSegmentedPlatform, onRunClick }: ExpandedJobRunsProps) => {
-  const { data: runs, isLoading, error } = useJobRuns(
+  const [limit, setLimit] = useState(RUNS_INITIAL_LIMIT);
+  const { data: runs, isLoading, isFetching, error } = useJobRuns(
     job.job_id,
-    { start_date: dateRange.start_date, end_date: dateRange.end_date, limit: 10 },
+    { start_date: dateRange.start_date, end_date: dateRange.end_date, limit },
     true,
   );
+
+  // More runs exist than we've fetched, and we haven't hit the endpoint cap.
+  const fetchedCount = runs?.length ?? 0;
+  const showAllLimit = Math.min(RUNS_MAX_LIMIT, job.run_count);
+  const canLoadMore = fetchedCount < job.run_count && limit < RUNS_MAX_LIMIT;
 
   return (
     <TableRow className="bg-muted/30">
@@ -101,8 +102,17 @@ const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, isSegmentedPla
                 {runs.map((run) => (
                   <div
                     key={run.run_id}
-                    className="flex items-center justify-between p-3 bg-background rounded-md border hover:bg-muted/50 cursor-pointer transition-colors"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`View cost breakdown for run ${run.run_id}`}
+                    className="flex items-center justify-between p-3 bg-background rounded-md border hover:bg-muted/50 cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => onRunClick(job.job_id, run)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onRunClick(job.job_id, run);
+                      }
+                    }}
                   >
                     <div className="flex items-center space-x-4">
                       <div className="text-sm font-mono text-muted-foreground">
@@ -152,6 +162,21 @@ const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, isSegmentedPla
                   </div>
                 ))}
               </div>
+              {canLoadMore && (
+                <div className="flex justify-center pt-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setLimit(showAllLimit)}
+                    disabled={isFetching}
+                  >
+                    {isFetching ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" aria-hidden="true" />
+                    ) : null}
+                    Show all {showAllLimit} runs
+                  </Button>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -180,11 +205,22 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
     pageSize: 50,
   });
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-  const [otherBreakdownOpen, setOtherBreakdownOpen] = useState(false);
 
   useEffect(() => {
     setPagination((prev) => ({ ...prev, pageIndex: 0 }));
   }, [jobFilter, dateRange.start_date, dateRange.end_date]);
+
+  // Sorting is server-side (manualSorting): changing the sort re-queries the
+  // full dataset, so we must reset to page 1 in the same pass — otherwise the
+  // user could be stranded on a now-out-of-range page of the re-sorted data.
+  const handleSortingChange: OnChangeFn<SortingState> = (updater) => {
+    setSorting(updater);
+    setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+  };
+
+  const activeSort = sorting[0];
+  const sortBy = activeSort?.id ?? 'total_cost';
+  const sortDir: 'asc' | 'desc' = activeSort ? (activeSort.desc ? 'desc' : 'asc') : 'desc';
 
   const { data, isLoading, isFetching, error } = useGroupedJobSpends({
     start_date: dateRange.start_date,
@@ -192,6 +228,8 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
     job_name: jobFilter || undefined,
     page: pagination.pageIndex + 1,
     per_page: pagination.pageSize,
+    sort_by: sortBy,
+    sort_dir: sortDir,
   });
 
   // Distinguish initial load (no previous data) from a background refetch
@@ -238,11 +276,13 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
             size="sm"
             onClick={() => toggleRowExpansion(row.original.job_id)}
             className="h-8 w-8 p-0"
+            aria-expanded={isExpanded}
+            aria-label={isExpanded ? 'Collapse runs' : 'Expand runs'}
           >
             {isExpanded ? (
-              <ChevronDown className="h-4 w-4" />
+              <ChevronDown className="h-4 w-4" aria-hidden="true" />
             ) : (
-              <ChevronRightIcon className="h-4 w-4" />
+              <ChevronRightIcon className="h-4 w-4" aria-hidden="true" />
             )}
           </Button>
         );
@@ -257,7 +297,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           className="h-8 px-2"
         >
           Job ID
-          <ArrowUpDown className="ml-2 h-4 w-4" />
+          <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
       cell: ({ row }) => {
@@ -288,16 +328,11 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
     },
     {
       accessorKey: 'job_name',
-      header: ({ column }) => (
-        <Button
-          variant="ghost"
-          onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-          className="h-8 px-2"
-        >
-          Job Name
-          <ArrowUpDown className="ml-2 h-4 w-4" />
-        </Button>
-      ),
+      // Not server-sortable: job names are resolved from an in-memory map, not
+      // the SQL scan, so a global ORDER BY by name isn't available. Render a
+      // plain header rather than a misleading (page-local) sort control.
+      enableSorting: false,
+      header: () => <div className="px-2 font-medium">Job Name</div>,
       cell: ({ row }) => {
         const jobName = row.getValue('job_name') as string;
         return (
@@ -316,7 +351,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           className="h-8 px-2"
         >
           Runs
-          <ArrowUpDown className="ml-2 h-4 w-4" />
+          <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
       cell: ({ row }) => (
@@ -340,7 +375,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           className="h-8 px-2"
         >
           Compute
-          <ArrowUpDown className="ml-2 h-4 w-4" />
+          <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
       cell: ({ row }) => {
@@ -361,7 +396,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           className="h-8 px-2"
         >
           Storage
-          <ArrowUpDown className="ml-2 h-4 w-4" />
+          <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
       cell: ({ row }) => {
@@ -382,7 +417,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           className="h-8 px-2"
         >
           Network
-          <ArrowUpDown className="ml-2 h-4 w-4" />
+          <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
       cell: ({ row }) => {
@@ -403,23 +438,20 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           className="h-8 px-2"
         >
           Other
-          <ArrowUpDown className="ml-2 h-4 w-4" />
+          <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
+      // Plain text, not a click-through: the `/other-cost-breakdown` endpoint
+      // filters by cluster, not job, so a job-level click would open a
+      // breakdown that doesn't match this aggregated row (plan §4.2 / #J2).
+      // Cluster-scoped breakdowns remain available at run level in the
+      // JobBreakdownModal.
       cell: ({ row }) => {
         const val = row.original.total_other_cost;
         if (val == null || val === 0) return <div className="text-right text-muted-foreground">—</div>;
         return (
-          <div
-            className="text-right font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors flex items-center justify-end gap-1"
-            onClick={(e) => {
-              e.stopPropagation();
-              setOtherBreakdownOpen(true);
-            }}
-            title="Click to view breakdown of unclassified costs"
-          >
+          <div className="text-right font-medium text-muted-foreground">
             {formatCurrency(val)}
-            <Search className="h-3 w-3" />
           </div>
         );
       },
@@ -434,7 +466,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           className="h-8 px-2"
         >
           {isAws ? AWS_CLOUD_LABEL : `Total ${cloudConfig?.compute_service || 'Cloud'} Cost`}
-          <ArrowUpDown className="ml-2 h-4 w-4" />
+          <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
       cell: ({ row }) => (
@@ -452,7 +484,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           className="h-8 px-2"
         >
           Total Databricks Cost
-          <ArrowUpDown className="ml-2 h-4 w-4" />
+          <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
       cell: ({ row }) => (
@@ -471,7 +503,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
             className="h-8 px-2"
           >
             Total Cost
-            <ArrowUpDown className="ml-2 h-4 w-4" />
+            <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
           </Button>
           {isAws && (
             <Tooltip>
@@ -492,7 +524,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
         return (
           <div className="text-right">
             <div className="font-bold text-lg">{formatCurrency(totalCost)}</div>
-            {totalCost > 1000 && (
+            {totalCost > HIGH_COST_USD && (
               <Badge variant="destructive" className="text-xs">
                 High Cost
               </Badge>
@@ -511,12 +543,12 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
       sorting,
       pagination,
     },
-    onSortingChange: setSorting,
+    onSortingChange: handleSortingChange,
     onPaginationChange: setPagination,
     getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     manualPagination: true,
+    manualSorting: true,
   });
 
   if (error) {
@@ -546,13 +578,23 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id} className="px-4">
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(header.column.columnDef.header, header.getContext())}
-                  </TableHead>
-                ))}
+                {headerGroup.headers.map((header) => {
+                  const sorted = header.column.getIsSorted();
+                  const ariaSort = header.column.getCanSort()
+                    ? sorted === 'asc'
+                      ? 'ascending'
+                      : sorted === 'desc'
+                        ? 'descending'
+                        : 'none'
+                    : undefined;
+                  return (
+                    <TableHead key={header.id} className="px-4" aria-sort={ariaSort}>
+                      {header.isPlaceholder
+                        ? null
+                        : flexRender(header.column.columnDef.header, header.getContext())}
+                    </TableHead>
+                  );
+                })}
               </TableRow>
             ))}
           </TableHeader>
@@ -571,9 +613,8 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
             ) : table.getRowModel().rows?.length ? (
               <>
                 {table.getRowModel().rows.map((row) => (
-                  <>
+                  <Fragment key={row.id}>
                     <TableRow
-                      key={row.id}
                       data-state={row.getIsSelected() && 'selected'}
                       className="hover:bg-muted/50"
                     >
@@ -593,7 +634,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
                         onRunClick={onRunClick}
                       />
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </>
             ) : (
@@ -653,16 +694,6 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
             </Button>
           </div>
         </div>
-      )}
-
-      {/* Other Cost Breakdown Modal — only mounted for segmented platforms;
-          the "Other" column (its only trigger) is hidden on AWS/Unknown (D7). */}
-      {isSegmentedPlatform && (
-        <OtherCostBreakdownModal
-          dateRange={dateRange}
-          isOpen={otherBreakdownOpen}
-          onClose={() => setOtherBreakdownOpen(false)}
-        />
       )}
     </div>
   );

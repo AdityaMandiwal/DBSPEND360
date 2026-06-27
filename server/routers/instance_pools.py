@@ -45,7 +45,7 @@ from server.services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/instance-pools", tags=["instance-pools"])
+router = APIRouter(prefix='/api/instance-pools', tags=['instance-pools'])
 
 
 # Lazy initialization mirrors the pattern in `dashboard.py` and
@@ -81,14 +81,14 @@ def _validate_date_range(start_date: date, end_date: date) -> None:
     if start_date > end_date:
         raise HTTPException(
             status_code=400,
-            detail="Start date must be before or equal to end date",
+            detail='Start date must be before or equal to end date',
         )
 
 
-@router.get("/summary", response_model=InstancePoolSummaryMetrics)
+@router.get('/summary', response_model=InstancePoolSummaryMetrics)
 async def get_instance_pool_summary(
-    start_date: date = Query(..., description="Start date for summary (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date for summary (YYYY-MM-DD)"),
+    start_date: date = Query(..., description='Start date for summary (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date for summary (YYYY-MM-DD)'),
 ):
     """Get KPI summary metrics for the Instance Pools tab.
 
@@ -107,28 +107,28 @@ async def get_instance_pool_summary(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving instance pool summary metrics")
+    except Exception:
+        logger.exception('Error retrieving instance pool summary metrics')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving instance pool summary metrics: {str(e)}",
+            detail='Failed to retrieve instance pool summary metrics',
         )
 
 
-@router.get("/grouped", response_model=PaginatedInstancePools)
+@router.get('/grouped', response_model=PaginatedInstancePools)
 async def get_instance_pools_grouped(
-    start_date: date = Query(..., description="Start date for filtering (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date for filtering (YYYY-MM-DD)"),
+    start_date: date = Query(..., description='Start date for filtering (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date for filtering (YYYY-MM-DD)'),
     search: Optional[str] = Query(
         None,
         description=(
-            "Optional free-text filter matched against pool_name "
-            "(case-insensitive substring), instance_pool_id (exact), and "
-            "cluster_id (exact, via a back-reference to the filtered rows)"
+            'Optional free-text filter matched against pool_name '
+            '(case-insensitive substring), instance_pool_id (exact), and '
+            'cluster_id (exact, via a back-reference to the filtered rows)'
         ),
     ),
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(50, ge=1, le=1000, description="Items per page"),
+    page: int = Query(1, ge=1, description='Page number'),
+    per_page: int = Query(50, ge=1, le=1000, description='Items per page'),
 ):
     """Get paginated By-Pool rollup with two-level drill-down.
 
@@ -152,19 +152,19 @@ async def get_instance_pools_grouped(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving instance pools grouped data")
+    except Exception:
+        logger.exception('Error retrieving instance pools grouped data')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving instance pools grouped data: {str(e)}",
+            detail='Failed to retrieve instance pools grouped data',
         )
 
 
-@router.get("/top-pools", response_model=list[GroupedInstancePool])
+@router.get('/top-pools', response_model=list[GroupedInstancePool])
 async def get_top_instance_pools(
-    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
-    limit: int = Query(5, ge=1, le=20, description="Number of top pools to return"),
+    start_date: date = Query(..., description='Start date (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date (YYYY-MM-DD)'),
+    limit: int = Query(5, ge=1, le=20, description='Number of top pools to return'),
 ):
     """Get the top N most expensive instance pools in the window.
 
@@ -185,15 +185,15 @@ async def get_top_instance_pools(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving top instance pools")
+    except Exception:
+        logger.exception('Error retrieving top instance pools')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving top instance pools: {str(e)}",
+            detail='Failed to retrieve top instance pools',
         )
 
 
-@router.get("/{pool_id}/details", response_model=InstancePoolDetails)
+@router.get('/{pool_id}/details', response_model=InstancePoolDetails)
 async def get_instance_pool_details(pool_id: str):
     """Get pool configuration details for the pool details modal.
 
@@ -216,17 +216,17 @@ async def get_instance_pool_details(pool_id: str):
         return await service.get_instance_pool_details(pool_id)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception(
-            "Error retrieving instance pool details for %s", pool_id
+            'Error retrieving instance pool details for %s', pool_id
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving instance pool details: {str(e)}",
+            detail='Failed to retrieve instance pool details',
         )
 
 
-@router.get("/{pool_id}/analyze", response_model=InstancePoolAnalysis)
+@router.get('/{pool_id}/analyze', response_model=InstancePoolAnalysis)
 async def analyze_instance_pool(pool_id: str):
     """Get LLM-powered configuration + cost analysis for an instance pool.
 
@@ -259,17 +259,17 @@ async def analyze_instance_pool(pool_id: str):
 
         if isinstance(pool_details, Exception):
             logger.error(
-                "Failed to fetch pool details for %s: %s",
+                'Failed to fetch pool details for %s: %s',
                 pool_id,
                 pool_details,
             )
             raise HTTPException(
                 status_code=500,
-                detail=f"Error fetching pool details: {str(pool_details)}",
+                detail='Failed to fetch pool details',
             )
         if isinstance(cost_summary, Exception):
             logger.error(
-                "Failed to fetch pool cost summary for %s: %s",
+                'Failed to fetch pool cost summary for %s: %s',
                 pool_id,
                 cost_summary,
             )
@@ -288,17 +288,17 @@ async def analyze_instance_pool(pool_id: str):
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception(
-            "Error generating instance pool analysis for %s", pool_id
+            'Error generating instance pool analysis for %s', pool_id
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating instance pool analysis: {str(e)}",
+            detail='Failed to generate instance pool analysis',
         )
 
 
-@router.get("/health")
+@router.get('/health')
 async def instance_pools_health():
     """Health-check endpoint for the Instance Pools router.
 
@@ -307,4 +307,4 @@ async def instance_pools_health():
     returns the static index.html instead of JSON, the include order is
     wrong.
     """
-    return {"status": "healthy", "service": "instance-pools"}
+    return {'status': 'healthy', 'service': 'instance-pools'}

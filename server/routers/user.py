@@ -1,9 +1,13 @@
 """User router for Databricks user information."""
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from server.services.user_service import UserService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -37,8 +41,9 @@ async def get_current_user():
       active=user_info['active'],
       emails=user_info['emails'],
     )
-  except Exception as e:
-    raise HTTPException(status_code=500, detail=f'Failed to fetch user info: {str(e)}')
+  except Exception:
+    logger.exception('Failed to fetch user info')
+    raise HTTPException(status_code=500, detail='Failed to fetch user info')
 
 
 @router.get('/me/workspace', response_model=UserWorkspaceInfo)
@@ -56,5 +61,6 @@ async def get_user_workspace_info():
       ),
       workspace=info['workspace'],
     )
-  except Exception as e:
-    raise HTTPException(status_code=500, detail=f'Failed to fetch workspace info: {str(e)}')
+  except Exception:
+    logger.exception('Failed to fetch workspace info')
+    raise HTTPException(status_code=500, detail='Failed to fetch workspace info')

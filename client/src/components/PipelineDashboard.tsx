@@ -32,6 +32,16 @@ const PipelineDashboard = () => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [selectedWorkloads, setSelectedWorkloads] = useState<string[]>([]);
 
+  // Changing the date range can change which workloads even exist in the
+  // window, so a chip selected for the old range would otherwise keep
+  // filtering invisibly (plan §7.2). Clear the chip selection whenever the
+  // range changes so the table + KPI strip show unfiltered results for the
+  // new window.
+  const handleDateRangeChange = (next: DateRange) => {
+    setDateRange(next);
+    setSelectedWorkloads([]);
+  };
+
   return (
     <div className="space-y-6">
       <PipelineSummaryCards
@@ -46,7 +56,7 @@ const PipelineDashboard = () => {
         <CardContent>
           <PipelineFilterControls
             dateRange={dateRange}
-            onDateRangeChange={setDateRange}
+            onDateRangeChange={handleDateRangeChange}
             searchTerm={searchTerm}
             onSearchTermChange={setSearchTerm}
             selectedWorkloads={selectedWorkloads}
@@ -75,7 +85,11 @@ const PipelineDashboard = () => {
           </p>
         </CardHeader>
         <CardContent>
+          {/* Remount the table on any filter change (date range / committed
+              search / workload chip selection) so pagination + expansion reset
+              cleanly in one render pass (plan §3.2 / §3.3). */}
           <PipelinesTable
+            key={`${dateRange.start_date}|${dateRange.end_date}|${searchTerm}|${selectedWorkloads.join(',')}`}
             dateRange={dateRange}
             searchTerm={searchTerm}
             selectedWorkloads={selectedWorkloads}

@@ -65,6 +65,8 @@ export class DashboardService {
      * @param jobName Optional job name filter
      * @param page Page number
      * @param perPage Items per page
+     * @param sortBy Column to sort by across the full dataset. One of: total_cost, total_cloud_cost, total_databricks_cost, total_compute_cost, total_storage_cost, total_network_cost, total_other_cost, run_count, job_id. Unknown values fall back to total_cost.
+     * @param sortDir Sort direction
      * @returns PaginatedGroupedJobs Successful Response
      * @throws ApiError
      */
@@ -74,6 +76,8 @@ export class DashboardService {
         jobName?: (string | null),
         page: number = 1,
         perPage: number = 50,
+        sortBy: string = 'total_cost',
+        sortDir: 'asc' | 'desc' = 'desc',
     ): CancelablePromise<PaginatedGroupedJobs> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -84,6 +88,8 @@ export class DashboardService {
                 'job_name': jobName,
                 'page': page,
                 'per_page': perPage,
+                'sort_by': sortBy,
+                'sort_dir': sortDir,
             },
             errors: {
                 422: `Validation Error`,
@@ -254,30 +260,6 @@ export class DashboardService {
         });
     }
     /**
-     * Debug Environment
-     * Debug endpoint to see environment variables and client info.
-     * @returns any Successful Response
-     * @throws ApiError
-     */
-    public static debugEnvironmentApiDebugEnvironmentGet(): CancelablePromise<any> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/debug-environment',
-        });
-    }
-    /**
-     * Debug Table Data
-     * Debug endpoint to see sample data from the table.
-     * @returns any Successful Response
-     * @throws ApiError
-     */
-    public static debugTableDataApiDebugTableGet(): CancelablePromise<any> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/debug-table',
-        });
-    }
-    /**
      * Analyze Job Costs
      * Get LLM-powered cost analysis for a specific job run.
      *
@@ -401,17 +383,26 @@ export class DashboardService {
      *
      * Parsed from pipeline audit log entries. Shows how well cloud costs
      * are being classified into compute/storage/network categories.
+     *
+     * When `start_date`/`end_date` are supplied the trend is bounded to that
+     * window so the chart's x-axis tracks the dashboard's selected date range.
+     * @param startDate Optional start date to bound the trend (YYYY-MM-DD)
+     * @param endDate Optional end date to bound the trend (YYYY-MM-DD)
      * @param limit Max data points to return
      * @returns CoverageTrendResponse Successful Response
      * @throws ApiError
      */
     public static getClassificationCoverageTrendApiClassificationCoverageTrendGet(
-        limit: number = 30,
+        startDate?: (string | null),
+        endDate?: (string | null),
+        limit: number = 100,
     ): CancelablePromise<CoverageTrendResponse> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/classification-coverage-trend',
             query: {
+                'start_date': startDate,
+                'end_date': endDate,
                 'limit': limit,
             },
             errors: {
@@ -429,18 +420,6 @@ export class DashboardService {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/cloud-platform',
-        });
-    }
-    /**
-     * Test Databricks Connection
-     * Test Databricks connection and table access.
-     * @returns any Successful Response
-     * @throws ApiError
-     */
-    public static testDatabricksConnectionApiTestConnectionGet(): CancelablePromise<any> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/test-connection',
         });
     }
 }

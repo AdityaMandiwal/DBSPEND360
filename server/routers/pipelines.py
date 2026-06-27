@@ -49,7 +49,7 @@ from server.services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/pipelines", tags=["pipelines"])
+router = APIRouter(prefix='/api/pipelines', tags=['pipelines'])
 
 
 # Lazy initialization mirrors `instance_pools.py` so we share the same
@@ -85,7 +85,7 @@ def _validate_date_range(start_date: date, end_date: date) -> None:
     if start_date > end_date:
         raise HTTPException(
             status_code=400,
-            detail="Start date must be before or equal to end date",
+            detail='Start date must be before or equal to end date',
         )
 
 
@@ -106,15 +106,15 @@ def _ambiguity_409(exc: AmbiguousPipelineError) -> HTTPException:
     )
 
 
-@router.get("/summary", response_model=PipelineSummaryMetrics)
+@router.get('/summary', response_model=PipelineSummaryMetrics)
 async def get_pipeline_summary(
-    start_date: date = Query(..., description="Start date for summary (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date for summary (YYYY-MM-DD)"),
+    start_date: date = Query(..., description='Start date for summary (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date for summary (YYYY-MM-DD)'),
     workload_type: Optional[List[str]] = Query(
         None,
         description=(
-            "Optional workload-type chip filter (multi-value). Only labels / "
-            "narrows; never drops spend (plan §3.1)."
+            'Optional workload-type chip filter (multi-value). Only labels / '
+            'narrows; never drops spend (plan §3.1).'
         ),
     ),
 ):
@@ -137,24 +137,24 @@ async def get_pipeline_summary(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving pipeline summary metrics")
+    except Exception:
+        logger.exception('Error retrieving pipeline summary metrics')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving pipeline summary metrics: {str(e)}",
+            detail='Failed to retrieve pipeline summary metrics',
         )
 
 
-@router.get("/grouped", response_model=PaginatedPipelines)
+@router.get('/grouped', response_model=PaginatedPipelines)
 async def get_pipelines_grouped(
-    start_date: date = Query(..., description="Start date for filtering (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date for filtering (YYYY-MM-DD)"),
+    start_date: date = Query(..., description='Start date for filtering (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date for filtering (YYYY-MM-DD)'),
     search: Optional[str] = Query(
         None,
         description=(
-            "Optional free-text filter matched against pipeline_name "
-            "(case-insensitive substring), pipeline_id (exact), and "
-            "created_by (case-insensitive substring)"
+            'Optional free-text filter matched against pipeline_name '
+            '(case-insensitive substring), pipeline_id (exact), and '
+            'created_by (case-insensitive substring)'
         ),
     ),
     workload_type: Optional[List[str]] = Query(
@@ -164,8 +164,8 @@ async def get_pipelines_grouped(
             "'DLT Pipeline'). Only labels / narrows; never drops (plan §3.1)."
         ),
     ),
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(50, ge=1, le=1000, description="Items per page"),
+    page: int = Query(1, ge=1, description='Page number'),
+    per_page: int = Query(50, ge=1, le=1000, description='Items per page'),
 ):
     """Get paginated By-Pipeline rollup with a single per-day drill-down.
 
@@ -189,25 +189,25 @@ async def get_pipelines_grouped(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving pipelines grouped data")
+    except Exception:
+        logger.exception('Error retrieving pipelines grouped data')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving pipelines grouped data: {str(e)}",
+            detail='Failed to retrieve pipelines grouped data',
         )
 
 
-@router.get("/top-pipelines", response_model=list[GroupedPipeline])
+@router.get('/top-pipelines', response_model=list[GroupedPipeline])
 async def get_top_pipelines(
-    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
-    limit: int = Query(5, ge=1, le=20, description="Number of top pipelines to return"),
+    start_date: date = Query(..., description='Start date (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date (YYYY-MM-DD)'),
+    limit: int = Query(5, ge=1, le=20, description='Number of top pipelines to return'),
     workload_type: Optional[List[str]] = Query(
         None,
         description=(
-            "Optional workload-type chip filter (multi-value). Narrows the "
-            "Top-N in lock-step with the KPI strip and table; never drops "
-            "spend (plan §3.1)."
+            'Optional workload-type chip filter (multi-value). Narrows the '
+            'Top-N in lock-step with the KPI strip and table; never drops '
+            'spend (plan §3.1).'
         ),
     ),
 ):
@@ -231,23 +231,23 @@ async def get_top_pipelines(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving top pipelines")
+    except Exception:
+        logger.exception('Error retrieving top pipelines')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving top pipelines: {str(e)}",
+            detail='Failed to retrieve top pipelines',
         )
 
 
-@router.get("/{pipeline_id}/details", response_model=PipelineDetails)
+@router.get('/{pipeline_id}/details', response_model=PipelineDetails)
 async def get_pipeline_details(
     pipeline_id: str,
     workspace_id: Optional[str] = Query(
         None,
         description=(
-            "Optional workspace scope. `pipeline_id` is only unique within a "
-            "workspace (plan §3.3/§6); omit for the single-workspace dev path. "
-            "If the id spans >1 workspace and this is omitted, returns 409."
+            'Optional workspace scope. `pipeline_id` is only unique within a '
+            'workspace (plan §3.3/§6); omit for the single-workspace dev path. '
+            'If the id spans >1 workspace and this is omitted, returns 409.'
         ),
     ),
 ):
@@ -269,24 +269,24 @@ async def get_pipeline_details(
         raise _ambiguity_409(e)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception(
-            "Error retrieving pipeline details for %s", pipeline_id
+            'Error retrieving pipeline details for %s', pipeline_id
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving pipeline details: {str(e)}",
+            detail='Failed to retrieve pipeline details',
         )
 
 
-@router.get("/{pipeline_id}/analyze", response_model=PipelineAnalysis)
+@router.get('/{pipeline_id}/analyze', response_model=PipelineAnalysis)
 async def analyze_pipeline(
     pipeline_id: str,
     workspace_id: Optional[str] = Query(
         None,
         description=(
-            "Optional workspace scope (see `/{id}/details`). Returns 409 if "
-            "the id is ambiguous across workspaces and this is omitted."
+            'Optional workspace scope (see `/{id}/details`). Returns 409 if '
+            'the id is ambiguous across workspaces and this is omitted.'
         ),
     ),
 ):
@@ -322,17 +322,17 @@ async def analyze_pipeline(
 
         if isinstance(pipeline_details, Exception):
             logger.error(
-                "Failed to fetch pipeline details for %s: %s",
+                'Failed to fetch pipeline details for %s: %s',
                 pipeline_id,
                 pipeline_details,
             )
             raise HTTPException(
                 status_code=500,
-                detail=f"Error fetching pipeline details: {str(pipeline_details)}",
+                detail='Failed to fetch pipeline details',
             )
         if isinstance(cost_summary, Exception):
             logger.error(
-                "Failed to fetch pipeline cost summary for %s: %s",
+                'Failed to fetch pipeline cost summary for %s: %s',
                 pipeline_id,
                 cost_summary,
             )
@@ -351,17 +351,17 @@ async def analyze_pipeline(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception(
-            "Error generating pipeline analysis for %s", pipeline_id
+            'Error generating pipeline analysis for %s', pipeline_id
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating pipeline analysis: {str(e)}",
+            detail='Failed to generate pipeline analysis',
         )
 
 
-@router.get("/health")
+@router.get('/health')
 async def pipelines_health():
     """Health-check endpoint for the Pipeline Compute router.
 
@@ -369,4 +369,4 @@ async def pipelines_health():
     catch-all in `server/app.py` (plan §10 risks table) — if this returns
     the static index.html instead of JSON, the include order is wrong.
     """
-    return {"status": "healthy", "service": "pipelines"}
+    return {'status': 'healthy', 'service': 'pipelines'}

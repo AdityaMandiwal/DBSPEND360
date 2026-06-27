@@ -16,6 +16,7 @@ export const useSummaryMetrics = (dateRange: DateRange) => {
     queryKey: ['summary-metrics', dateRange],
     queryFn: () => apiClient.getSummaryMetrics(dateRange),
     staleTime: 5 * 60 * 1000, // 5 minutes
+    refetchOnWindowFocus: false,
     enabled: !!(dateRange.start_date && dateRange.end_date),
   });
 };
@@ -68,6 +69,7 @@ export const useTopJobs = (dateRange: DateRange, limit: number = 5) => {
     queryKey: ['top-jobs', dateRange, limit],
     queryFn: () => apiClient.getTopJobs(dateRange, limit),
     staleTime: 5 * 60 * 1000, // 5 minutes
+    refetchOnWindowFocus: false,
     enabled: !!(dateRange.start_date && dateRange.end_date),
   });
 };
@@ -93,10 +95,11 @@ export const useOtherCostBreakdown = (
   });
 };
 
-export const useCoverageTrend = (limit: number = 30) => {
+export const useCoverageTrend = (dateRange?: DateRange) => {
   return useQuery<CoverageTrendResponse>({
-    queryKey: ['coverage-trend', limit],
-    queryFn: () => apiClient.getCoverageTrend(limit),
+    queryKey: ['coverage-trend', dateRange?.start_date, dateRange?.end_date],
+    queryFn: () => apiClient.getCoverageTrend(dateRange),
     staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 };

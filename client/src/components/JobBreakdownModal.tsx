@@ -14,7 +14,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useJobBreakdown, useJobCostAnalysis, useClusterDetails, useClusterAnalysis } from '@/hooks/useJobSpends';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
+import { closeOnly, HIGH_COST_USD } from '@/lib/utils';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
+import { AnalysisMarkdown } from './AnalysisMarkdown';
 
 interface JobBreakdownModalProps {
   jobId: string;
@@ -100,7 +102,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={closeOnly(onClose)}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-xl font-semibold">
@@ -271,18 +273,20 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                           <div className="text-xs text-amber-600 dark:text-amber-400">Network</div>
                         </div>
                         {(breakdown.other_cost ?? 0) > 0 && (
-                          <div
-                            className="text-center p-3 bg-muted/60 rounded cursor-pointer hover:bg-muted transition-colors"
+                          <button
+                            type="button"
+                            className="text-center p-3 bg-muted/60 rounded cursor-pointer hover:bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             onClick={() => setIsOtherBreakdownOpen(true)}
                             title="Click to view breakdown of unclassified costs"
+                            aria-label="View breakdown of unclassified costs"
                           >
                             <div className="text-xl font-bold text-muted-foreground">
                               {breakdown.total_cost > 0 ? (((breakdown.other_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                             </div>
                             <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
-                              Other <Search className="h-2.5 w-2.5" />
+                              Other <Search className="h-2.5 w-2.5" aria-hidden="true" />
                             </div>
-                          </div>
+                          </button>
                         )}
                         <div className="text-center p-3 bg-red-50 dark:bg-red-500/10 rounded">
                           <div className="text-xl font-bold text-red-600 dark:text-red-400">
@@ -311,7 +315,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
 
                   {/* Cost Indicators */}
                   <div className="space-y-2">
-                    {breakdown.total_cost > 100 && (
+                    {breakdown.total_cost > HIGH_COST_USD && (
                       <Badge variant="destructive" className="w-full justify-center">
                         High Cost Job
                       </Badge>
@@ -367,18 +371,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                     <div className="space-y-4">
                       <div className="flex items-start space-x-2">
                         <Lightbulb className="h-4 w-4 text-amber-500 mt-1 flex-shrink-0" />
-                        <div className="prose prose-sm max-w-none">
-                          <div
-                            className="text-sm leading-relaxed whitespace-pre-line"
-                            dangerouslySetInnerHTML={{
-                              __html: analysis.analysis
-                                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                                .replace(/• /g, '• ')
-                                .replace(/## (.*?)$/gm, '<h3 class="font-semibold text-base mb-2 mt-4">$1</h3>')
-                                .replace(/\*\*(.*?):\*\*/g, '<strong class="text-purple-700 dark:text-purple-300">$1:</strong>')
-                            }}
-                          />
-                        </div>
+                        <AnalysisMarkdown>{analysis.analysis}</AnalysisMarkdown>
                       </div>
                       <div className="text-xs text-muted-foreground border-t pt-2">
                         Generated on {new Date(analysis.timestamp).toLocaleDateString('en-US', {
@@ -455,7 +448,7 @@ export const ClusterDetailsModal = ({
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={closeOnly(onClose)}>
       <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-xl font-semibold">
@@ -735,24 +728,7 @@ export const ClusterDetailsModal = ({
                     <div className="space-y-4">
                       <div className="flex items-start space-x-2">
                         <Lightbulb className="h-4 w-4 text-amber-500 mt-1 flex-shrink-0" />
-                        <div className="prose prose-sm max-w-none">
-                          <div
-                            className="text-sm leading-relaxed whitespace-pre-line"
-                            dangerouslySetInnerHTML={{
-                              __html: clusterAnalysis.analysis
-                                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                                .replace(/### (.*?)$/gm, '<h3 class="font-semibold text-base mb-2 mt-4">$1</h3>')
-                                .replace(/## (.*?)$/gm, '<h2 class="font-bold text-lg mb-3 mt-4">$1</h2>')
-                                .replace(/• /g, '• ')
-                                .replace(/✅/g, '<span class="text-green-600">✅</span>')
-                                .replace(/⚠️/g, '<span class="text-orange-500">⚠️</span>')
-                                .replace(/💰/g, '<span class="text-green-600">💰</span>')
-                                .replace(/🚀/g, '<span class="text-blue-600">🚀</span>')
-                                .replace(/🔒/g, '<span class="text-purple-600">🔒</span>')
-                                .replace(/📋/g, '<span class="text-gray-600">📋</span>')
-                            }}
-                          />
-                        </div>
+                        <AnalysisMarkdown>{clusterAnalysis.analysis}</AnalysisMarkdown>
                       </div>
                       <div className="text-xs text-muted-foreground border-t pt-2">
                         Generated on {new Date(clusterAnalysis.timestamp).toLocaleDateString('en-US', {

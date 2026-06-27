@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState } from '@/components/ui/error-state';
 import {
   useAllPurposeSummary,
   useAllPurposeTopClusters,
@@ -52,83 +53,84 @@ export const AllPurposeSummaryCards = ({
   const { config: cloudConfig } = useCloudPlatform();
   const isAws = useIsAws();
   const isSegmentedPlatform = useIsSegmentedPlatform();
-  const { data: metrics, isLoading: isMetricsLoading } =
-    useAllPurposeSummary(dateRange);
-  const { data: topClusters, isLoading: isTopClustersLoading } =
-    useAllPurposeTopClusters(dateRange, 5);
-  const { data: topUsers, isLoading: isTopUsersLoading } =
-    useAllPurposeTopUsers(dateRange, 5);
+  const {
+    data: metrics,
+    isLoading: isMetricsLoading,
+    isError: isMetricsError,
+    refetch: refetchMetrics,
+  } = useAllPurposeSummary(dateRange);
+  const {
+    data: topClusters,
+    isLoading: isTopClustersLoading,
+    isError: isTopClustersError,
+    refetch: refetchTopClusters,
+  } = useAllPurposeTopClusters(dateRange, 5);
+  const {
+    data: topUsers,
+    isLoading: isTopUsersLoading,
+    isError: isTopUsersError,
+    refetch: refetchTopUsers,
+  } = useAllPurposeTopUsers(dateRange, 5);
 
-  if (isMetricsLoading) {
-    return (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {[...Array(4)].map((_, i) => (
-          <Card key={i}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <Skeleton className="h-4 w-[100px]" />
-              <Skeleton className="h-4 w-4" />
-            </CardHeader>
-            <CardContent>
-              <Skeleton className="h-8 w-[120px] mb-2" />
-              <Skeleton className="h-3 w-[80px]" />
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-    );
-  }
-
-  if (!metrics) {
-    return (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card>
-          <CardContent className="p-6">
-            <div className="text-center text-muted-foreground">
-              No all-purpose data available for the selected date range
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  const dailyAverageSpend =
-    metrics.total_spend / Math.max(metrics.date_range_days, 1);
+  // Metrics-derived values are computed null-safely so the metrics-dependent
+  // sections (KPI strip + cost breakdown) render skeletons/errors independently
+  // from the top lists below (poly3 — no whole-strip block).
+  const safe = (n: number | null | undefined) => n ?? 0;
+  const dailyAverageSpend = metrics
+    ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
+    : 0;
   const cloudPercentage =
-    metrics.total_spend > 0
+    metrics && metrics.total_spend > 0
       ? (metrics.total_cloud_cost / metrics.total_spend) * 100
       : 0;
   const databricksPercentage =
-    metrics.total_spend > 0
+    metrics && metrics.total_spend > 0
       ? (metrics.total_databricks_cost / metrics.total_spend) * 100
       : 0;
 
-  const hasSegmented = metrics.total_compute_cost != null;
+  const hasSegmented = metrics?.total_compute_cost != null;
   // Positive allowlist (D14): segmented compute/storage/network is shown only for
   // Azure/GCP. AWS, Unknown, and the config-loading window fall to the
   // always-correct cloud-vs-DBU 2-slice — never the data-shape branch.
   const showSegmented = hasSegmented && isSegmentedPlatform;
-  const safe = (n: number | null | undefined) => n ?? 0;
   const computePct =
-    showSegmented && metrics.total_cloud_cost > 0
+    showSegmented && metrics && metrics.total_cloud_cost > 0
       ? (safe(metrics.total_compute_cost) / metrics.total_cloud_cost) * 100
       : 0;
   const storagePct =
-    showSegmented && metrics.total_cloud_cost > 0
+    showSegmented && metrics && metrics.total_cloud_cost > 0
       ? (safe(metrics.total_storage_cost) / metrics.total_cloud_cost) * 100
       : 0;
   const networkPct =
-    showSegmented && metrics.total_cloud_cost > 0
+    showSegmented && metrics && metrics.total_cloud_cost > 0
       ? (safe(metrics.total_network_cost) / metrics.total_cloud_cost) * 100
       : 0;
   const otherPct =
-    showSegmented && metrics.total_cloud_cost > 0
+    showSegmented && metrics && metrics.total_cloud_cost > 0
       ? (safe(metrics.total_other_cost) / metrics.total_cloud_cost) * 100
       : 0;
 
   return (
     <div className="space-y-6">
       {/* KPI cards: Total Spend / Total Clusters / Total Users / Avg per cluster-day */}
+      {isMetricsLoading ? (
+        <KpiStripSkeleton />
+      ) : isMetricsError ? (
+        <ErrorState
+          message="Couldn't load all-purpose summary metrics. Please try again."
+          onRetry={() => refetchMetrics()}
+        />
+      ) : !metrics ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <Card>
+            <CardContent className="p-6">
+              <div className="text-center text-muted-foreground">
+                No all-purpose data available for the selected date range
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -195,6 +197,7 @@ export const AllPurposeSummaryCards = ({
           </CardContent>
         </Card>
       </div>
+      )}
 
       {/* Cost breakdown + top-5 highlight cards */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -204,6 +207,19 @@ export const AllPurposeSummaryCards = ({
             <CardTitle className="text-lg">Cost Breakdown</CardTitle>
           </CardHeader>
           <CardContent>
+            {isMetricsLoading ? (
+              <BreakdownSkeleton />
+            ) : isMetricsError ? (
+              <ErrorState
+                compact
+                message="Couldn't load cost breakdown."
+                onRetry={() => refetchMetrics()}
+              />
+            ) : !metrics ? (
+              <div className="text-center text-muted-foreground py-4 text-sm">
+                No data available
+              </div>
+            ) : (
             <div className="space-y-4">
               {showSegmented ? (
                 <>
@@ -311,7 +327,8 @@ export const AllPurposeSummaryCards = ({
                 </>
               )}
             </div>
-            {isAws && (
+            )}
+            {isAws && metrics && (
               <p className="text-xs text-muted-foreground mt-4 pt-3 border-t">
                 AWS shared infrastructure (S3, NAT, networking) is not
                 cluster-attributable and is excluded.
@@ -328,6 +345,12 @@ export const AllPurposeSummaryCards = ({
           <CardContent>
             {isTopClustersLoading ? (
               <TopListSkeleton />
+            ) : isTopClustersError ? (
+              <ErrorState
+                compact
+                message="Couldn't load top clusters."
+                onRetry={() => refetchTopClusters()}
+              />
             ) : topClusters && topClusters.length > 0 ? (
               <div className="space-y-3">
                 {topClusters.map((cluster, index) => {
@@ -382,6 +405,12 @@ export const AllPurposeSummaryCards = ({
           <CardContent>
             {isTopUsersLoading ? (
               <TopListSkeleton />
+            ) : isTopUsersError ? (
+              <ErrorState
+                compact
+                message="Couldn't load top users."
+                onRetry={() => refetchTopUsers()}
+              />
             ) : topUsers && topUsers.length > 0 ? (
               <div className="space-y-3">
                 {topUsers.map((user, index) => {
@@ -425,7 +454,7 @@ export const AllPurposeSummaryCards = ({
       </div>
 
       {/* Coverage banner only when min is suspiciously low */}
-      {metrics.min_cost_per_cluster_day === 0 && metrics.total_clusters > 0 && (
+      {metrics && metrics.min_cost_per_cluster_day === 0 && metrics.total_clusters > 0 && (
         <Card>
           <CardContent className="p-3">
             <div className="flex items-start gap-2 text-xs text-muted-foreground">
@@ -482,6 +511,35 @@ const TopListSkeleton = () => (
         <Skeleton className="h-4 w-[80px]" />
       </div>
     ))}
+  </div>
+);
+
+const KpiStripSkeleton = () => (
+  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+    {[...Array(4)].map((_, i) => (
+      <Card key={i}>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <Skeleton className="h-4 w-[100px]" />
+          <Skeleton className="h-4 w-4" />
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-8 w-[120px] mb-2" />
+          <Skeleton className="h-3 w-[80px]" />
+        </CardContent>
+      </Card>
+    ))}
+  </div>
+);
+
+const BreakdownSkeleton = () => (
+  <div className="space-y-4">
+    {[...Array(3)].map((_, i) => (
+      <div key={i} className="flex items-center justify-between">
+        <Skeleton className="h-4 w-[100px]" />
+        <Skeleton className="h-4 w-[80px]" />
+      </div>
+    ))}
+    <Skeleton className="h-2.5 w-full mt-3" />
   </div>
 );
 

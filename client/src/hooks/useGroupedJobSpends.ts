@@ -24,6 +24,14 @@ const fetchGroupedJobSpends = async (
     searchParams.append('job_name', params.job_name);
   }
 
+  if (params.sort_by) {
+    searchParams.append('sort_by', params.sort_by);
+  }
+
+  if (params.sort_dir) {
+    searchParams.append('sort_dir', params.sort_dir);
+  }
+
   const response = await fetch(
     `${API_BASE_URL}/grouped-job-spends?${searchParams}`,
     {
@@ -88,6 +96,8 @@ export const useGroupedJobSpends = (params: JobSpendFilter) => {
     params.end_date,
     params.per_page,
     params.job_name,
+    params.sort_by,
+    params.sort_dir,
   ]);
 
   return query;

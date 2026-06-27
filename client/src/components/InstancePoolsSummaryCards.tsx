@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState } from '@/components/ui/error-state';
 import {
   useInstancePoolSummary,
   useTopInstancePools,
@@ -65,63 +66,58 @@ export const InstancePoolsSummaryCards = ({
   const cloudLabel = isAws
     ? AWS_CLOUD_LABEL
     : `${cloudConfig?.compute_service || 'Cloud'} Cost`;
-  const { data: metrics, isLoading: isMetricsLoading } =
-    useInstancePoolSummary(dateRange);
-  const { data: topPools, isLoading: isTopPoolsLoading } = useTopInstancePools(
-    dateRange,
-    5,
-  );
+  const {
+    data: metrics,
+    isLoading: isMetricsLoading,
+    isError: isMetricsError,
+    refetch: refetchMetrics,
+  } = useInstancePoolSummary(dateRange);
+  const {
+    data: topPools,
+    isLoading: isTopPoolsLoading,
+    isError: isTopPoolsError,
+    refetch: refetchTopPools,
+  } = useTopInstancePools(dateRange, 5);
 
-  if (isMetricsLoading) {
-    return (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {[...Array(4)].map((_, i) => (
-          <Card key={i}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <Skeleton className="h-4 w-[100px]" />
-              <Skeleton className="h-4 w-4" />
-            </CardHeader>
-            <CardContent>
-              <Skeleton className="h-8 w-[120px] mb-2" />
-              <Skeleton className="h-3 w-[80px]" />
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-    );
-  }
-
-  if (!metrics) {
-    return (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card>
-          <CardContent className="p-6">
-            <div className="text-center text-muted-foreground">
-              No instance pool data available for the selected date range
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  const dailyAverageSpend =
-    metrics.total_spend / Math.max(metrics.date_range_days, 1);
-  const hasOrphanedPools = metrics.orphaned_pools > 0;
+  // Metrics-derived values are computed null-safely so the metrics-dependent
+  // sections (KPI strip + pool-metadata card) render skeletons/errors
+  // independently from the top-5 pools list below (poly3 — no whole-strip block).
+  const dailyAverageSpend = metrics
+    ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
+    : 0;
+  const hasOrphanedPools = !!metrics && metrics.orphaned_pools > 0;
 
   // CP8: pool EC2/EBS cloud cost is now joined into the rollup (plan §4.4),
   // so the headline is total spend (DBU + cloud), not DBU alone.
   // `total_cloud_cost` is NULL only when no pool-day in the window carries a
   // cloud row yet — surfaced as "—" + note, never a misleading $0 (plan §5).
-  const cloudCost = metrics.total_cloud_cost;
+  const cloudCost = metrics?.total_cloud_cost;
   const cloudPctOfTotal =
-    cloudCost != null && metrics.total_spend > 0
+    metrics && cloudCost != null && metrics.total_spend > 0
       ? formatPercent(cloudCost, metrics.total_spend)
       : null;
 
   return (
     <div className="space-y-6">
       {/* KPI cards: Total Spend / EC2-EBS cloud / Active Pools / Active Clusters */}
+      {isMetricsLoading ? (
+        <KpiStripSkeleton />
+      ) : isMetricsError ? (
+        <ErrorState
+          message="Couldn't load instance pool summary metrics. Please try again."
+          onRetry={() => refetchMetrics()}
+        />
+      ) : !metrics ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <Card>
+            <CardContent className="p-6">
+              <div className="text-center text-muted-foreground">
+                No instance pool data available for the selected date range
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -205,6 +201,7 @@ export const InstancePoolsSummaryCards = ({
           </CardContent>
         </Card>
       </div>
+      )}
 
       {/* Bottom strip: orphan pools card (left) + top-5 pools card (right) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -224,6 +221,25 @@ export const InstancePoolsSummaryCards = ({
             </CardTitle>
           </CardHeader>
           <CardContent>
+            {isMetricsLoading ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Skeleton className="h-4 w-[120px]" />
+                  <Skeleton className="h-8 w-[60px]" />
+                </div>
+                <Skeleton className="h-12 w-full mt-3" />
+              </div>
+            ) : isMetricsError ? (
+              <ErrorState
+                compact
+                message="Couldn't load pool metadata."
+                onRetry={() => refetchMetrics()}
+              />
+            ) : !metrics ? (
+              <div className="text-center text-muted-foreground py-4 text-sm">
+                No data available
+              </div>
+            ) : (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div className="text-sm text-muted-foreground">
@@ -261,6 +277,7 @@ export const InstancePoolsSummaryCards = ({
                 )}
               </div>
             </div>
+            )}
           </CardContent>
         </Card>
 
@@ -272,6 +289,12 @@ export const InstancePoolsSummaryCards = ({
           <CardContent>
             {isTopPoolsLoading ? (
               <TopListSkeleton />
+            ) : isTopPoolsError ? (
+              <ErrorState
+                compact
+                message="Couldn't load top pools."
+                onRetry={() => refetchTopPools()}
+              />
             ) : topPools && topPools.length > 0 ? (
               <div className="space-y-3">
                 {topPools.map((pool, index) => {
@@ -334,6 +357,23 @@ const TopListSkeleton = () => (
         <Skeleton className="h-4 w-[160px]" />
         <Skeleton className="h-4 w-[100px]" />
       </div>
+    ))}
+  </div>
+);
+
+const KpiStripSkeleton = () => (
+  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+    {[...Array(4)].map((_, i) => (
+      <Card key={i}>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <Skeleton className="h-4 w-[100px]" />
+          <Skeleton className="h-4 w-4" />
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-8 w-[120px] mb-2" />
+          <Skeleton className="h-3 w-[80px]" />
+        </CardContent>
+      </Card>
     ))}
   </div>
 );

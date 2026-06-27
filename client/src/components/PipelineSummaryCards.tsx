@@ -35,9 +35,10 @@ import {
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState } from '@/components/ui/error-state';
 import { Badge } from '@/components/ui/badge';
 import { usePipelineSummary, useTopPipelines } from '@/hooks/usePipelines';
-import { workloadBadgeClasses } from '@/lib/pipeline-display';
+import { formatCurrency, workloadBadgeClasses } from '@/lib/pipeline-display';
 import type { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
@@ -47,14 +48,10 @@ interface PipelineSummaryCardsProps {
   selectedWorkloads: string[];
 }
 
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
 const integerFormatter = new Intl.NumberFormat('en-US');
-const formatCurrency = (amount: number) => currencyFormatter.format(amount);
+// Composite key: `pipeline_id` alone can collide across workspaces (plan §2.2).
+const pkey = (p: { workspace_id?: string | null; pipeline_id: string }) =>
+  `${p.workspace_id ?? ''}:${p.pipeline_id}`;
 const formatNumber = (n: number) => integerFormatter.format(n);
 const formatPercent = (part: number, whole: number) =>
   whole > 0 ? `${Math.round((part / whole) * 100)}%` : '0%';
@@ -70,70 +67,46 @@ export const PipelineSummaryCards = ({
     : `${cloudConfig?.compute_service || 'Cloud'} Cost`;
   const workloadFilter =
     selectedWorkloads.length > 0 ? selectedWorkloads : undefined;
-  const { data: metrics, isLoading: isMetricsLoading } = usePipelineSummary(
-    dateRange,
-    workloadFilter,
-  );
-  const { data: topPipelines, isLoading: isTopLoading } = useTopPipelines(
-    dateRange,
-    5,
-    workloadFilter,
-  );
+  const {
+    data: metrics,
+    isLoading: isMetricsLoading,
+    isError: isMetricsError,
+    refetch: refetchMetrics,
+  } = usePipelineSummary(dateRange, workloadFilter);
+  const {
+    data: topPipelines,
+    isLoading: isTopLoading,
+    isError: isTopError,
+    refetch: refetchTop,
+  } = useTopPipelines(dateRange, 5, workloadFilter);
 
-  if (isMetricsLoading) {
-    return (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {[...Array(4)].map((_, i) => (
-          <Card key={i}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <Skeleton className="h-4 w-[100px]" />
-              <Skeleton className="h-4 w-4" />
-            </CardHeader>
-            <CardContent>
-              <Skeleton className="h-8 w-[120px] mb-2" />
-              <Skeleton className="h-3 w-[80px]" />
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-    );
-  }
-
-  if (!metrics) {
-    return (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card>
-          <CardContent className="p-6">
-            <div className="text-center text-muted-foreground">
-              No pipeline compute data available for the selected date range
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
+  // Metrics-derived values are computed null-safely so the metrics-dependent
+  // sections (KPI strip + compute-mode footnote + workload breakdown) render
+  // skeletons/errors independently from the top-5 list below (poly3 — no
+  // whole-strip block).
+  //
   // Whole-tab daily run-rate: total shown spend / days in the window. This is
   // NOT a per-pipeline-day average (the rollup carries no such field), so the
   // tile is labeled "Avg Daily Spend" to match its actual denominator.
-  const dailyAverageSpend =
-    metrics.total_spend / Math.max(metrics.date_range_days, 1);
+  const dailyAverageSpend = metrics
+    ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
+    : 0;
 
   // Sort the workload breakdown by $ descending so the dominant workload
   // leads — this is the line that proves "the total is NOT all DLT".
-  const workloadEntries = Object.entries(metrics.workload_breakdown).sort(
-    (a, b) => b[1] - a[1],
-  );
+  const workloadEntries = metrics
+    ? Object.entries(metrics.workload_breakdown).sort((a, b) => b[1] - a[1])
+    : [];
 
-  const hasMetadataGap = metrics.metadata_unavailable > 0;
+  const hasMetadataGap = !!metrics && metrics.metadata_unavailable > 0;
 
   // CP3: classic + mixed pipelines now carry EC2/EBS cloud cost, so the
   // headline is total spend (DBU + cloud), not DBU alone. `total_cloud_cost`
   // is NULL when every matched pipeline is fully serverless (no separate VM
   // line) — surfaced as "—" + note, not a misleading $0 (plan §5).
-  const cloudCost = metrics.total_cloud_cost;
+  const cloudCost = metrics?.total_cloud_cost;
   const cloudPctOfTotal =
-    cloudCost != null && metrics.total_spend > 0
+    metrics && cloudCost != null && metrics.total_spend > 0
       ? formatPercent(cloudCost, metrics.total_spend)
       : null;
 
@@ -141,6 +114,24 @@ export const PipelineSummaryCards = ({
     <div className="space-y-6">
       {/* KPI cards: Total Spend / EC2-EBS cloud / Pipelines /
           Metadata unavailable */}
+      {isMetricsLoading ? (
+        <KpiStripSkeleton />
+      ) : isMetricsError ? (
+        <ErrorState
+          message="Couldn't load pipeline compute summary metrics. Please try again."
+          onRetry={() => refetchMetrics()}
+        />
+      ) : !metrics ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <Card>
+            <CardContent className="p-6">
+              <div className="text-center text-muted-foreground">
+                No pipeline compute data available for the selected date range
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -235,11 +226,13 @@ export const PipelineSummaryCards = ({
           </CardContent>
         </Card>
       </div>
+      )}
 
       {/* Compute-mode $ split footnote — three buckets summing to total so the
           wording stays exact even when mixed rows exist (plan §3.2 / §5.3).
           CP3: classic/mixed now include EC2/EBS cloud cost; serverless is the
           full cost because its DBU rate already bundles infrastructure. */}
+      {metrics && (
       <Card>
         <CardContent className="p-4">
           <p className="text-xs text-muted-foreground leading-relaxed">
@@ -267,6 +260,7 @@ export const PipelineSummaryCards = ({
           </p>
         </CardContent>
       </Card>
+      )}
 
       {/* Bottom strip: workload breakdown (left) + top-5 pipelines (right) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -280,7 +274,19 @@ export const PipelineSummaryCards = ({
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {workloadEntries.length > 0 ? (
+            {isMetricsLoading ? (
+              <BreakdownSkeleton />
+            ) : isMetricsError ? (
+              <ErrorState
+                compact
+                message="Couldn't load workload breakdown."
+                onRetry={() => refetchMetrics()}
+              />
+            ) : !metrics ? (
+              <div className="text-center text-muted-foreground py-4 text-sm">
+                No data available
+              </div>
+            ) : workloadEntries.length > 0 ? (
               <div className="space-y-3">
                 {workloadEntries.map(([workload, cost]) => (
                   <div
@@ -324,6 +330,12 @@ export const PipelineSummaryCards = ({
           <CardContent>
             {isTopLoading ? (
               <TopListSkeleton />
+            ) : isTopError ? (
+              <ErrorState
+                compact
+                message="Couldn't load top pipelines."
+                onRetry={() => refetchTop()}
+              />
             ) : topPipelines && topPipelines.length > 0 ? (
               <div className="space-y-3">
                 {topPipelines.map((pipeline, index) => {
@@ -335,7 +347,7 @@ export const PipelineSummaryCards = ({
                     : `Pipeline ${pipeline.pipeline_id}`;
                   return (
                     <div
-                      key={pipeline.pipeline_id}
+                      key={pkey(pipeline)}
                       className="flex justify-between items-center gap-2"
                     >
                       <div className="flex items-center space-x-2 min-w-0">
@@ -392,6 +404,34 @@ const TopListSkeleton = () => (
       <div key={i} className="flex justify-between items-center">
         <Skeleton className="h-4 w-[160px]" />
         <Skeleton className="h-4 w-[100px]" />
+      </div>
+    ))}
+  </div>
+);
+
+const KpiStripSkeleton = () => (
+  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+    {[...Array(4)].map((_, i) => (
+      <Card key={i}>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <Skeleton className="h-4 w-[100px]" />
+          <Skeleton className="h-4 w-4" />
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-8 w-[120px] mb-2" />
+          <Skeleton className="h-3 w-[80px]" />
+        </CardContent>
+      </Card>
+    ))}
+  </div>
+);
+
+const BreakdownSkeleton = () => (
+  <div className="space-y-3">
+    {[...Array(4)].map((_, i) => (
+      <div key={i} className="flex items-center justify-between">
+        <Skeleton className="h-4 w-[80px]" />
+        <Skeleton className="h-4 w-[60px]" />
       </div>
     ))}
   </div>

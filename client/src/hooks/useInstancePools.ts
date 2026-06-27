@@ -93,6 +93,7 @@ export const useInstancePoolSummary = (dateRange: DateRange) => {
     queryKey: ['instance-pools-summary', dateRange],
     queryFn: () => apiClient.getInstancePoolSummary(dateRange),
     staleTime: STALE_TIME_MS,
+    refetchOnWindowFocus: false,
     enabled: !!(dateRange.start_date && dateRange.end_date),
   });
 };
@@ -108,6 +109,7 @@ export const useTopInstancePools = (
     queryKey: ['instance-pools-top-pools', dateRange, limit],
     queryFn: () => apiClient.getTopInstancePools(dateRange, limit),
     staleTime: STALE_TIME_MS,
+    refetchOnWindowFocus: false,
     enabled: !!(dateRange.start_date && dateRange.end_date),
   });
 };

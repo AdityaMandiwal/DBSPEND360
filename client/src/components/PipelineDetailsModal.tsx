@@ -45,6 +45,9 @@ import {
   costBasisCaveat,
   workloadBadgeClasses,
 } from '@/lib/pipeline-display';
+import { ApiError } from '@/lib/api-client';
+import { closeOnly, formatCalendarDate } from '@/lib/utils';
+import { AnalysisMarkdown } from './AnalysisMarkdown';
 
 interface PipelineDetailsModalProps {
   pipelineId: string;
@@ -54,18 +57,16 @@ interface PipelineDetailsModalProps {
   onClose: () => void;
 }
 
-const formatDeleteDate = (dateStr?: string | null): string | null => {
-  if (!dateStr) return null;
-  try {
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  } catch {
-    return dateStr;
-  }
-};
+// `pipeline_deleted_at` is a timestamp; `formatCalendarDate` renders its LOCAL
+// calendar day so the banner never shows the wrong date on negative-UTC zones.
+const formatDeleteDate = (dateStr?: string | null): string | null =>
+  dateStr
+    ? formatCalendarDate(dateStr, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      })
+    : null;
 
 export const PipelineDetailsModal = ({
   pipelineId,
@@ -78,17 +79,30 @@ export const PipelineDetailsModal = ({
     isLoading: detailsLoading,
     error: detailsError,
   } = usePipelineDetails(pipelineId, workspaceId);
+  // Only fire the (LLM-charging) analysis once details resolve successfully,
+  // so an ambiguous (409) or failed pipeline never charges analysis
+  // (plan §7.1).
+  const detailsResolved = !!details && !detailsError;
   const {
     data: analysis,
     isLoading: analysisLoading,
     error: analysisError,
-  } = usePipelineAnalysis(pipelineId, workspaceId);
+  } = usePipelineAnalysis(pipelineId, workspaceId, {
+    enabled: detailsResolved,
+  });
+
+  // A 409 means the pipeline_id spans >1 workspace and no workspace_id was
+  // supplied — render a disambiguation hint rather than a raw error. The
+  // table always passes workspace_id, so this is an edge case (e.g. a
+  // deep-link), but we still want it to be self-explanatory (plan §7.1).
+  const isAmbiguous =
+    detailsError instanceof ApiError && detailsError.status === 409;
 
   const deletedDateLabel = formatDeleteDate(details?.pipeline_deleted_at);
   const caveat = costBasisCaveat(details?.cost_basis);
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={closeOnly(onClose)}>
       <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-xl font-semibold flex items-center gap-2">
@@ -98,14 +112,30 @@ export const PipelineDetailsModal = ({
         </DialogHeader>
 
         {detailsError ? (
-          <div className="text-center py-8">
-            <div className="text-red-600 font-medium mb-2">
-              Error loading pipeline details
+          isAmbiguous ? (
+            <div className="mx-auto max-w-lg py-8 space-y-3 text-center">
+              <FileQuestion className="mx-auto h-8 w-8 text-muted-foreground" />
+              <div className="font-medium text-foreground">
+                This pipeline ID exists in more than one workspace
+              </div>
+              <div className="text-sm text-muted-foreground">
+                {detailsError.message}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Open the pipeline from its row in the table (which carries the
+                workspace) to see its configuration and analysis.
+              </div>
             </div>
-            <div className="text-sm text-muted-foreground">
-              {detailsError.message}
+          ) : (
+            <div className="text-center py-8">
+              <div className="text-red-600 font-medium mb-2">
+                Error loading pipeline details
+              </div>
+              <div className="text-sm text-muted-foreground">
+                {detailsError.message}
+              </div>
             </div>
-          </div>
+          )
         ) : detailsLoading ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 py-6">
             <div className="space-y-4">
@@ -384,29 +414,7 @@ export const PipelineDetailsModal = ({
                       </div>
                     ) : analysis ? (
                       <div className="space-y-4">
-                        <div className="prose prose-sm max-w-none">
-                          <div
-                            className="text-sm leading-relaxed whitespace-pre-line"
-                            // Same lightweight markdown massage as the other
-                            // analysis modals so the surfaces feel consistent
-                            // without adding a markdown renderer dependency.
-                            dangerouslySetInnerHTML={{
-                              __html: analysis.analysis
-                                .replace(
-                                  /\*\*(.*?)\*\*/g,
-                                  '<strong>$1</strong>',
-                                )
-                                .replace(
-                                  /### (.*?)$/gm,
-                                  '<h3 class="font-semibold text-base mb-2 mt-4">$1</h3>',
-                                )
-                                .replace(
-                                  /## (.*?)$/gm,
-                                  '<h2 class="font-bold text-lg mb-3 mt-4">$1</h2>',
-                                ),
-                            }}
-                          />
-                        </div>
+                        <AnalysisMarkdown>{analysis.analysis}</AnalysisMarkdown>
                         <div className="text-xs text-muted-foreground border-t pt-2">
                           Generated on{' '}
                           {new Date(analysis.timestamp).toLocaleDateString(

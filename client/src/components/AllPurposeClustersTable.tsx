@@ -47,6 +47,7 @@ import {
   useIsSegmentedPlatform,
   AWS_CLOUD_LABEL,
 } from '@/hooks/useCloudGate';
+import { formatCalendarDate } from '@/lib/utils';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 import { ClusterDetailsModal } from './JobBreakdownModal';
 
@@ -121,17 +122,9 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
 });
 const formatCurrency = (amount: number) => currencyFormatter.format(amount);
 
-const formatDate = (dateStr: string) => {
-  try {
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  } catch {
-    return dateStr;
-  }
-};
+// `usage_date` is a calendar date (YYYY-MM-DD); `formatCalendarDate` anchors it
+// to local midnight so it never rolls back a day on negative-UTC zones.
+const formatDate = (dateStr: string) => formatCalendarDate(dateStr);
 
 const PAGE_SIZE = 25;
 
@@ -270,12 +263,13 @@ export const AllPurposeClustersTable = ({
                           size="sm"
                           onClick={() => toggleRow(cluster.cluster_id)}
                           className="h-8 w-8 p-0"
+                          aria-expanded={isExpanded}
                           aria-label={isExpanded ? 'Collapse row' : 'Expand row'}
                         >
                           {isExpanded ? (
-                            <ChevronDown className="h-4 w-4" />
+                            <ChevronDown className="h-4 w-4" aria-hidden="true" />
                           ) : (
-                            <ChevronRightIcon className="h-4 w-4" />
+                            <ChevronRightIcon className="h-4 w-4" aria-hidden="true" />
                           )}
                         </Button>
                       </TableCell>
@@ -357,17 +351,19 @@ export const AllPurposeClustersTable = ({
                             AWS/Unknown (D7) — only segmented platforms expose it. */}
                         {isSegmentedPlatform &&
                           (cluster.total_other_cost ?? 0) > 0 && (
-                            <div
+                            <button
+                              type="button"
                               className="text-xs text-muted-foreground cursor-pointer hover:text-foreground inline-flex items-center gap-0.5 ml-1"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setOtherBreakdownCluster(cluster.cluster_id);
                               }}
                               title="Click to view breakdown of unclassified costs"
+                              aria-label="View breakdown of unclassified costs"
                             >
                               (+{formatCurrency(cluster.total_other_cost ?? 0)}{' '}
-                              other <Search className="h-2.5 w-2.5" />)
-                            </div>
+                              other <Search className="h-2.5 w-2.5" aria-hidden="true" />)
+                            </button>
                           )}
                       </TableCell>
                       <TableCell className="px-4 text-right font-medium text-red-600">

@@ -32,7 +32,7 @@ from server.services.databricks_service import DatabricksService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/all-purpose", tags=["all-purpose"])
+router = APIRouter(prefix='/api/all-purpose', tags=['all-purpose'])
 
 
 # Lazy initialization mirrors the pattern in `dashboard.py` so we share the
@@ -61,14 +61,14 @@ def _validate_date_range(start_date: date, end_date: date) -> None:
     if start_date > end_date:
         raise HTTPException(
             status_code=400,
-            detail="Start date must be before or equal to end date",
+            detail='Start date must be before or equal to end date',
         )
 
 
-@router.get("/summary", response_model=AllPurposeSummaryMetrics)
+@router.get('/summary', response_model=AllPurposeSummaryMetrics)
 async def get_all_purpose_summary(
-    start_date: date = Query(..., description="Start date for summary (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date for summary (YYYY-MM-DD)"),
+    start_date: date = Query(..., description='Start date for summary (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date for summary (YYYY-MM-DD)'),
 ):
     """Get KPI summary metrics for the All-Purpose tab.
 
@@ -86,24 +86,24 @@ async def get_all_purpose_summary(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving all-purpose summary metrics")
+    except Exception:
+        logger.exception('Error retrieving all-purpose summary metrics')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving all-purpose summary metrics: {str(e)}",
+            detail='Failed to retrieve all-purpose summary metrics',
         )
 
 
-@router.get("/grouped-by-cluster", response_model=PaginatedAllPurposeClusters)
+@router.get('/grouped-by-cluster', response_model=PaginatedAllPurposeClusters)
 async def get_all_purpose_grouped_by_cluster(
-    start_date: date = Query(..., description="Start date for filtering (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date for filtering (YYYY-MM-DD)"),
+    start_date: date = Query(..., description='Start date for filtering (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date for filtering (YYYY-MM-DD)'),
     search: Optional[str] = Query(
         None,
-        description="Optional free-text filter matched against cluster_name, cluster_id, and owner_user_id",
+        description='Optional free-text filter matched against cluster_name, cluster_id, and owner_user_id',
     ),
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(50, ge=1, le=1000, description="Items per page"),
+    page: int = Query(1, ge=1, description='Page number'),
+    per_page: int = Query(50, ge=1, le=1000, description='Items per page'),
 ):
     """Get paginated By-Cluster all-purpose spend, with per-day drill-down.
 
@@ -125,24 +125,24 @@ async def get_all_purpose_grouped_by_cluster(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving all-purpose grouped-by-cluster data")
+    except Exception:
+        logger.exception('Error retrieving all-purpose grouped-by-cluster data')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving all-purpose grouped-by-cluster data: {str(e)}",
+            detail='Failed to retrieve all-purpose grouped-by-cluster data',
         )
 
 
-@router.get("/grouped-by-user", response_model=PaginatedAllPurposeUsers)
+@router.get('/grouped-by-user', response_model=PaginatedAllPurposeUsers)
 async def get_all_purpose_grouped_by_user(
-    start_date: date = Query(..., description="Start date for filtering (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date for filtering (YYYY-MM-DD)"),
+    start_date: date = Query(..., description='Start date for filtering (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date for filtering (YYYY-MM-DD)'),
     search: Optional[str] = Query(
         None,
-        description="Optional free-text filter matched against user_id (case-insensitive)",
+        description='Optional free-text filter matched against user_id (case-insensitive)',
     ),
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(50, ge=1, le=1000, description="Items per page"),
+    page: int = Query(1, ge=1, description='Page number'),
+    per_page: int = Query(50, ge=1, le=1000, description='Items per page'),
 ):
     """Get paginated By-User all-purpose spend (chargeback view).
 
@@ -164,19 +164,19 @@ async def get_all_purpose_grouped_by_user(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving all-purpose grouped-by-user data")
+    except Exception:
+        logger.exception('Error retrieving all-purpose grouped-by-user data')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving all-purpose grouped-by-user data: {str(e)}",
+            detail='Failed to retrieve all-purpose grouped-by-user data',
         )
 
 
-@router.get("/top-clusters", response_model=list[GroupedAllPurposeCluster])
+@router.get('/top-clusters', response_model=list[GroupedAllPurposeCluster])
 async def get_all_purpose_top_clusters(
-    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
-    limit: int = Query(5, ge=1, le=20, description="Number of top clusters to return"),
+    start_date: date = Query(..., description='Start date (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date (YYYY-MM-DD)'),
+    limit: int = Query(5, ge=1, le=20, description='Number of top clusters to return'),
 ):
     """Get the top N most expensive all-purpose clusters in the window.
 
@@ -195,19 +195,19 @@ async def get_all_purpose_top_clusters(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving all-purpose top clusters")
+    except Exception:
+        logger.exception('Error retrieving all-purpose top clusters')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving all-purpose top clusters: {str(e)}",
+            detail='Failed to retrieve all-purpose top clusters',
         )
 
 
-@router.get("/top-users", response_model=list[GroupedAllPurposeUser])
+@router.get('/top-users', response_model=list[GroupedAllPurposeUser])
 async def get_all_purpose_top_users(
-    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
-    limit: int = Query(5, ge=1, le=20, description="Number of top users to return"),
+    start_date: date = Query(..., description='Start date (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date (YYYY-MM-DD)'),
+    limit: int = Query(5, ge=1, le=20, description='Number of top users to return'),
 ):
     """Get the top N most expensive all-purpose users in the window.
 
@@ -225,15 +225,15 @@ async def get_all_purpose_top_users(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error retrieving all-purpose top users")
+    except Exception:
+        logger.exception('Error retrieving all-purpose top users')
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving all-purpose top users: {str(e)}",
+            detail='Failed to retrieve all-purpose top users',
         )
 
 
-@router.get("/health")
+@router.get('/health')
 async def all_purpose_health():
     """Health-check endpoint for the All-Purpose router.
 
@@ -242,4 +242,4 @@ async def all_purpose_health():
     returns the static index.html instead of JSON, the include order is
     wrong.
     """
-    return {"status": "healthy", "service": "all-purpose"}
+    return {'status': 'healthy', 'service': 'all-purpose'}

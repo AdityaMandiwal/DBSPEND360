@@ -15,6 +15,7 @@ import {
   ChevronRight,
   ChevronRight as ChevronRightIcon,
   Eye,
+  Search,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -41,6 +42,7 @@ import {
   AWS_CLOUD_LABEL,
 } from '@/hooks/useCloudGate';
 import { ClusterDetailsModal } from './JobBreakdownModal';
+import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 
 interface AllPurposeUsersTableProps {
   dateRange: DateRange;
@@ -68,6 +70,9 @@ export const AllPurposeUsersTable = ({
   const [page, setPage] = useState(1);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [activeClusterModal, setActiveClusterModal] = useState<string | null>(null);
+  const [otherBreakdownCluster, setOtherBreakdownCluster] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     setPage(1);
@@ -175,12 +180,13 @@ export const AllPurposeUsersTable = ({
                           size="sm"
                           onClick={() => toggleRow(user.user_id)}
                           className="h-8 w-8 p-0"
+                          aria-expanded={isExpanded}
                           aria-label={isExpanded ? 'Collapse row' : 'Expand row'}
                         >
                           {isExpanded ? (
-                            <ChevronDown className="h-4 w-4" />
+                            <ChevronDown className="h-4 w-4" aria-hidden="true" />
                           ) : (
-                            <ChevronRightIcon className="h-4 w-4" />
+                            <ChevronRightIcon className="h-4 w-4" aria-hidden="true" />
                           )}
                         </Button>
                       </TableCell>
@@ -258,6 +264,7 @@ export const AllPurposeUsersTable = ({
                                 : cloudConfig?.compute_service || 'Cloud'
                             }
                             onSelectCluster={setActiveClusterModal}
+                            onSelectOther={setOtherBreakdownCluster}
                           />
                         </TableCell>
                       </TableRow>
@@ -325,6 +332,18 @@ export const AllPurposeUsersTable = ({
           clusterKind="all_purpose"
         />
       )}
+
+      {/* Other-cost breakdown modal — only mounted for segmented platforms;
+          its only trigger (the per-cluster "Other" line) is rendered only on
+          Azure/GCP, matching the By-Cluster table (D7 / plan §5.4). */}
+      {isSegmentedPlatform && otherBreakdownCluster && (
+        <OtherCostBreakdownModal
+          dateRange={dateRange}
+          clusterId={otherBreakdownCluster}
+          isOpen
+          onClose={() => setOtherBreakdownCluster(null)}
+        />
+      )}
     </div>
   );
 };
@@ -338,12 +357,14 @@ const UserClusterBreakdown = ({
   isSegmentedPlatform,
   computeLabel,
   onSelectCluster,
+  onSelectOther,
 }: {
   user: GroupedAllPurposeUser;
   workspaceHost: string | null;
   isSegmentedPlatform: boolean;
   computeLabel: string;
   onSelectCluster: (clusterId: string) => void;
+  onSelectOther: (clusterId: string) => void;
 }) => {
   if (user.clusters.length === 0) {
     return (
@@ -430,9 +451,16 @@ const UserClusterBreakdown = ({
                         Network: {formatCurrency(cluster.network_cost ?? 0)}
                       </div>
                       {(cluster.other_cost ?? 0) > 0 && (
-                        <div className="text-sm text-muted-foreground">
-                          Other: {formatCurrency(cluster.other_cost ?? 0)}
-                        </div>
+                        <button
+                          type="button"
+                          className="text-sm text-muted-foreground cursor-pointer hover:text-foreground inline-flex items-center gap-0.5"
+                          onClick={() => onSelectOther(cluster.cluster_id)}
+                          title="Click to view breakdown of unclassified costs"
+                          aria-label="View breakdown of unclassified costs"
+                        >
+                          Other: {formatCurrency(cluster.other_cost ?? 0)}{' '}
+                          <Search className="h-2.5 w-2.5" aria-hidden="true" />
+                        </button>
                       )}
                     </>
                   ) : (
