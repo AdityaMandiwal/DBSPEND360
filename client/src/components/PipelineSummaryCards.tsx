@@ -170,7 +170,7 @@ export const PipelineSummaryCards = ({
               <>
                 <div
                   className="text-2xl font-bold text-muted-foreground cursor-help"
-                  title="No matched pipeline carries a separate VM line in this window — serverless DBU already bundles infrastructure cost (plan §5)."
+                  title="No matched pipeline carries a separate VM line in this window — serverless DBU already bundles infrastructure cost."
                 >
                   —
                 </div>
@@ -216,7 +216,7 @@ export const PipelineSummaryCards = ({
               className={`text-2xl font-bold ${
                 hasMetadataGap ? 'text-amber-600' : 'text-muted-foreground'
               }`}
-              title="DLT / DBSQL MV / Online Table pipelines that should carry a system.lakeflow.pipelines snapshot but don't. Vector Search etc. are excluded — they never carry metadata, so their absence is expected (plan §3.5)."
+              title="DLT / DBSQL MV / Online Table pipelines that should carry a system.lakeflow.pipelines snapshot but don't. Vector Search etc. are excluded — they never carry metadata, so their absence is expected."
             >
               {formatNumber(metrics.metadata_unavailable)}
             </div>

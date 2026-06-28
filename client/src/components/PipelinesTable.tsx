@@ -28,6 +28,7 @@ import {
   Info,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ErrorState } from '@/components/ui/error-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -150,7 +151,7 @@ export const PipelinesTable = ({
     selectedWorkloads.join(','),
   ]);
 
-  const { data, isLoading, isFetching, error } = usePipelines({
+  const { data, isLoading, isFetching, error, refetch } = usePipelines({
     start_date: dateRange.start_date,
     end_date: dateRange.end_date,
     search: searchTerm || undefined,
@@ -205,12 +206,11 @@ export const PipelinesTable = ({
             {error ? (
               <TableRow>
                 <TableCell colSpan={columnCount} className="h-24 text-center">
-                  <div className="text-red-600 font-medium mb-1">
-                    Error loading pipeline compute data
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    {error.message}
-                  </div>
+                  <ErrorState
+                    compact
+                    message={`Error loading pipeline compute data: ${error.message}`}
+                    onRetry={() => refetch()}
+                  />
                 </TableCell>
               </TableRow>
             ) : isInitialLoading ? (

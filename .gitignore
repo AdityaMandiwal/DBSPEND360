@@ -120,7 +120,7 @@ celerybeat.pid
 
 # Environments
 .env
-#.env.local
+.env.local
 .venv
 env/
 venv/
@@ -228,7 +228,7 @@ web_modules/
 .env.development.local
 .env.test.local
 .env.production.local
-#.env.local
+.env.local
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

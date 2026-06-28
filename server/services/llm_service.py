@@ -17,6 +17,23 @@ from server.services.databricks_service import LOOKBACK_DAYS
 logger = logging.getLogger(__name__)
 
 # --- Model parameters ---
+# Single source of truth for the foundation model the app calls. The UI reads
+# the human-readable label from /api/ai-info instead of hard-coding it, so
+# swapping the model here updates every "Powered by ..." badge automatically.
+DEFAULT_MODEL_NAME = 'databricks-claude-sonnet-4'
+
+
+def model_display_label(model_name: str) -> str:
+    """Turn a serving-endpoint name into a UI label.
+
+    e.g. ``databricks-claude-sonnet-4`` -> ``Claude Sonnet 4``.
+    """
+    name = model_name
+    if name.startswith('databricks-'):
+        name = name[len('databricks-') :]
+    return ' '.join(part.capitalize() for part in name.split('-') if part)
+
+
 LLM_TEMPERATURE = 0.2
 JOB_MAX_TOKENS = 600
 CLUSTER_MAX_TOKENS = 700
@@ -386,7 +403,7 @@ class LLMService:
                 "Either DATABRICKS_CLIENT_ID (for OAuth) or both "
                 "DATABRICKS_HOST and DATABRICKS_TOKEN (for PAT) must be set"
             )
-        self.model_name = "databricks-claude-sonnet-4"
+        self.model_name = DEFAULT_MODEL_NAME
 
     # ------------------------------------------------------------------
     # Public analysis methods

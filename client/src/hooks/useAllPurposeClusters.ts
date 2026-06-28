@@ -14,6 +14,7 @@ import {
   type QueryKey,
 } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
+import { canQueryRange } from '@/lib/utils';
 import type { DateRange } from '@/types/job-spend';
 import type {
   AllPurposeFilter,
@@ -47,7 +48,7 @@ export const useAllPurposeClustersByCluster = (params: AllPurposeFilter) => {
     placeholderData: keepPreviousData,
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    enabled: !!(params.start_date && params.end_date),
+    enabled: canQueryRange(params.start_date, params.end_date),
   });
 
   const totalPages = query.data?.total_pages ?? 0;
@@ -93,7 +94,7 @@ export const useAllPurposeClustersByUser = (params: AllPurposeFilter) => {
     placeholderData: keepPreviousData,
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    enabled: !!(params.start_date && params.end_date),
+    enabled: canQueryRange(params.start_date, params.end_date),
   });
 
   const totalPages = query.data?.total_pages ?? 0;
@@ -135,7 +136,7 @@ export const useAllPurposeSummary = (dateRange: DateRange) => {
     queryFn: () => apiClient.getAllPurposeSummaryMetrics(dateRange),
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    enabled: !!(dateRange.start_date && dateRange.end_date),
+    enabled: canQueryRange(dateRange.start_date, dateRange.end_date),
   });
 };
 
@@ -150,7 +151,7 @@ export const useAllPurposeTopClusters = (
     queryFn: () => apiClient.getAllPurposeTopClusters(dateRange, limit),
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    enabled: !!(dateRange.start_date && dateRange.end_date),
+    enabled: canQueryRange(dateRange.start_date, dateRange.end_date),
   });
 };
 
@@ -165,6 +166,6 @@ export const useAllPurposeTopUsers = (
     queryFn: () => apiClient.getAllPurposeTopUsers(dateRange, limit),
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    enabled: !!(dateRange.start_date && dateRange.end_date),
+    enabled: canQueryRange(dateRange.start_date, dateRange.end_date),
   });
 };

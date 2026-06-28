@@ -58,9 +58,9 @@ const InstancePoolsDashboard = () => {
           </p>
           <p className="text-xs text-muted-foreground mt-2">
             Total Cost combines pool DBU and EC2/EBS VM cost (idle + active),
-            joined from the pool cloud-cost explorer. The idle-vs-active split
-            is a follow-up. Pool spend may overlap with the Job Clusters and
-            All-Purpose tabs — see README for the three-lens cost model.
+            joined from the pool cloud-cost explorer. Pool spend may overlap
+            with the Job Clusters and All-Purpose tabs — the same compute is
+            shown through different lenses, so the tabs are not meant to sum.
           </p>
         </CardHeader>
         <CardContent>

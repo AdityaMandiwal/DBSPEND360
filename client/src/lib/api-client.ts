@@ -135,6 +135,12 @@ class ApiClient {
     return this.fetchApi<CloudPlatformConfig>('/cloud-platform');
   }
 
+  // Active AI model, so the "Powered by ..." badges aren't hard-coded.
+  // `model_label` is a human-readable name (e.g. "Claude Sonnet 4").
+  async getAiInfo(): Promise<{ model_name: string; model_label: string }> {
+    return this.fetchApi<{ model_name: string; model_label: string }>('/ai-info');
+  }
+
   async getOtherCostBreakdown(
     dateRange: DateRange,
     clusterId?: string,

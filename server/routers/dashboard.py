@@ -681,3 +681,19 @@ async def get_cloud_platform_config():
             detail='Failed to retrieve cloud platform configuration'
         )
 
+
+@router.get('/ai-info')
+async def get_ai_info():
+    """Expose the active AI model so the UI doesn't hard-code its name.
+
+    Returns the raw serving-endpoint name plus a human-readable label used by
+    the "Powered by ..." badges on the analysis panels. Kept lightweight (no
+    LLMService instantiation) so it never depends on credentials being set.
+    """
+    from server.services.llm_service import DEFAULT_MODEL_NAME, model_display_label
+
+    return {
+        'model_name': DEFAULT_MODEL_NAME,
+        'model_label': model_display_label(DEFAULT_MODEL_NAME),
+    }
+

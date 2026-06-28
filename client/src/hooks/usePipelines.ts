@@ -15,6 +15,7 @@ import {
   type QueryKey,
 } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
+import { canQueryRange } from '@/lib/utils';
 import type { DateRange } from '@/types/job-spend';
 import type { PipelineFilter, PaginatedPipelines } from '@/types/pipeline';
 
@@ -46,7 +47,7 @@ export const usePipelines = (params: PipelineFilter) => {
     placeholderData: keepPreviousData,
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    enabled: !!(params.start_date && params.end_date),
+    enabled: canQueryRange(params.start_date, params.end_date),
   });
 
   const totalPages = query.data?.total_pages ?? 0;
@@ -96,7 +97,7 @@ export const usePipelineSummary = (
     queryFn: () => apiClient.getPipelineSummary(dateRange, workloadType),
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    enabled: !!(dateRange.start_date && dateRange.end_date),
+    enabled: canQueryRange(dateRange.start_date, dateRange.end_date),
   });
 };
 
@@ -114,7 +115,7 @@ export const useTopPipelines = (
     queryFn: () => apiClient.getTopPipelines(dateRange, limit, workloadType),
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    enabled: !!(dateRange.start_date && dateRange.end_date),
+    enabled: canQueryRange(dateRange.start_date, dateRange.end_date),
   });
 };
 

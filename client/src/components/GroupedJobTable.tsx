@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-table';
 import { ArrowUpDown, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon, Eye, Loader2, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ErrorState } from '@/components/ui/error-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -222,7 +223,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
   const sortBy = activeSort?.id ?? 'total_cost';
   const sortDir: 'asc' | 'desc' = activeSort ? (activeSort.desc ? 'desc' : 'asc') : 'desc';
 
-  const { data, isLoading, isFetching, error } = useGroupedJobSpends({
+  const { data, isLoading, isFetching, error, refetch } = useGroupedJobSpends({
     start_date: dateRange.start_date,
     end_date: dateRange.end_date,
     job_name: jobFilter || undefined,
@@ -553,12 +554,11 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-64 border border-dashed border-red-200 dark:border-red-500/40 rounded-lg">
-        <div className="text-center">
-          <div className="text-red-600 font-medium mb-2">Error loading job data</div>
-          <div className="text-sm text-muted-foreground">{error.message}</div>
-        </div>
-      </div>
+      <ErrorState
+        className="h-64"
+        message={`Error loading job data: ${error.message}`}
+        onRetry={() => refetch()}
+      />
     );
   }
 

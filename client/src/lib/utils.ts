@@ -67,6 +67,13 @@ export function isInvalidDateRange(
   return !!startDate && !!endDate && startDate > endDate;
 }
 
+// A range is safe to query only when both ends are present AND not inverted
+// (start <= end). React Query `enabled` clauses use this so an inverted range
+// never fires a request the API would reject with a 400 (plan §8 poly5).
+export function canQueryRange(startDate?: string, endDate?: string): boolean {
+  return !!(startDate && endDate) && !isInvalidDateRange(startDate, endDate);
+}
+
 // Radix `Dialog`/`Sheet` `onOpenChange` passes a boolean; callers usually only
 // want to fire their close handler when the surface is closing. This adapts a
 // plain `() => void` close callback to the boolean signature safely.
