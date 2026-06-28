@@ -45,6 +45,7 @@ import {
   costBasisCaveat,
   workloadBadgeClasses,
 } from '@/lib/pipeline-display';
+import { useAiModelLabel } from '@/hooks/useJobSpends';
 import { ApiError } from '@/lib/api-client';
 import { closeOnly, formatCalendarDate } from '@/lib/utils';
 import { AnalysisMarkdown } from './AnalysisMarkdown';
@@ -83,6 +84,7 @@ export const PipelineDetailsModal = ({
   // so an ambiguous (409) or failed pipeline never charges analysis
   // (plan §7.1).
   const detailsResolved = !!details && !detailsError;
+  const aiModelLabel = useAiModelLabel();
   const {
     data: analysis,
     isLoading: analysisLoading,
@@ -385,7 +387,7 @@ export const PipelineDetailsModal = ({
                       <Brain className="mr-2 h-5 w-5 text-purple-600" />
                       AI Pipeline Analysis
                       <Badge variant="secondary" className="ml-2 text-xs">
-                        Powered by Claude Sonnet 4
+                        Powered by {aiModelLabel}
                       </Badge>
                     </CardTitle>
                   </CardHeader>

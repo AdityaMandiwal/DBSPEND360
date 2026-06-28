@@ -24,6 +24,7 @@ import {
   Search,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ErrorState } from '@/components/ui/error-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -150,7 +151,7 @@ export const AllPurposeClustersTable = ({
     setPage(1);
   }, [searchTerm, dateRange.start_date, dateRange.end_date]);
 
-  const { data, isLoading, isFetching, error } = useAllPurposeClustersByCluster({
+  const { data, isLoading, isFetching, error, refetch } = useAllPurposeClustersByCluster({
     start_date: dateRange.start_date,
     end_date: dateRange.end_date,
     search: searchTerm || undefined,
@@ -226,12 +227,11 @@ export const AllPurposeClustersTable = ({
             {error ? (
               <TableRow>
                 <TableCell colSpan={columnCount + 1} className="h-24 text-center">
-                  <div className="text-red-600 font-medium mb-1">
-                    Error loading all-purpose cluster data
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    {error.message}
-                  </div>
+                  <ErrorState
+                    compact
+                    message={`Error loading all-purpose cluster data: ${error.message}`}
+                    onRetry={() => refetch()}
+                  />
                 </TableCell>
               </TableRow>
             ) : isInitialLoading ? (

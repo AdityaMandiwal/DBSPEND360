@@ -156,7 +156,7 @@ export const InstancePoolsSummaryCards = ({
               <>
                 <div
                   className="text-2xl font-bold text-muted-foreground cursor-help"
-                  title="No pool-tag cloud row landed in this window — confirm the DatabricksInstancePoolId tag is enabled and Cost Explorer has caught up (plan §5)."
+                  title="No pool-tag cloud row landed in this window — confirm the DatabricksInstancePoolId tag is enabled and Cost Explorer has caught up."
                 >
                   —
                 </div>

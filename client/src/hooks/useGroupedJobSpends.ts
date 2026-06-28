@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-query';
 import type { PaginatedGroupedJobs, JobSpendFilter } from '@/types/job-spend';
 import { API_BASE_URL } from '@/lib/api-config';
+import { canQueryRange } from '@/lib/utils';
 
 const STALE_TIME_MS = 5 * 60 * 1000;
 
@@ -64,6 +65,8 @@ export const useGroupedJobSpends = (params: JobSpendFilter) => {
     placeholderData: keepPreviousData,
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
+    // Don't fire on an inverted range (start > end) — the API would 400.
+    enabled: canQueryRange(params.start_date, params.end_date),
   });
 
   // Prefetch adjacent pages so Next/Previous clicks feel instant.

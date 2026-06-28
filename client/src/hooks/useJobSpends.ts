@@ -1,13 +1,27 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
+import { canQueryRange } from '@/lib/utils';
 import { JobSpendFilter, DateRange, OtherCostBreakdownResponse, CoverageTrendResponse } from '@/types/job-spend';
+
+// Resolves the active AI model's display label from /api/ai-info so the
+// "Powered by ..." badges aren't hard-coded. Falls back to "Claude Sonnet 4"
+// while loading or if the endpoint is unavailable, so the badge always renders.
+export const useAiModelLabel = (): string => {
+  const { data } = useQuery({
+    queryKey: ['ai-info'],
+    queryFn: () => apiClient.getAiInfo(),
+    staleTime: Infinity,
+    retry: false,
+  });
+  return data?.model_label ?? 'Claude Sonnet 4';
+};
 
 export const useJobSpends = (filter: JobSpendFilter) => {
   return useQuery({
     queryKey: ['job-spends', filter],
     queryFn: () => apiClient.getJobSpends(filter),
     staleTime: 5 * 60 * 1000, // 5 minutes
-    enabled: !!(filter.start_date && filter.end_date),
+    enabled: canQueryRange(filter.start_date, filter.end_date),
   });
 };
 
@@ -17,7 +31,7 @@ export const useSummaryMetrics = (dateRange: DateRange) => {
     queryFn: () => apiClient.getSummaryMetrics(dateRange),
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
-    enabled: !!(dateRange.start_date && dateRange.end_date),
+    enabled: canQueryRange(dateRange.start_date, dateRange.end_date),
   });
 };
 
@@ -70,7 +84,7 @@ export const useTopJobs = (dateRange: DateRange, limit: number = 5) => {
     queryFn: () => apiClient.getTopJobs(dateRange, limit),
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
-    enabled: !!(dateRange.start_date && dateRange.end_date),
+    enabled: canQueryRange(dateRange.start_date, dateRange.end_date),
   });
 };
 
@@ -91,7 +105,7 @@ export const useOtherCostBreakdown = (
     queryKey: ['other-cost-breakdown', dateRange, clusterId],
     queryFn: () => apiClient.getOtherCostBreakdown(dateRange, clusterId),
     staleTime: 5 * 60 * 1000,
-    enabled: enabled && !!(dateRange.start_date && dateRange.end_date),
+    enabled: enabled && canQueryRange(dateRange.start_date, dateRange.end_date),
   });
 };
 

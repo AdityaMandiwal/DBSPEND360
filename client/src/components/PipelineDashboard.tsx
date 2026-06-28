@@ -80,8 +80,8 @@ const PipelineDashboard = () => {
             cost (from AWS Cost Explorer, keyed by ClusterId), included in Total
             Cost; serverless DBU already bundles infrastructure, so it has no
             separate VM line and shows "—". Classic pipelines on instance pools
-            may also appear under the Instance Pools tab — see README for the
-            cost model.
+            may also appear under the Instance Pools tab — the same compute is
+            shown through different lenses, so the tabs are not meant to sum.
           </p>
         </CardHeader>
         <CardContent>

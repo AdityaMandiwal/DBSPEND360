@@ -243,6 +243,8 @@ echo "📤 Syncing source code to workspace..."
 # package.json files so the Databricks Apps platform does not attempt to run
 # `npm install` (which times out against the internal npm proxy).
 SYNC_EXCLUDES=(
+  --exclude ".env"
+  --exclude ".env.local"
   --exclude "package.json"
   --exclude "package-lock.json"
   --exclude "client/package.json"

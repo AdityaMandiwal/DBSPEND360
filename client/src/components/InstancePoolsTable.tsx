@@ -35,6 +35,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ErrorState } from '@/components/ui/error-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -160,7 +161,7 @@ export const InstancePoolsTable = ({
     setExpandedDays(new Set());
   }, [searchTerm, dateRange.start_date, dateRange.end_date]);
 
-  const { data, isLoading, isFetching, error } = useInstancePools({
+  const { data, isLoading, isFetching, error, refetch } = useInstancePools({
     start_date: dateRange.start_date,
     end_date: dateRange.end_date,
     search: searchTerm || undefined,
@@ -251,12 +252,11 @@ export const InstancePoolsTable = ({
             {error ? (
               <TableRow>
                 <TableCell colSpan={columnCount} className="h-24 text-center">
-                  <div className="text-red-600 font-medium mb-1">
-                    Error loading instance pool data
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    {error.message}
-                  </div>
+                  <ErrorState
+                    compact
+                    message={`Error loading instance pool data: ${error.message}`}
+                    onRetry={() => refetch()}
+                  />
                 </TableCell>
               </TableRow>
             ) : isInitialLoading ? (

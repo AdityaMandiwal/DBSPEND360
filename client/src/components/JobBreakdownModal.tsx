@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useJobBreakdown, useJobCostAnalysis, useClusterDetails, useClusterAnalysis } from '@/hooks/useJobSpends';
+import { useJobBreakdown, useJobCostAnalysis, useClusterDetails, useClusterAnalysis, useAiModelLabel } from '@/hooks/useJobSpends';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 import { closeOnly, HIGH_COST_USD } from '@/lib/utils';
@@ -41,6 +41,7 @@ interface ClusterDetailsModalProps {
 
 export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdownModalProps) => {
   const { config: cloudConfig } = useCloudPlatform();
+  const aiModelLabel = useAiModelLabel();
   const isAws = useIsAws();
   const isSegmentedPlatform = useIsSegmentedPlatform();
   const { data: breakdown, isLoading, error } = useJobBreakdown(jobId, runId);
@@ -342,7 +343,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                     <Brain className="mr-2 h-5 w-5 text-purple-600" />
                     AI Cost Analysis
                     <Badge variant="secondary" className="ml-2 text-xs">
-                      Powered by Claude Sonnet 4
+                      Powered by {aiModelLabel}
                     </Badge>
                   </CardTitle>
                 </CardHeader>
@@ -431,6 +432,7 @@ export const ClusterDetailsModal = ({
 }: ClusterDetailsModalProps) => {
   const { data: clusterDetails, isLoading: detailsLoading, error: detailsError } = useClusterDetails(clusterId);
   const { data: clusterAnalysis, isLoading: analysisLoading, error: analysisError } = useClusterAnalysis(clusterId, clusterKind);
+  const aiModelLabel = useAiModelLabel();
 
   const formatDate = (dateStr?: string) => {
     if (!dateStr) return 'N/A';
@@ -699,7 +701,7 @@ export const ClusterDetailsModal = ({
                     <Brain className="mr-2 h-5 w-5 text-purple-600" />
                     AI Cluster Analysis
                     <Badge variant="secondary" className="ml-2 text-xs">
-                      Powered by Claude Sonnet 4
+                      Powered by {aiModelLabel}
                     </Badge>
                   </CardTitle>
                 </CardHeader>

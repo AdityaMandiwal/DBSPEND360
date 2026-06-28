@@ -46,6 +46,7 @@ import {
   useInstancePoolAnalysis,
   useInstancePoolDetails,
 } from '@/hooks/useInstancePools';
+import { useAiModelLabel } from '@/hooks/useJobSpends';
 import { closeOnly, formatCalendarDate } from '@/lib/utils';
 import { AnalysisMarkdown } from './AnalysisMarkdown';
 
@@ -76,6 +77,7 @@ export const InstancePoolDetailsModal = ({
     isLoading: detailsLoading,
     error: detailsError,
   } = useInstancePoolDetails(poolId);
+  const aiModelLabel = useAiModelLabel();
   const {
     data: analysis,
     isLoading: analysisLoading,
@@ -83,6 +85,15 @@ export const InstancePoolDetailsModal = ({
   } = useInstancePoolAnalysis(poolId);
 
   const deletedDateLabel = formatDeleteDate(details?.pool_deleted_at);
+
+  // Prefer a human-readable owner from an "Owner" custom tag (case-insensitive)
+  // over the raw creator GUID — many pools carry an Owner=<email> tag that's far
+  // more useful to a viewer than the Databricks-internal user ID.
+  const ownerFromTag = details?.custom_tags
+    ? Object.entries(details.custom_tags).find(
+        ([key]) => key.toLowerCase() === 'owner',
+      )?.[1]
+    : undefined;
 
   return (
     <Dialog open={isOpen} onOpenChange={closeOnly(onClose)}>
@@ -202,14 +213,31 @@ export const InstancePoolDetailsModal = ({
                       Creator
                     </span>
                     <div className="text-right max-w-[260px]">
-                      {details.pool_creator_id ? (
+                      {ownerFromTag ? (
+                        <div className="text-xs">
+                          <div
+                            className="text-sm truncate"
+                            title="From the pool's Owner custom tag."
+                          >
+                            {ownerFromTag}
+                          </div>
+                          {details.pool_creator_id && (
+                            <div
+                              className="font-mono text-[10px] text-muted-foreground truncate mt-0.5"
+                              title="Databricks-internal user ID of the pool creator."
+                            >
+                              ID {details.pool_creator_id}
+                            </div>
+                          )}
+                        </div>
+                      ) : details.pool_creator_id ? (
                         <div className="text-xs">
                           <div className="text-muted-foreground">
                             Creator ID
                           </div>
                           <div
                             className="font-mono truncate"
-                            title="Databricks-internal user GUID. Resolving to email is a v2 follow-up (see README)."
+                            title="Databricks-internal user ID of the pool creator."
                           >
                             {details.pool_creator_id}
                           </div>
@@ -323,7 +351,7 @@ export const InstancePoolDetailsModal = ({
                       <Brain className="mr-2 h-5 w-5 text-purple-600" />
                       AI Pool Analysis
                       <Badge variant="secondary" className="ml-2 text-xs">
-                        Powered by Claude Sonnet 4
+                        Powered by {aiModelLabel}
                       </Badge>
                     </CardTitle>
                   </CardHeader>
