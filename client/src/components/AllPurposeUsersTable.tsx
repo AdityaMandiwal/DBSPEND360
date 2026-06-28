@@ -42,6 +42,7 @@ import {
   useIsSegmentedPlatform,
   AWS_CLOUD_LABEL,
 } from '@/hooks/useCloudGate';
+import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from '@/lib/all-purpose-display';
 import { ClusterDetailsModal } from './JobBreakdownModal';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 
@@ -57,6 +58,23 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 const formatCurrency = (n: number) => currencyFormatter.format(n);
+
+// EC2/EBS cloud cost cell. NULL = unknown / not attributable to this cluster
+// (ran on a pool, or Cost Explorer lag) — render "—" + tooltip, never "$0.00".
+const CloudCostValue = ({ value }: { value: number | null | undefined }) => {
+  if (value == null) {
+    return (
+      <span
+        className="text-muted-foreground cursor-help"
+        title={ALL_PURPOSE_CLOUD_MISSING_NOTE}
+        aria-label={ALL_PURPOSE_CLOUD_MISSING_NOTE}
+      >
+        —
+      </span>
+    );
+  }
+  return <>{formatCurrency(value)}</>;
+};
 
 const PAGE_SIZE = 25;
 
@@ -232,7 +250,7 @@ export const AllPurposeUsersTable = ({
                         </>
                       )}
                       <TableCell className="px-4 text-right font-medium text-blue-600">
-                        {formatCurrency(user.total_cloud_cost)}
+                        <CloudCostValue value={user.total_cloud_cost} />
                       </TableCell>
                       <TableCell className="px-4 text-right font-medium text-red-600">
                         {formatCurrency(user.total_databricks_cost)}
@@ -465,7 +483,7 @@ const UserClusterBreakdown = ({
                     </>
                   ) : (
                     <div className="text-sm text-blue-600">
-                      {computeLabel}: {formatCurrency(cluster.cloud_cost)}
+                      {computeLabel}: <CloudCostValue value={cluster.cloud_cost} />
                     </div>
                   )}
                   <div className="text-sm text-red-600">

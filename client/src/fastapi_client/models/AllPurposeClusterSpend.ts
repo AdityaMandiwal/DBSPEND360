@@ -17,7 +17,7 @@ export type AllPurposeClusterSpend = {
     cluster_name?: (string | null);
     user_id: string;
     cluster_active_days: number;
-    cloud_cost: number;
+    cloud_cost?: (number | null);
     databricks_cost: number;
     compute_cost?: (number | null);
     storage_cost?: (number | null);

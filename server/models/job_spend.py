@@ -336,7 +336,10 @@ class AllPurposeUserSpend(BaseModel):
     cluster_id: str
     user_id: str
     usage_date: date
-    cloud_cost: float
+    # NULL when no cloud (EC2/EBS) row matched this cluster-day — e.g. it ran
+    # on an instance pool (machines tagged DatabricksInstancePoolId, not
+    # ClusterId) or Cost Explorer hasn't landed. The UI renders None as "—".
+    cloud_cost: Optional[float] = None
     databricks_cost: float
     compute_cost: Optional[float] = None
     storage_cost: Optional[float] = None
@@ -347,7 +350,7 @@ class AllPurposeUserSpend(BaseModel):
     @property
     def total_cost(self) -> float:
         """Calculate total cost as sum of cloud and Databricks costs."""
-        return self.cloud_cost + self.databricks_cost
+        return (self.cloud_cost or 0.0) + self.databricks_cost
 
     @computed_field
     @property
@@ -355,7 +358,7 @@ class AllPurposeUserSpend(BaseModel):
         """Calculate cloud cost as percentage of total."""
         if self.total_cost == 0:
             return 0.0
-        return (self.cloud_cost / self.total_cost) * 100
+        return ((self.cloud_cost or 0.0) / self.total_cost) * 100
 
     @computed_field
     @property
@@ -381,7 +384,8 @@ class AllPurposeClusterSpend(BaseModel):
     cluster_name: Optional[str] = None
     user_id: str
     cluster_active_days: int
-    cloud_cost: float
+    # NULL when no cloud row matched this user's cluster — the UI renders "—".
+    cloud_cost: Optional[float] = None
     databricks_cost: float
     compute_cost: Optional[float] = None
     storage_cost: Optional[float] = None
@@ -393,7 +397,7 @@ class AllPurposeClusterSpend(BaseModel):
     @property
     def total_cost(self) -> float:
         """Calculate total cost as sum of cloud and Databricks costs."""
-        return self.cloud_cost + self.databricks_cost
+        return (self.cloud_cost or 0.0) + self.databricks_cost
 
     @computed_field
     @property
@@ -401,7 +405,7 @@ class AllPurposeClusterSpend(BaseModel):
         """Calculate cloud cost as percentage of total."""
         if self.total_cost == 0:
             return 0.0
-        return (self.cloud_cost / self.total_cost) * 100
+        return ((self.cloud_cost or 0.0) / self.total_cost) * 100
 
     @computed_field
     @property
@@ -428,7 +432,8 @@ class GroupedAllPurposeCluster(BaseModel):
     owner_user_id: str
     data_security_mode: Optional[str] = None
     active_days: int
-    total_cloud_cost: float
+    # NULL when no cloud row matched this cluster — the UI renders "—".
+    total_cloud_cost: Optional[float] = None
     total_databricks_cost: float
     total_compute_cost: Optional[float] = None
     total_storage_cost: Optional[float] = None
@@ -440,7 +445,7 @@ class GroupedAllPurposeCluster(BaseModel):
     @property
     def total_cost(self) -> float:
         """Calculate total cost across all users on this cluster."""
-        return self.total_cloud_cost + self.total_databricks_cost
+        return (self.total_cloud_cost or 0.0) + self.total_databricks_cost
 
     @computed_field
     @property
@@ -448,7 +453,7 @@ class GroupedAllPurposeCluster(BaseModel):
         """Calculate cloud cost as percentage of total."""
         if self.total_cost == 0:
             return 0.0
-        return (self.total_cloud_cost / self.total_cost) * 100
+        return ((self.total_cloud_cost or 0.0) / self.total_cost) * 100
 
     @computed_field
     @property
@@ -472,7 +477,9 @@ class GroupedAllPurposeUser(BaseModel):
     user_id: str
     cluster_count: int
     user_active_days: int
-    total_cloud_cost: float
+    # NULL when none of this user's clusters had a matching cloud row — the UI
+    # renders "—".
+    total_cloud_cost: Optional[float] = None
     total_databricks_cost: float
     total_compute_cost: Optional[float] = None
     total_storage_cost: Optional[float] = None
@@ -484,7 +491,7 @@ class GroupedAllPurposeUser(BaseModel):
     @property
     def total_cost(self) -> float:
         """Calculate total cost across all clusters this user owns."""
-        return self.total_cloud_cost + self.total_databricks_cost
+        return (self.total_cloud_cost or 0.0) + self.total_databricks_cost
 
     @computed_field
     @property
@@ -492,7 +499,7 @@ class GroupedAllPurposeUser(BaseModel):
         """Calculate cloud cost as percentage of total."""
         if self.total_cost == 0:
             return 0.0
-        return (self.total_cloud_cost / self.total_cost) * 100
+        return ((self.total_cloud_cost or 0.0) / self.total_cost) * 100
 
     @computed_field
     @property

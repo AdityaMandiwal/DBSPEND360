@@ -2098,7 +2098,7 @@ class DatabricksService:
             GROUP BY cluster_id
         ) cl ON c.cluster_id = cl.cluster_id
         {search_clause}
-        ORDER BY (c.total_cloud_cost + c.total_databricks_cost) DESC
+        ORDER BY (COALESCE(c.total_cloud_cost, 0) + COALESCE(c.total_databricks_cost, 0)) DESC
         LIMIT {limit} OFFSET {offset}
         """
 
@@ -2126,7 +2126,10 @@ class DatabricksService:
                     owner_user_id=row[1] or '__unknown__',
                     data_security_mode=row[2],
                     active_days=int(row[3]) if row[3] is not None else 0,
-                    total_cloud_cost=float(row[4]) if row[4] is not None else 0.0,
+                    # NULL = no cloud row matched this cluster (e.g. it ran on
+                    # an instance pool, or Cost Explorer hasn't landed). Keep
+                    # None so the UI renders "—" not a misleading "$0.00".
+                    total_cloud_cost=float(row[4]) if row[4] is not None else None,
                     total_databricks_cost=float(row[5]) if row[5] is not None else 0.0,
                     total_compute_cost=float(row[6]) if row[6] is not None else None,
                     total_storage_cost=float(row[7]) if row[7] is not None else None,
@@ -2229,7 +2232,7 @@ class DatabricksService:
             COUNT(*) OVER() AS total_matching
         FROM user_level
         {search_clause}
-        ORDER BY (total_cloud_cost + total_databricks_cost) DESC
+        ORDER BY (COALESCE(total_cloud_cost, 0) + COALESCE(total_databricks_cost, 0)) DESC
         LIMIT {limit} OFFSET {offset}
         """
 
@@ -2255,7 +2258,9 @@ class DatabricksService:
                     user_id=user_id,
                     cluster_count=int(row[1]) if row[1] is not None else 0,
                     user_active_days=int(row[2]) if row[2] is not None else 0,
-                    total_cloud_cost=float(row[3]) if row[3] is not None else 0.0,
+                    # NULL = none of this user's clusters had a matching cloud
+                    # row; keep None so the UI shows "—" not a false "$0.00".
+                    total_cloud_cost=float(row[3]) if row[3] is not None else None,
                     total_databricks_cost=float(row[4]) if row[4] is not None else 0.0,
                     total_compute_cost=float(row[5]) if row[5] is not None else None,
                     total_storage_cost=float(row[6]) if row[6] is not None else None,
@@ -2330,7 +2335,7 @@ class DatabricksService:
             WHERE cluster_source IN ('UI', 'API')
             GROUP BY cluster_id
         ) cl ON c.cluster_id = cl.cluster_id
-        ORDER BY (c.total_cloud_cost + c.total_databricks_cost) DESC
+        ORDER BY (COALESCE(c.total_cloud_cost, 0) + COALESCE(c.total_databricks_cost, 0)) DESC
         LIMIT {limit}
         """
 
@@ -2348,7 +2353,8 @@ class DatabricksService:
                     owner_user_id=row[1] or '__unknown__',
                     data_security_mode=row[2],
                     active_days=int(row[3]) if row[3] is not None else 0,
-                    total_cloud_cost=float(row[4]) if row[4] is not None else 0.0,
+                    # NULL cloud → None so the UI renders "—" not "$0.00".
+                    total_cloud_cost=float(row[4]) if row[4] is not None else None,
                     total_databricks_cost=float(row[5]) if row[5] is not None else 0.0,
                     total_compute_cost=float(row[6]) if row[6] is not None else None,
                     total_storage_cost=float(row[7]) if row[7] is not None else None,
@@ -2421,7 +2427,7 @@ class DatabricksService:
             total_network_cost,
             total_other_cost
         FROM user_level
-        ORDER BY (total_cloud_cost + total_databricks_cost) DESC
+        ORDER BY (COALESCE(total_cloud_cost, 0) + COALESCE(total_databricks_cost, 0)) DESC
         LIMIT {limit}
         """
 
@@ -2437,7 +2443,8 @@ class DatabricksService:
                     user_id=row[0] or '__unknown__',
                     cluster_count=int(row[1]) if row[1] is not None else 0,
                     user_active_days=int(row[2]) if row[2] is not None else 0,
-                    total_cloud_cost=float(row[3]) if row[3] is not None else 0.0,
+                    # NULL cloud → None so the UI renders "—" not "$0.00".
+                    total_cloud_cost=float(row[3]) if row[3] is not None else None,
                     total_databricks_cost=float(row[4]) if row[4] is not None else 0.0,
                     total_compute_cost=float(row[5]) if row[5] is not None else None,
                     total_storage_cost=float(row[6]) if row[6] is not None else None,
@@ -2484,7 +2491,7 @@ class DatabricksService:
                 ROW_NUMBER() OVER (
                     PARTITION BY cluster_id
                     ORDER BY usage_date DESC,
-                             (SUM(cloud_cost) + SUM(databricks_cost)) DESC
+                             (COALESCE(SUM(cloud_cost), 0) + COALESCE(SUM(databricks_cost), 0)) DESC
                 ) AS rn
             FROM {self.all_purpose_table_name}
             WHERE cluster_id IN ({in_clause})
@@ -2514,7 +2521,8 @@ class DatabricksService:
                     cluster_id=cluster_id,
                     user_id=row[1] or '__unknown__',
                     usage_date=date.fromisoformat(row[2]),
-                    cloud_cost=float(row[3]) if row[3] is not None else 0.0,
+                    # NULL cloud → None so the per-day cell renders "—" not "$0.00".
+                    cloud_cost=float(row[3]) if row[3] is not None else None,
                     databricks_cost=float(row[4]) if row[4] is not None else 0.0,
                     compute_cost=float(row[5]) if row[5] is not None else None,
                     storage_cost=float(row[6]) if row[6] is not None else None,
@@ -2572,7 +2580,7 @@ class DatabricksService:
                 puc.*,
                 ROW_NUMBER() OVER (
                     PARTITION BY user_id
-                    ORDER BY (cloud_cost + databricks_cost) DESC, cluster_id
+                    ORDER BY (COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)) DESC, cluster_id
                 ) AS rn
             FROM per_user_cluster puc
         )
@@ -2597,7 +2605,7 @@ class DatabricksService:
             GROUP BY cluster_id
         ) cl ON r.cluster_id = cl.cluster_id
         WHERE r.rn <= {clusters_per_user}
-        ORDER BY r.user_id, (r.cloud_cost + r.databricks_cost) DESC
+        ORDER BY r.user_id, (COALESCE(r.cloud_cost, 0) + COALESCE(r.databricks_cost, 0)) DESC
         """
 
         response = self.client.statement_execution.execute_statement(
@@ -2615,7 +2623,8 @@ class DatabricksService:
                     user_id=user_id,
                     data_security_mode=row[3],
                     cluster_active_days=int(row[4]) if row[4] is not None else 0,
-                    cloud_cost=float(row[5]) if row[5] is not None else 0.0,
+                    # NULL cloud → None so the per-cluster cell renders "—" not "$0.00".
+                    cloud_cost=float(row[5]) if row[5] is not None else None,
                     databricks_cost=float(row[6]) if row[6] is not None else 0.0,
                     compute_cost=float(row[7]) if row[7] is not None else None,
                     storage_cost=float(row[8]) if row[8] is not None else None,
