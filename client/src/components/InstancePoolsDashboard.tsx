@@ -17,9 +17,19 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { InstancePoolsSummaryCards } from './InstancePoolsSummaryCards';
 import { InstancePoolFilterControls } from './InstancePoolFilterControls';
 import { InstancePoolsTable } from './InstancePoolsTable';
+import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { useIsAws } from '@/hooks/useCloudGate';
 import type { DateRange } from '@/types/job-spend';
 
 const InstancePoolsDashboard = () => {
+  const { config: cloudConfig } = useCloudPlatform();
+  const isAws = useIsAws();
+  // Platform-aware VM-cost label so the blurb reads correctly on every cloud
+  // (mirrors the table's column label): "EC2/EBS" on AWS, the cloud's compute
+  // service (e.g. "Azure Compute") elsewhere.
+  const cloudVmLabel = isAws
+    ? 'EC2/EBS'
+    : cloudConfig?.compute_service || 'cloud';
   // Match the other two tabs' default window (last 30 days) so users
   // pivoting between tabs see consistent scope until they pick a preset.
   const defaultDateRange: DateRange = {
@@ -57,8 +67,9 @@ const InstancePoolsDashboard = () => {
             pool config and AI analysis.
           </p>
           <p className="text-xs text-muted-foreground mt-2">
-            Total Cost combines pool DBU and EC2/EBS VM cost (idle + active),
-            joined from the pool cloud-cost explorer. Pool spend may overlap
+            Total Cost combines pool DBU and {cloudVmLabel} VM cost (idle +
+            active), joined from the pool cloud-cost explorer. Pool spend may
+            overlap
             with the Job Clusters and All-Purpose tabs — the same compute is
             shown through different lenses, so the tabs are not meant to sum.
           </p>

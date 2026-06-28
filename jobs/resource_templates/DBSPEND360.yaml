@@ -67,4 +67,12 @@ resources:
           default: 04june
         - name: workspace_ids
           default: ""
+        # Azure-only widgets for ${cloud_provider}_cloud_cost_explorer_app.
+        # AWS/GCP notebooks don't read these, so the empty defaults are inert
+        # there; an Azure deployment overrides them with the subscription id and
+        # the secret-scope name holding tenant_id/client_id/client_secret.
+        - name: subscription_id
+          default: ""
+        - name: scope
+          default: ""
       performance_target: PERFORMANCE_OPTIMIZED
