@@ -93,7 +93,7 @@ The Databricks App reads from `dbspend360_total_job_spends`, which is produced b
    cloud_cost_explorer ─────────────┴──── pipeline_spends              (Pipeline Compute branch)
    ```
 
-   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app` — cloud-source-agnostic; feeds every branch. On AWS it now writes **two** explorer tables: `dbspend360_cloud_cost_explorer` (grouped by `ClusterId`, feeds Job/All-Purpose/Pipeline) and `dbspend360_pool_cloud_cost_explorer` (grouped by `DatabricksInstancePoolId`, feeds Instance Pools).
+   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app` — cloud-source-agnostic; feeds every branch. On **both AWS and Azure** it writes **two** explorer tables: `dbspend360_cloud_cost_explorer` (grouped by `ClusterId`/`clusterid`, feeds Job/All-Purpose/Pipeline) and `dbspend360_pool_cloud_cost_explorer` (grouped by `DatabricksInstancePoolId`, feeds Instance Pools). The pool path is an isolated `run_pool()` step that never breaks the cluster explorer or the DAG.
    * Job Clusters branch (writes `dbspend360_total_job_spends`):
      * `Dbspend360dbu_costs` → `dbspend360_dbu_cost_app`
      * `databricks_job_spends` → `databricks_job_spends_app`
@@ -307,3 +307,39 @@ self-monitoring:
   windows; `dbspend360_error_log` captures reconciliation mismatches and isolated
   failures (e.g. the pool-tag CE call is wrapped in its own `try/except` so a
   pool-tag failure never breaks the cluster explorer path or the job DAG).
+
+### 4.4 Azure: the same model, sourced from Cost Management
+
+On **Azure** the picture is identical in shape — both explorer tables are written
+by `azure_cloud_cost_explorer_app`, which queries Azure **Cost Management**
+instead of AWS Cost Explorer:
+
+* `dbspend360_cloud_cost_explorer` groups by the **`clusterid`** tag (plus
+  `MeterCategory`) and feeds the Job Clusters, All-Purpose Clusters, and Pipeline
+  Compute tabs — this has always worked on Azure.
+* `dbspend360_pool_cloud_cost_explorer` groups by the
+  **`DatabricksInstancePoolId`** tag and feeds the Instance Pools tab. This is the
+  isolated `run_pool()` path added in `plan_pool_pipeline_azure_cost.md`. It
+  groups by **both** the pool and `clusterid` tags and applies the same **netting
+  guard** (keep only the `clusterid`-free slice), so Azure pool cloud cost is
+  disjoint from cluster cloud cost — the Instance Pools tab is additive, not
+  overlapping, exactly as on AWS.
+
+Two Azure specifics worth knowing:
+
+* **Pool cost is a single `cloud_cost` bucket; the per-service
+  compute/storage/network/other segments are `NULL` by design** — not missing
+  data. Azure Cost Management caps a query at **two** grouping dimensions, and
+  both slots are spent on the pool + cluster tags for the netting guard, leaving
+  no slot for `MeterCategory`. We deliberately prioritize disjointness over
+  segmentation (matching the AWS pool path).
+* **The pool path is fully isolated.** `run_pool()` runs after the cluster
+  explorer and never re-raises: a `DatabricksInstancePoolId` tagging lapse or a
+  Cost Management schema drift logs to `dbspend360_error_log`
+  (`POOL_COST_EXPLORER_FAILED`) and writes a FAILED pool audit row, but cannot
+  break the Azure cluster explorer or the job DAG. The same `~0 cloud while DBU>0`
+  post-write monitor fires a non-silent `POOL_COST_MONITOR_ALARM`.
+
+Everything downstream of the explorer — the pool rollup, the service layer, the
+API, and the frontend labels — is cloud-agnostic and unchanged; only the explorer
+notebook learns to source Azure pool cost.

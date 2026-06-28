@@ -1,0 +1,57 @@
+{
+  "run_name": "DBSpend360 Azure backfill (all-purpose + pipeline)",
+  "tasks": [
+    {
+      "task_key": "all_purpose_dbu",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/dbspend360_all_purpose_dbu_cost_app",
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "catalog": "dbspend360",
+          "schema": "03apr",
+          "overlap_days": "10",
+          "workspace_ids": ""
+        }
+      }
+    },
+    {
+      "task_key": "all_purpose_spends",
+      "depends_on": [{ "task_key": "all_purpose_dbu" }],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/all_purpose_spends_app",
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "catalog": "dbspend360",
+          "schema": "03apr",
+          "overlap_days": "10"
+        }
+      }
+    },
+    {
+      "task_key": "pipeline_dbu",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/dbspend360_pipeline_dbu_cost_app",
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "catalog": "dbspend360",
+          "schema": "03apr",
+          "overlap_days": "10",
+          "workspace_ids": ""
+        }
+      }
+    },
+    {
+      "task_key": "pipeline_spends",
+      "depends_on": [{ "task_key": "pipeline_dbu" }],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/pipeline_spends_app",
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "catalog": "dbspend360",
+          "schema": "03apr",
+          "overlap_days": "10"
+        }
+      }
+    }
+  ]
+}
