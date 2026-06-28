@@ -41,8 +41,8 @@
 
 * `jobs/` contains all the DDL notebooks, ETL notebooks, and the Databricks Job resource template for DBSPEND360.
 * `release/` contains the product release doc and the per-cloud credentials setup guides needed for data ingestion from each cost explorer:
-    * `release/AWS Credentials and Permissions Setup.md` — required AWS Cost Explorer / CUR APIs, IAM policy (inline JSON), cluster-tagging convention used to join line items back to Databricks `cluster_id`, credential delivery options (Databricks Secrets / instance profile / SPN), and a verification `aws ce get-cost-and-usage` command.
-    * `release/Azure Credentials and Permissions Setup.docx` — Azure Cost Management service principal (SPN) registration, required role assignments on the billing scope, and how to wire the SPN credentials into the notebook.
+    * `release/AWS Credentials and Permissions Setup.md` — the single required Cost Explorer API (`ce:GetCostAndUsage`, us-east-1), minimal IAM policy (inline JSON), the Unity Catalog service credential (`dbspend-read-ce`) auth wiring, the `ClusterId` / `DatabricksInstancePoolId` tagging convention used to join line items back to Databricks, and a verification `aws ce get-cost-and-usage` command.
+    * `release/Azure Credentials and Permissions Setup.md` — Azure Cost Management API/SDK, Entra ID app-registration (service principal) walkthrough, the `Cost Management Reader` role assignment at subscription scope, how the SPN credentials are delivered via a Databricks secret scope, the `clusterid` tag convention, and a verification `az rest` query.
     * `release/GCP Credentials and Permissions Setup.md` — stub placeholder; pending the GCP cost explorer implementation. Outlines the GCP APIs (Cloud Billing / BigQuery), IAM roles, and verification steps that will be needed once the notebook is implemented.
 
 ### Prerequisites
