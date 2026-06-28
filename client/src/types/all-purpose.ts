@@ -13,7 +13,9 @@ export interface AllPurposeUserSpend {
   cluster_id: string;
   user_id: string;
   usage_date: string; // ISO date string (YYYY-MM-DD)
-  cloud_cost: number;
+  // null = no EC2/EBS row matched this cluster-day (e.g. it ran on an
+  // instance pool, or Cost Explorer hasn't landed). Rendered as "—".
+  cloud_cost: number | null;
   databricks_cost: number;
   compute_cost?: number | null;
   storage_cost?: number | null;
@@ -29,7 +31,8 @@ export interface AllPurposeClusterSpend {
   cluster_name?: string | null;
   user_id: string;
   cluster_active_days: number;
-  cloud_cost: number;
+  // null = no EC2/EBS row matched this cluster. Rendered as "—".
+  cloud_cost: number | null;
   databricks_cost: number;
   compute_cost?: number | null;
   storage_cost?: number | null;
@@ -47,7 +50,8 @@ export interface GroupedAllPurposeCluster {
   owner_user_id: string;
   data_security_mode?: string | null;
   active_days: number;
-  total_cloud_cost: number;
+  // null = no EC2/EBS row matched this cluster. Rendered as "—".
+  total_cloud_cost: number | null;
   total_databricks_cost: number;
   total_compute_cost?: number | null;
   total_storage_cost?: number | null;
@@ -68,7 +72,8 @@ export interface GroupedAllPurposeUser {
   // Computed from the raw rows, not summed across clusters — see plan §5.2
   // (summing would double-count days where the user used multiple clusters).
   user_active_days: number;
-  total_cloud_cost: number;
+  // null = none of this user's clusters had a matching EC2/EBS row. "—".
+  total_cloud_cost: number | null;
   total_databricks_cost: number;
   total_compute_cost?: number | null;
   total_storage_cost?: number | null;

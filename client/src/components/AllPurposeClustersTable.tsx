@@ -49,6 +49,7 @@ import {
   AWS_CLOUD_LABEL,
 } from '@/hooks/useCloudGate';
 import { formatCalendarDate } from '@/lib/utils';
+import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from '@/lib/all-purpose-display';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 import { ClusterDetailsModal } from './JobBreakdownModal';
 
@@ -122,6 +123,25 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 const formatCurrency = (amount: number) => currencyFormatter.format(amount);
+
+// EC2/EBS cloud cost cell. A NULL value means the cost is unknown / not
+// attributable to this cluster (e.g. it ran on an instance pool, or Cost
+// Explorer hasn't landed) — render "—" + tooltip, never a misleading "$0.00".
+// Mirrors `PoolCloudCostCell` in InstancePoolsTable.tsx.
+const CloudCostValue = ({ value }: { value: number | null | undefined }) => {
+  if (value == null) {
+    return (
+      <span
+        className="text-muted-foreground cursor-help"
+        title={ALL_PURPOSE_CLOUD_MISSING_NOTE}
+        aria-label={ALL_PURPOSE_CLOUD_MISSING_NOTE}
+      >
+        —
+      </span>
+    );
+  }
+  return <>{formatCurrency(value)}</>;
+};
 
 // `usage_date` is a calendar date (YYYY-MM-DD); `formatCalendarDate` anchors it
 // to local midnight so it never rolls back a day on negative-UTC zones.
@@ -346,7 +366,7 @@ export const AllPurposeClustersTable = ({
                         </>
                       )}
                       <TableCell className="px-4 text-right font-medium text-blue-600">
-                        {formatCurrency(cluster.total_cloud_cost)}
+                        <CloudCostValue value={cluster.total_cloud_cost} />
                         {/* "Other (Unclassified)" drill-down is hidden on
                             AWS/Unknown (D7) — only segmented platforms expose it. */}
                         {isSegmentedPlatform &&
@@ -556,7 +576,7 @@ const ClusterDayBreakdown = ({
                   </>
                 ) : (
                   <div className="text-sm text-blue-600">
-                    {computeLabel}: {formatCurrency(day.cloud_cost)}
+                    {computeLabel}: <CloudCostValue value={day.cloud_cost} />
                   </div>
                 )}
                 <div className="text-sm text-red-600">

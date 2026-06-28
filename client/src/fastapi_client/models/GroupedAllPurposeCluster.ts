@@ -19,7 +19,7 @@ export type GroupedAllPurposeCluster = {
     owner_user_id: string;
     data_security_mode?: (string | null);
     active_days: number;
-    total_cloud_cost: number;
+    total_cloud_cost?: (number | null);
     total_databricks_cost: number;
     total_compute_cost?: (number | null);
     total_storage_cost?: (number | null);
