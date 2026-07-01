@@ -25,6 +25,7 @@ import {
   AlertTriangle,
   Cloud,
   DollarSign,
+  Info,
   Layers,
   Server,
 } from 'lucide-react';
@@ -201,6 +202,23 @@ export const InstancePoolsSummaryCards = ({
           </CardContent>
         </Card>
       </div>
+      )}
+
+      {/* DBU overlap disclosure (issue #4): pool DBU is an alternate lens on
+          usage keyed by instance_pool_id, with NO cluster_source filter — a
+          pool-backed job/all-purpose cluster's DBU appears here AND on its
+          native tab. Cloud cost is netted disjoint across tabs, but DBU is
+          not, so tab totals must not be summed into a grand total. */}
+      {!isMetricsLoading && !isMetricsError && metrics && (
+        <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span>
+            Pool DBU is an alternate lens on the same usage — a pool-backed job
+            or all-purpose cluster is also counted on its own tab. Cloud cost is
+            de-duplicated across tabs, but DBU is not, so don't add this tab's
+            total to the other tabs.
+          </span>
+        </p>
       )}
 
       {/* Bottom strip: orphan pools card (left) + top-5 pools card (right) */}

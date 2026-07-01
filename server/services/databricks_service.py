@@ -2758,7 +2758,14 @@ class DatabricksService:
         )
         SELECT
             (SELECT COUNT(DISTINCT instance_pool_id) FROM filtered)            AS total_pools,
-            (SELECT COUNT(DISTINCT cluster_id)       FROM filtered)            AS total_clusters,
+            -- Exclude the `__pool_overhead__` sentinel so the KPI counts only
+            -- real attached clusters (see get_instance_pools_grouped). NOTE the
+            -- global count still won't equal the sum of per-pool cluster_counts:
+            -- the sentinel is one literal string, so it collapses to a single
+            -- DISTINCT value globally but is excluded per-pool independently.
+            (SELECT COUNT(DISTINCT CASE WHEN cluster_id <> '__pool_overhead__'
+                                        THEN cluster_id END)
+             FROM filtered)                                                    AS total_clusters,
             (SELECT COUNT(*) FROM pool_snapshot_state
                 WHERE pool_uniformly_orphaned)                                 AS orphaned_pools,
             COALESCE(SUM(total_cost), 0)       AS total_spend,
@@ -2908,7 +2915,13 @@ class DatabricksService:
             SELECT
                 instance_pool_id,
                 BOOL_AND(pool_snapshot_missing)                   AS pool_snapshot_missing,
-                COUNT(DISTINCT cluster_id)                        AS cluster_count,
+                -- Exclude the synthetic `__pool_overhead__` sentinel: it is a
+                -- pool-level bookkeeping row (idle/warm capacity + NULL-cluster
+                -- DBU, plan §3.3/§4.4), not a real attached cluster, so counting
+                -- it would over-report "Clusters" by one on every pool that has
+                -- an overhead row (and mislabel idle-only pools as "1 cluster").
+                COUNT(DISTINCT CASE WHEN cluster_id <> '__pool_overhead__'
+                                    THEN cluster_id END)          AS cluster_count,
                 COUNT(DISTINCT usage_date)                        AS active_days,
                 SUM(databricks_cost)                              AS total_databricks_cost,
                 SUM(cloud_cost)                                   AS total_cloud_cost,
@@ -3072,10 +3085,15 @@ class DatabricksService:
                 # `cloud` is NULL on per-cluster rows and carries the real
                 # pool EC2 only on the synthesized `__pool_overhead__` row
                 # (plan §4.4). It is accumulated to the day level so the
-                # drill-down surfaces EC2 at the (pool, day) level; per-cluster
-                # rows keep `cloud_cost = None` (rendered "—") because pool VM
-                # cost is not attributable to a specific attached cluster.
+                # drill-down surfaces EC2 at the (pool, day) level; real
+                # per-cluster rows keep `cloud_cost = None` (rendered "—")
+                # because pool VM cost is not attributable to a specific
+                # attached cluster. The overhead row DOES keep its `cloud`
+                # value (see below) so its `total_cost = DBU + cloud` is
+                # self-consistent instead of showing a Total with no visible
+                # components (issue #3).
                 cloud = float(row[4]) if row[4] is not None else None
+                is_overhead = cluster_id == '__pool_overhead__'
                 total = float(row[5]) if row[5] is not None else 0.0
 
                 pool_days = days_by_pool.setdefault(pool_id, {})
@@ -3098,7 +3116,11 @@ class DatabricksService:
                 day.clusters.append(InstancePoolClusterSpend(
                     cluster_id=cluster_id,
                     databricks_cost=dbx,
-                    cloud_cost=None,
+                    # Only the `__pool_overhead__` row carries the pool EC2
+                    # `cloud` — surfacing it here makes its `total_cost`
+                    # break down visibly (DBU + cloud). Real cluster rows
+                    # stay `None` ("—"): pool VM cost isn't per-cluster.
+                    cloud_cost=cloud if is_overhead else None,
                     total_cost=total,
                 ))
 
@@ -3106,7 +3128,15 @@ class DatabricksService:
         for pool_id, pool_days in days_by_pool.items():
             ordered_days = sorted(pool_days.values(), key=lambda d: d.usage_date)
             for day in ordered_days:
-                day.cluster_count_on_day = len(day.clusters)
+                # Exclude the synthetic `__pool_overhead__` row from the count:
+                # it stays in `day.clusters` for the "Pool overhead" drill-down
+                # line, but it is not a real attached cluster, so counting it
+                # would over-report the per-day "N clusters" badge by one
+                # (mirrors the SQL cluster_count fix).
+                day.cluster_count_on_day = sum(
+                    1 for c in day.clusters
+                    if c.cluster_id != '__pool_overhead__'
+                )
             result[pool_id] = ordered_days
 
         return result
@@ -3161,7 +3191,13 @@ class DatabricksService:
             SELECT
                 instance_pool_id,
                 BOOL_AND(pool_snapshot_missing)                   AS pool_snapshot_missing,
-                COUNT(DISTINCT cluster_id)                        AS cluster_count,
+                -- Exclude the synthetic `__pool_overhead__` sentinel: it is a
+                -- pool-level bookkeeping row (idle/warm capacity + NULL-cluster
+                -- DBU, plan §3.3/§4.4), not a real attached cluster, so counting
+                -- it would over-report "Clusters" by one on every pool that has
+                -- an overhead row (and mislabel idle-only pools as "1 cluster").
+                COUNT(DISTINCT CASE WHEN cluster_id <> '__pool_overhead__'
+                                    THEN cluster_id END)          AS cluster_count,
                 COUNT(DISTINCT usage_date)                        AS active_days,
                 SUM(databricks_cost)                              AS total_databricks_cost,
                 SUM(cloud_cost)                                   AS total_cloud_cost,

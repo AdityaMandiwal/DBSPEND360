@@ -24,7 +24,10 @@
 // Second-level drill-down inside a day's `clusters` array.
 // `cluster_id === '__pool_overhead__'` is the §3.3 edge-case bucket for
 // billing rows that have `instance_pool_id` set but no `cluster_id`; the
-// UI renders that row as italicized "Pool overhead".
+// UI renders that row as italicized "Pool overhead". `cloud_cost` is null
+// on real cluster rows (pool VM cost isn't per-cluster, rendered "—"), but
+// the overhead row carries the pool EC2/EBS cost so its `total_cost` breaks
+// down visibly as DBU + cloud (issue #3).
 export interface InstancePoolClusterSpend {
   cluster_id: string;
   databricks_cost: number;

@@ -30,7 +30,9 @@
 // `__pool_overhead__` cluster rows (the §3.3 edge case for billing rows
 // with `instance_pool_id` set but `cluster_id` NULL) render as italicized
 // "Pool overhead". They are NOT clickable for the cluster details modal —
-// there's no real cluster behind them.
+// there's no real cluster behind them. Unlike real cluster rows (whose cloud
+// cell is always "—"), the overhead row shows the pool EC2/EBS `cloud_cost`
+// so its Total = DBU + cloud is self-explanatory (issue #3).
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -717,7 +719,14 @@ const ClusterRow = ({
         )}
       </TableCell>
       <TableCell className="px-4 py-2 text-right text-sm">
-        <PerClusterCloudCell />
+        {isPoolOverhead ? (
+          // The pool EC2/EBS cost lands on this synthetic row (plan §4.4),
+          // so render it here — this is what makes the row's Total add up
+          // (DBU + cloud) instead of showing a Total with no components.
+          <PoolCloudCostCell cloudCost={cluster.cloud_cost} />
+        ) : (
+          <PerClusterCloudCell />
+        )}
       </TableCell>
       <TableCell className="px-4 py-2 text-right text-sm text-red-600">
         {formatCurrency(cluster.databricks_cost)}
