@@ -19,14 +19,9 @@
 
 ## 2. Architecture
 
-### Logical Architecture Diagram
-
-![DBSPEND360 logical architecture: cloud cost explorers and Databricks DBU usage feeding the dbspend360_total_job_spends table, which powers the Databricks App with dashboards and LLM-driven insights.](release/readme_images/architecture.png)
-
-
 ### Implementation Flow
 
-![DBSPEND360 implementation flow: per-cloud ETL notebooks ingest into staging tables, dbspend360_dbu_cost_app joins DBU usage, and databricks_job_spends_app produces the consolidated dbspend360_total_job_spends table consumed by the app.](release/readme_images/implementation_flow.png)
+![DBSPEND360 implementation flow: cloud_cost_explorer writes dbspend360_cloud_cost_explorer, dbspend360_pool_cloud_cost_explorer, and dbspend360_other_cost_breakdown, then fans out into four independent branches (each with a DBU notebook and rollup notebook) that produce dbspend360_total_job_spends, dbspend360_total_all_purpose_spends, dbspend360_total_pool_spends, and dbspend360_total_pipeline_spends for the app's four tabs.](release/readme_images/implementation_flow.png)
 
 
 
@@ -81,7 +76,7 @@ The Databricks App reads from `dbspend360_total_job_spends`, which is produced b
 
 1. Import everything under `jobs/notebooks/` and `jobs/ddls/` into your Databricks workspace.
 2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. This orchestrator notebook invokes every DDL under `jobs/ddls/` and creates: `dbspend360_audit_log`, `dbspend360_error_log`, `dbspend360_cloud_cost_explorer`, `dbspend360_pool_cloud_cost_explorer`, `dbspend360_dbu_cost`, `dbspend360_other_cost_breakdown`, `dbspend360_total_job_spends`, `dbspend360_all_purpose_dbu_cost`, `dbspend360_total_all_purpose_spends`, `dbspend360_pool_dbu_cost`, `dbspend360_total_pool_spends`, `dbspend360_pipeline_dbu_cost`, and `dbspend360_total_pipeline_spends`. These back the four cost tabs in the app — Job Clusters, All-Purpose Clusters, Instance Pools, and Pipeline Compute — each populated by its own parallel branch described in step 3 below.
-3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines nine tasks across four parallel branches that fan out from a shared cloud-cost-ingest task:
+3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines nine tasks across four branches — three of which fan out from a shared cloud-cost-ingest task, while the Pipeline Compute branch's DBU task runs independently and joins the shared cloud-cost output at its final step:
 
    ```
    cloud_cost_explorer
@@ -109,7 +104,7 @@ The Databricks App reads from `dbspend360_total_job_spends`, which is produced b
 
    The branches are independent — failures in one do not block the others — and the app reads each branch's output table through its respective tab. Each branch applies its own attribution logic (cluster-source filter, owner-based attribution, EC2/EBS cloud-cost joins, and the cross-tab overlap model documented in section 4 below).
 
-   **Update the hard-coded `notebook_path` values** in the YAML to match where you imported the notebooks (the template currently points at a developer workspace path), and review the default `parameters` block (`catalog`, `cloud_provider`, `overlap_days`, `schema`, `workspace_ids`) before deploying.
+   **Update the hard-coded `notebook_path` values** in the YAML to match where you imported the notebooks (the template currently points at a developer workspace path), and review the default `parameters` block (`catalog`, `cloud_provider`, `overlap_days`, `schema`, `workspace_ids`, `subscription_id`, `scope`) before deploying. The last two (`subscription_id` and `scope`) are Azure-only — the subscription id and the secret-scope name holding `tenant_id`/`client_id`/`client_secret`; they are inert empty defaults on AWS/GCP.
 4. Create the job either via the Databricks Workflows UI using the YAML as a reference, or by wrapping it in a Databricks Asset Bundle.
 5. Run the job at least once and confirm `dbspend360_total_job_spends` has rows before moving on to the app deployment steps below.
 
@@ -343,3 +338,28 @@ Two Azure specifics worth knowing:
 Everything downstream of the explorer — the pool rollup, the service layer, the
 API, and the frontend labels — is cloud-agnostic and unchanged; only the explorer
 notebook learns to source Azure pool cost.
+
+
+## 5. Tab data lineage (system tables & key filters)
+
+Each app tab reads one precomputed rollup table (see `table_name`,
+`all_purpose_table_name`, `pool_table_name`, and `pipeline_table_name` in
+`config/app.dev.config`). The Databricks Job builds those rollups from Databricks
+**system tables** plus cloud cost explorer output. The four tabs scope the same
+underlying compute differently — they overlap by design (see section 4).
+
+| Tab | Rollup table | System tables (ETL) | Key scope / join keys |
+|---|---|---|---|
+| **Job Clusters** | `dbspend360_total_job_spends` | `system.billing.usage`, `system.billing.list_prices`, `system.compute.clusters` | `cluster_source = 'JOB'`; `job_run_id IS NOT NULL`; grain includes `cluster_id`, `job_id`, `run_id`. Cloud VM from `dbspend360_cloud_cost_explorer` joined on `cluster_id` (AWS/Azure tag `ClusterId` / `clusterid`). |
+| **All-Purpose Clusters** | `dbspend360_total_all_purpose_spends` | `system.billing.usage`, `system.billing.list_prices`, `system.compute.clusters` | `cluster_source IN ('UI','API')`; `job_run_id IS NULL`; grain is `(cluster_id, user_id, usage_date)` with `owned_by` from clusters. Same cluster cloud explorer as Job Clusters. |
+| **Instance Pools** | `dbspend360_total_pool_spends` | `system.billing.usage`, `system.billing.list_prices`, `system.compute.instance_pools` | `usage_metadata.instance_pool_id IS NOT NULL` (any `cluster_source`). Grain is `(instance_pool_id, cluster_id, usage_date)`; idle pool capacity uses `cluster_id = '__pool_overhead__'`. Cloud VM from `dbspend360_pool_cloud_cost_explorer` joined on `DatabricksInstancePoolId` tag — not `cluster_id`. |
+| **Pipeline Compute** | `dbspend360_total_pipeline_spends` | `system.billing.usage`, `system.billing.list_prices`, `system.lakeflow.pipelines` | `usage_metadata.dlt_pipeline_id IS NOT NULL` (DLT, DBSQL MVs, online tables, vector search, model serving, AI functions). Grain is `(workspace_id, pipeline_id, usage_date, billing_origin_product)`; `cluster_id IS NULL` marks serverless. Classic pipeline VM cost joins `dbspend360_cloud_cost_explorer` on `cluster_id`. |
+
+**App-time enrichment (optional grants):** beyond the rollup tables, the app
+queries system tables at request time for names and drill-down detail —
+`system.lakeflow.jobs` and `system.compute.clusters` (Job Clusters),
+`system.compute.clusters` (All-Purpose), `system.compute.instance_pools` (Instance
+Pools), and `system.lakeflow.pipelines` (Pipeline Compute). Job run analysis may
+also read `system.lakeflow.job_run_timeline`. Without these grants the tabs still
+load, but names and detail panels may be incomplete. See [Required Grants for the
+App Service Principal](#required-grants-for-the-app-service-principal).
