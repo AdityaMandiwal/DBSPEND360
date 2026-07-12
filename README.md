@@ -2,13 +2,13 @@
 
 ## 1. Overview
 
-* DBSPEND360 is a Databricks-native solution that provides clear job-level visibility into cloud and DBU spends for Databricks workloads.
+* DBSPEND360 is a Databricks-native solution that provides clear visibility into cloud and DBU spends across Databricks workloads — jobs, all-purpose clusters, instance pools, and pipelines.
 
-* Tracks end-to-end cost at job, run, and cluster level for Databricks jobs.
+* Tracks end-to-end cost at job, run, and cluster level for Databricks jobs; all-purpose cluster spend by owner; instance pool capacity and attribution; and pipeline / serverless compute.
 * Combines cloud VM cost (AWS Cost Explorer or Azure Cost Management) with Databricks DBU cost from system billing tables.
-* Produces a consolidated `dbspend360_total_job_spends` table as the single source of truth for job-level cost.
+* Produces four rollup tables — one per app tab — with `dbspend360_total_job_spends` as the Job Clusters source of truth.
 * Includes audit and error logging to support incremental loads, monitoring, and reconciliation.
-* Powers the DBSPEND360 Databricks App, which provides dashboards and AI-driven cost and performance recommendations.
+* Powers the DBSPEND360 Databricks App (four cost tabs + AI insights), which provides dashboards and AI-driven cost and performance recommendations.
 
 > **Status:** AWS and Azure are functional end-to-end today. GCP is wired through the config, UI label, and LLM layers, but the GCP cloud cost explorer ETL (`jobs/notebooks/gcp_cloud_cost_explorer_app.ipynb`) is a stub that raises `NotImplementedError` and needs to be implemented before GCP can be selected as the active provider.
 
@@ -19,10 +19,31 @@
 
 ## 2. Architecture
 
+DBSPEND360 splits into a **Databricks Job pipeline** (nine tasks, four independent branches) and a **Databricks App** (four cost tabs + AI insights). The pipeline writes curated Unity Catalog tables; the app reads rollup tables at query time and optionally enriches rows from system tables.
+
+| Diagram | Best for |
+|---|---|
+| **Pipeline Architecture** | The nine-task job DAG, branch isolation, and task dependencies |
+| **Data & Consumption** | Which Delta tables each tab reads, drill-down, enrichment, and AI |
+| **Implementation Flow** | Full stack — config → ingest → branches → rollups → app |
+
+### Pipeline Architecture
+
+Nine-task Databricks Job DAG: a shared `cloud_cost_explorer` ingest fans out into four independent branches (Job Clusters, All-Purpose, Instance Pools, Pipeline Compute). Each branch runs a DBU notebook and a rollup notebook. The Pipeline Compute DBU task reads system billing tables directly; its rollup notebook joins `cloud_cost_explorer` output. Branch failures are isolated — one branch failing does not block the others.
+
+![DBSPEND360 pipeline architecture: Cloud Cost Explorer APIs and Databricks system tables feed cloud_cost_explorer, which fans out into four independent branches — Job Clusters, All-Purpose, Instance Pools, and Pipeline Compute — each with a DBU notebook and rollup notebook.](release/readme_images/architecture_pipeline.png)
+
+### Data & Consumption
+
+Curated Delta tables produced by the pipeline and how the four-tab app consumes them. Shared explorer tables (`dbspend360_cloud_cost_explorer`, `dbspend360_pool_cloud_cost_explorer`, `dbspend360_other_cost_breakdown`) feed branch-specific rollups; each app tab reads its rollup table. `dbspend360_other_cost_breakdown` powers per-service drill-down. At query time the app optionally enriches rows from `system.lakeflow.jobs`, `system.compute.clusters`, `system.compute.instance_pools`, and `system.lakeflow.pipelines`. AI recommendations are served via `databricks-claude-sonnet-4` Model Serving.
+
+![DBSPEND360 data and consumption architecture: shared cloud cost explorer tables feed four branch rollup tables, each powering an app tab; query-time system table enrichment and other_cost_breakdown drill-down feed the Databricks App, which calls databricks-claude-sonnet-4 for AI recommendations.](release/readme_images/architecture_data_app.png)
+
 ### Implementation Flow
 
-![DBSPEND360 implementation flow: cloud_cost_explorer writes dbspend360_cloud_cost_explorer, dbspend360_pool_cloud_cost_explorer, and dbspend360_other_cost_breakdown, then fans out into four independent branches (each with a DBU notebook and rollup notebook) that produce dbspend360_total_job_spends, dbspend360_total_all_purpose_spends, dbspend360_total_pool_spends, and dbspend360_total_pipeline_spends for the app's four tabs.](release/readme_images/implementation_flow.png)
+End-to-end view from cloud provider config through shared ingest, four parallel branches, rollup tables, and the app.
 
+![DBSPEND360 implementation flow: cloud_cost_explorer writes dbspend360_cloud_cost_explorer, dbspend360_pool_cloud_cost_explorer, and dbspend360_other_cost_breakdown, then fans out into four independent branches (each with a DBU notebook and rollup notebook) that produce dbspend360_total_job_spends, dbspend360_total_all_purpose_spends, dbspend360_total_pool_spends, and dbspend360_total_pipeline_spends for the app's four tabs.](release/readme_images/implementation_flow.png)
 
 
 ## 3. Usage
@@ -35,7 +56,7 @@
     ```
 
 * `jobs/` contains all the DDL notebooks, ETL notebooks, and the Databricks Job resource template for DBSPEND360.
-* `release/` contains the product release doc and the per-cloud credentials setup guides needed for data ingestion from each cost explorer:
+* `release/` contains `DBSpend360-Product-Release.docx` and the per-cloud credentials setup guides needed for data ingestion from each cost explorer:
     * `release/AWS Credentials and Permissions Setup.md` — the single required Cost Explorer API (`ce:GetCostAndUsage`, us-east-1), minimal IAM policy (inline JSON), the Unity Catalog service credential (`dbspend-read-ce`) auth wiring, the `ClusterId` / `DatabricksInstancePoolId` tagging convention used to join line items back to Databricks, and a verification `aws ce get-cost-and-usage` command.
     * `release/Azure Credentials and Permissions Setup.md` — Azure Cost Management API/SDK, Entra ID app-registration (service principal) walkthrough, the `Cost Management Reader` role assignment at subscription scope, how the SPN credentials are delivered via a Databricks secret scope, the `clusterid` tag convention, and a verification `az rest` query.
     * `release/GCP Credentials and Permissions Setup.md` — stub placeholder; pending the GCP cost explorer implementation. Outlines the GCP APIs (Cloud Billing / BigQuery), IAM roles, and verification steps that will be needed once the notebook is implemented.
@@ -72,7 +93,7 @@ Configure local Databricks authentication using **either**:
 
 ### Deploy the data pipeline (Databricks Job)
 
-The Databricks App reads from `dbspend360_total_job_spends`, which is produced by a multi-task Databricks Job. **Deploy and run this pipeline before deploying the app**, otherwise the dashboard renders empty and the AI insights have no data to analyze.
+The Databricks App reads **four rollup tables** (one per cost tab), all produced by the same multi-task Databricks Job — see [§2 Data & Consumption](#data--consumption). **Deploy and run this pipeline before deploying the app**, otherwise the dashboards render empty and the AI insights have no data to analyze.
 
 1. Import everything under `jobs/notebooks/` and `jobs/ddls/` into your Databricks workspace.
 2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. This orchestrator notebook invokes every DDL under `jobs/ddls/` and creates: `dbspend360_audit_log`, `dbspend360_error_log`, `dbspend360_cloud_cost_explorer`, `dbspend360_pool_cloud_cost_explorer`, `dbspend360_dbu_cost`, `dbspend360_other_cost_breakdown`, `dbspend360_total_job_spends`, `dbspend360_all_purpose_dbu_cost`, `dbspend360_total_all_purpose_spends`, `dbspend360_pool_dbu_cost`, `dbspend360_total_pool_spends`, `dbspend360_pipeline_dbu_cost`, and `dbspend360_total_pipeline_spends`. These back the four cost tabs in the app — Job Clusters, All-Purpose Clusters, Instance Pools, and Pipeline Compute — each populated by its own parallel branch described in step 3 below.
@@ -106,7 +127,7 @@ The Databricks App reads from `dbspend360_total_job_spends`, which is produced b
 
    **Update the hard-coded `notebook_path` values** in the YAML to match where you imported the notebooks (the template currently points at a developer workspace path), and review the default `parameters` block (`catalog`, `cloud_provider`, `overlap_days`, `schema`, `workspace_ids`, `subscription_id`, `scope`) before deploying. The last two (`subscription_id` and `scope`) are Azure-only — the subscription id and the secret-scope name holding `tenant_id`/`client_id`/`client_secret`; they are inert empty defaults on AWS/GCP.
 4. Create the job either via the Databricks Workflows UI using the YAML as a reference, or by wrapping it in a Databricks Asset Bundle.
-5. Run the job at least once and confirm `dbspend360_total_job_spends` has rows before moving on to the app deployment steps below.
+5. Run the job at least once and confirm all four rollup tables have rows (`dbspend360_total_job_spends`, `dbspend360_total_all_purpose_spends`, `dbspend360_total_pool_spends`, `dbspend360_total_pipeline_spends`) before moving on to the app deployment steps below.
 
 
 ### Step by step setup
@@ -182,17 +203,28 @@ The app uses `databricks-claude-sonnet-4` as the foundation model to generate co
 
 * `CAN QUERY` on the `databricks-claude-sonnet-4` model serving endpoint.
 
-If this grant is missing, the dashboard still loads but the AI Cost Analysis panel will not render.
+If this grant is missing, the dashboard still loads but the AI Cost Analysis panel will not render. Also confirm `enable_ai_insights = true` under `[features]` in your config file (`config/app.dev.config` ships with it set to `false` for local development).
 
 #### Optional: System Table Access
 
-The app also queries `system.lakeflow.jobs` and `system.compute.clusters` to enrich cost data with job names and cluster details. Granting SELECT on these tables requires **account admin** privileges. Without these grants the app still works, but job names and cluster details may show as null.
+The app also queries system tables at request time to enrich cost data with names and drill-down detail. Granting SELECT on these tables requires **account admin** privileges. Without these grants the tabs still load, but names and detail panels may be incomplete.
+
+| System table | Used by |
+|---|---|
+| `system.lakeflow.jobs` | Job Clusters tab — job names |
+| `system.compute.clusters` | Job Clusters and All-Purpose tabs — cluster names and config |
+| `system.compute.instance_pools` | Instance Pools tab — pool names and config |
+| `system.lakeflow.pipelines` | Pipeline Compute tab — pipeline names and config |
+| `system.lakeflow.job_run_timeline` | Job run analysis — filter to succeeded runs for baselines |
 
 If an account admin is available, ask them to run:
 
 ```sql
 GRANT SELECT ON TABLE system.lakeflow.jobs TO `<APP_SERVICE_PRINCIPAL_ID>`;
 GRANT SELECT ON TABLE system.compute.clusters TO `<APP_SERVICE_PRINCIPAL_ID>`;
+GRANT SELECT ON TABLE system.compute.instance_pools TO `<APP_SERVICE_PRINCIPAL_ID>`;
+GRANT SELECT ON TABLE system.lakeflow.pipelines TO `<APP_SERVICE_PRINCIPAL_ID>`;
+GRANT SELECT ON TABLE system.lakeflow.job_run_timeline TO `<APP_SERVICE_PRINCIPAL_ID>`;
 ```
 
 
@@ -314,7 +346,7 @@ instead of AWS Cost Explorer:
   Compute tabs — this has always worked on Azure.
 * `dbspend360_pool_cloud_cost_explorer` groups by the
   **`DatabricksInstancePoolId`** tag and feeds the Instance Pools tab. This is the
-  isolated `run_pool()` path added in `plan_pool_pipeline_azure_cost.md`. It
+  isolated `run_pool()` path in the cloud cost explorer notebooks. It
   groups by **both** the pool and `clusterid` tags and applies the same **netting
   guard** (keep only the `clusterid`-free slice), so Azure pool cloud cost is
   disjoint from cluster cloud cost — the Instance Pools tab is additive, not
