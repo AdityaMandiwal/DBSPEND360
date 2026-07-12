@@ -2,11 +2,12 @@
 Regenerate the architecture and implementation-flow diagrams used in README.md.
 
 Outputs:
-    release/readme_images/architecture.png
+    release/readme_images/architecture_pipeline.png
+    release/readme_images/architecture_data_app.png
     release/readme_images/implementation_flow.png
 
 Run with:
-    uv run --with matplotlib python claude_scripts/generate_readme_diagrams.py
+    uv run --no-project --with matplotlib python claude_scripts/generate_readme_diagrams.py
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ PALETTE = {
     "task_edge": "#FF6F1A",
     "table_fill": "#E6F4EA",
     "table_edge": "#2E7D32",
+    "rollup_fill": "#D4EDDA",
+    "rollup_edge": "#1B5E20",
     "support_fill": "#FBE9E7",
     "support_edge": "#C62828",
     "consumer_fill": "#FFFDE7",
@@ -41,9 +44,61 @@ PALETTE = {
     "arrow_dashed": "#78909C",
     "title": "#102A43",
     "subtitle": "#37474F",
+    "branch_job": "#FF6F1A",
+    "branch_ap": "#1565C0",
+    "branch_pool": "#2E7D32",
+    "branch_pipeline": "#6A1B9A",
 }
 
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "release" / "readme_images"
+
+BRANCHES = [
+    {
+        "label": "Job Clusters",
+        "tab": "Job Clusters",
+        "color": PALETTE["branch_job"],
+        "dbu_task": "Dbspend360dbu_costs",
+        "rollup_task": "databricks_job_spends",
+        "dbu_table": "dbspend360_\ndbu_cost",
+        "rollup_table": "dbspend360_\ntotal_job_spends",
+        "cloud_dep": True,
+        "cloud_source": "cluster",
+    },
+    {
+        "label": "All-Purpose",
+        "tab": "All-Purpose",
+        "color": PALETTE["branch_ap"],
+        "dbu_task": "Dbspend360_all_purpose_dbu_costs",
+        "rollup_task": "all_purpose_spends",
+        "dbu_table": "dbspend360_all_purpose_\ndbu_cost",
+        "rollup_table": "dbspend360_total_\nall_purpose_spends",
+        "cloud_dep": True,
+        "cloud_source": "cluster",
+    },
+    {
+        "label": "Instance Pools",
+        "tab": "Instance Pools",
+        "color": PALETTE["branch_pool"],
+        "dbu_task": "Dbspend360_pool_dbu_costs",
+        "rollup_task": "pool_spends",
+        "dbu_table": "dbspend360_\npool_dbu_cost",
+        "rollup_table": "dbspend360_\ntotal_pool_spends",
+        "cloud_dep": True,
+        "cloud_source": "pool",
+    },
+    {
+        "label": "Pipeline Compute",
+        "tab": "Pipeline",
+        "color": PALETTE["branch_pipeline"],
+        "dbu_task": "Dbspend360_pipeline_dbu_costs",
+        "rollup_task": "pipeline_spends",
+        "dbu_table": "dbspend360_\npipeline_dbu_cost",
+        "rollup_table": "dbspend360_\ntotal_pipeline_spends",
+        "cloud_dep": False,
+        "rollup_cloud_dep": True,
+        "cloud_source": "cluster",
+    },
+]
 
 
 # -----------------------------------------------------------------------------
@@ -68,7 +123,6 @@ def draw_box(
     rounding: float = 0.04,
     lw: float = 1.6,
 ):
-    """Draw a rounded rectangle with a title and optional subtitle."""
     box = FancyBboxPatch(
         (x, y),
         w,
@@ -117,17 +171,16 @@ def draw_box(
         )
 
 
-def draw_lane(ax, x, y, w, h, label, label_offset: float = 0.22):
-    """Draw a soft background lane with the section label rendered ABOVE the lane.
-
-    Placing the label outside the lane (rather than inside near the top edge)
-    guarantees that boxes inside the lane never overlap the section heading.
-
-    The label is rendered with a white bbox and high zorder so that any arrow
-    travelling between lanes is masked behind the label text. The figure
-    background is white, so the bbox is visually invisible - it just hides
-    arrow segments that would otherwise cross the heading.
-    """
+def draw_lane(
+    ax,
+    x,
+    y,
+    w,
+    h,
+    label: str | None,
+    label_position: str = "above",
+    label_offset: float = 0.22,
+):
     lane = FancyBboxPatch(
         (x, y),
         w,
@@ -139,16 +192,79 @@ def draw_lane(ax, x, y, w, h, label, label_offset: float = 0.22):
         zorder=1,
     )
     ax.add_patch(lane)
+    if not label:
+        return
+    if label_position == "inside":
+        label_y = y + h - 0.30
+        label_va = "top"
+    else:
+        label_y = y + h + label_offset
+        label_va = "center"
     ax.text(
         x + 0.25,
-        y + h + label_offset,
+        label_y,
         label,
         ha="left",
-        va="center",
+        va=label_va,
         fontsize=11.5,
         fontweight="bold",
         color=PALETTE["title"],
         bbox=dict(facecolor="white", edgecolor="none", pad=3),
+        zorder=10,
+    )
+
+
+def draw_branch_column(
+    ax,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    label: str,
+    color: str,
+    label_gap: float = 0.70,
+    show_label: bool = True,
+):
+    """Tinted column lane; optional branch label rendered above the lane top."""
+    lane = FancyBboxPatch(
+        (x, y),
+        w,
+        h,
+        boxstyle="round,pad=0.01,rounding_size=0.04",
+        linewidth=1.4,
+        edgecolor=color,
+        facecolor="#FFFFFF",
+        alpha=0.55,
+        zorder=1,
+    )
+    ax.add_patch(lane)
+    if show_label:
+        ax.text(
+            x + w / 2,
+            y + h + label_gap,
+            label,
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            fontweight="bold",
+            color=color,
+            bbox=dict(facecolor="white", edgecolor="none", pad=2),
+            zorder=10,
+        )
+
+
+def draw_branch_heading(ax, x: float, y: float, text: str, color: str, va: str = "bottom"):
+    """Standalone branch heading; default anchors the bottom edge at *y*."""
+    ax.text(
+        x,
+        y,
+        text,
+        ha="center",
+        va=va,
+        fontsize=10,
+        fontweight="bold",
+        color=color,
+        bbox=dict(facecolor="white", edgecolor=color, boxstyle="round,pad=0.22", linewidth=1.2),
         zorder=10,
     )
 
@@ -180,247 +296,430 @@ def arrow(
     )
 
 
+def draw_tab_pill(ax, x: float, y: float, w: float, h: float, label: str, color: str):
+    """Small colored tab chip used in the consumption layer."""
+    pill = FancyBboxPatch(
+        (x, y),
+        w,
+        h,
+        boxstyle="round,pad=0.01,rounding_size=0.03",
+        linewidth=1.8,
+        edgecolor=color,
+        facecolor="#FFFFFF",
+        zorder=3,
+    )
+    ax.add_patch(pill)
+    ax.text(
+        x + w / 2,
+        y + h / 2,
+        label,
+        ha="center",
+        va="center",
+        fontsize=8,
+        fontweight="bold",
+        color=color,
+        zorder=4,
+    )
+
+
+def draw_legend(ax, x: float, y: float, items: list[tuple[str, str, str]]):
+    """Compact line-style legend: [(label, linestyle, color), ...]."""
+    for i, (label, style, color) in enumerate(items):
+        ly = y - i * 0.28
+        ax.plot([x, x + 0.55], [ly, ly], color=color, linestyle=style, linewidth=1.6, zorder=5)
+        ax.text(
+            x + 0.65,
+            ly,
+            label,
+            ha="left",
+            va="center",
+            fontsize=8,
+            color=PALETTE["subtitle"],
+            zorder=5,
+        )
+
+
 # -----------------------------------------------------------------------------
-# Diagram 1: Architecture
+# Diagram 1a: Pipeline architecture (sources + 9-task DAG)
 # -----------------------------------------------------------------------------
 
 
-def render_architecture(path: Path):
-    """Render the logical architecture diagram.
-
-    Layout principles (top-down):
-      * Title and subtitle render via ax.text so bbox_inches='tight' keeps
-        them precisely centered on the content extent.
-      * Each tier has the section label drawn ABOVE its lane (via draw_lane)
-        so the heading can never collide with the boxes inside.
-      * Arrows flow primarily downward (sources -> tasks -> tables -> app).
-        Back-references from tier-3 tables to Task 3 were removed - the
-        downward flow is enough to convey logical dependencies and removing
-        the curved dashed arrows makes the diagram far easier to scan.
-      * Audit / error logs sit on the right of the curated-tables lane with
-        a small italic annotation. No criss-crossing arrow from every task.
-    """
-    fig_w, fig_h = 16, 11
+def render_architecture_pipeline(path: Path):
+    """Sources and the nine-task / four-branch pipeline DAG."""
+    fig_w, fig_h = 20, 13
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=160)
-    ax.set_xlim(0, 16)
-    ax.set_ylim(0, 11)
+    ax.set_xlim(0, 20)
+    ax.set_ylim(0, 13)
     ax.set_aspect("equal")
     ax.axis("off")
 
-    # ---- Title + subtitle (ax.text -> centered when figure is tight-cropped)
+    cx = 10.0
+    margin = 0.5
+    lane_w = fig_w - 2 * margin
+    lane_x = margin
+
+    # Center the four branch columns on the canvas.
+    col_w = 4.4
+    col_gap = 0.35
+    col_span = len(BRANCHES) * col_w + (len(BRANCHES) - 1) * col_gap
+    col_x0 = (fig_w - col_span) / 2
+
+    # Center the two source boxes with a fixed gap between them.
+    src_w_left, src_w_right = 8.5, 8.7
+    src_gap = 1.0
+    src_span = src_w_left + src_gap + src_w_right
+    src_x_left = (fig_w - src_span) / 2
+    src_x_right = src_x_left + src_w_left + src_gap
+
     ax.text(
-        8.0, 10.70,
-        "DBSPEND360  -  Logical Architecture",
-        ha="center", va="center",
-        fontsize=18, fontweight="bold",
+        cx,
+        12.55,
+        "DBSPEND360  -  Pipeline Architecture",
+        ha="center",
+        va="center",
+        fontsize=17,
+        fontweight="bold",
         color=PALETTE["title"],
     )
     ax.text(
-        8.0, 10.20,
-        "Cloud cost + Databricks DBU cost  ->  job-level spend  ->  dashboards & AI insights",
-        ha="center", va="center",
-        fontsize=11.5,
+        cx,
+        12.05,
+        "Data sources and the nine-task Databricks Job DAG (four independent branches)",
+        ha="center",
+        va="center",
+        fontsize=11,
         color=PALETTE["subtitle"],
     )
 
-    # ---- Lanes (labels drawn ABOVE each lane via draw_lane)
-    # Vertical bookkeeping (top-down):
-    #   subtitle    y=10.20
-    #   label 1     y= 9.87  (= 9.65 + 0.22)
-    #   Lane 1      y=8.30..9.65   (h=1.35)
-    #   label 2     y= 8.12
-    #   Lane 2      y=6.20..7.90   (h=1.70)
-    #   label 3     y= 5.97
-    #   Lane 3      y=3.40..5.75   (h=2.35)
-    #   label 4     y= 3.22
-    #   Lane 4      y=0.40..3.00   (h=2.60)
-    #   footnote    y= 0.05
-    draw_lane(ax, 0.3, 8.30, 15.4, 1.35, "1. Data Sources")
-    draw_lane(ax, 0.3, 6.20, 15.4, 1.70, "2. DBSpend360 Pipeline  (Databricks Job)")
-    draw_lane(ax, 0.3, 3.40, 15.4, 2.35, "3. Curated Delta Tables  (Unity Catalog)")
-    draw_lane(ax, 0.3, 0.40, 15.4, 2.60, "4. Consumption")
+    # Section 1 label sits above the lane; section 2 label stays inside (no overlap there).
+    src_lane_y, src_lane_h = 10.35, 1.18
+    pipe_lane_y, pipe_lane_h = 1.45, 8.45
 
-    # ---- Tier 1: Sources
-    src_y, src_h = 8.50, 1.00
-    cloud_x, cloud_w = 0.9, 6.5
-    sys_x, sys_w = 8.2, 6.9
+    draw_lane(ax, lane_x, src_lane_y, lane_w, src_lane_h, "1. Data Sources", label_position="above", label_offset=0.14)
+    draw_lane(
+        ax,
+        lane_x,
+        pipe_lane_y,
+        lane_w,
+        pipe_lane_h,
+        "2. DBSpend360 Pipeline",
+        label_position="inside",
+    )
+
+    src_y, src_h = src_lane_y + 0.14, src_lane_h - 0.22
     draw_box(
-        ax, cloud_x, src_y, cloud_w, src_h,
+        ax, src_x_left, src_y, src_w_left, src_h,
         "Cloud Cost Explorer APIs",
-        "AWS Cost Explorer   |   Azure Cost Management   |   GCP Cloud Billing*",
+        "AWS  |  Azure  |  GCP Cloud Billing*",
         fill=PALETTE["source_fill"], edge=PALETTE["source_edge"],
-        title_size=12, subtitle_size=9.5,
+        title_size=11, subtitle_size=9,
     )
     draw_box(
-        ax, sys_x, src_y, sys_w, src_h,
+        ax, src_x_right, src_y, src_w_right, src_h,
         "Databricks System Tables",
-        "system.billing.usage   |   system.billing.list_prices   |   system.compute.clusters",
+        "billing.usage  |  list_prices  |  compute.clusters",
         fill=PALETTE["system_fill"], edge=PALETTE["system_edge"],
-        title_size=12, subtitle_size=9.5,
+        title_size=11, subtitle_size=9,
     )
 
-    # ---- Tier 2: Pipeline tasks
-    task_y, task_h = 6.35, 1.40
-    t1_x, t1_w = 0.7, 4.7
-    t2_x, t2_w = 5.6, 4.6
-    t3_x, t3_w = 10.4, 4.9
-
+    cloud_w, cloud_h = 7.5, 1.05
+    cloud_x = cx - cloud_w / 2
+    cloud_y = 8.85
     draw_box(
-        ax, t1_x, task_y, t1_w, task_h,
-        "Task 1   -   cloud_cost_explorer",
-        "<provider>_cloud_cost_explorer_app\n(aws | azure | gcp*)",
+        ax, cloud_x, cloud_y, cloud_w, cloud_h,
+        "cloud_cost_explorer",
+        "<provider>_cloud_cost_explorer_app",
         fill=PALETTE["task_fill"], edge=PALETTE["task_edge"],
-        title_size=12, subtitle_size=9.5,
-    )
-    draw_box(
-        ax, t2_x, task_y, t2_w, task_h,
-        "Task 2   -   dbspend360_dbu_costs",
-        "dbspend360_dbu_cost_app",
-        fill=PALETTE["task_fill"], edge=PALETTE["task_edge"],
-        title_size=12, subtitle_size=9.5,
-    )
-    draw_box(
-        ax, t3_x, task_y, t3_w, task_h,
-        "Task 3   -   databricks_job_spends",
-        "databricks_job_spends_app\n(joins cloud + DBU)",
-        fill=PALETTE["task_fill"], edge=PALETTE["task_edge"],
-        title_size=12, subtitle_size=9.5,
+        title_size=11, subtitle_size=9,
     )
 
-    # ---- Source -> Task arrows
-    # Cloud APIs feed Task 1
-    arrow(ax, cloud_x + cloud_w / 2, src_y, t1_x + t1_w / 2, task_y + task_h, lw=1.8)
-    # System Tables feed Task 2 (DBU cost computation)
-    arrow(ax, sys_x + sys_w * 0.20, src_y, t2_x + t2_w / 2, task_y + task_h, lw=1.8)
-    # System Tables also feed Task 3 (cluster / job metadata)
-    arrow(ax, sys_x + sys_w * 0.80, src_y, t3_x + t3_w / 2, task_y + task_h, lw=1.8)
+    task_h = 1.05
+    heading_y = 7.55
+    dbu_y = 5.55
+    rollup_y = 3.85
+    lane_y = rollup_y
+    lane_h = dbu_y + task_h - rollup_y
 
-    # ---- Task chaining (depends_on)
-    arrow(ax, t1_x + t1_w, task_y + task_h / 2, t2_x, task_y + task_h / 2, lw=2.0)
-    arrow(ax, t2_x + t2_w, task_y + task_h / 2, t3_x, task_y + task_h / 2, lw=2.0)
+    col_centers: list[float] = []
+    for i, branch in enumerate(BRANCHES):
+        col_x = col_x0 + i * (col_w + col_gap)
+        col_cx = col_x + col_w / 2
+        col_centers.append(col_cx)
 
-    # ---- Tier 3: Curated tables
-    table_y, table_h = 3.75, 1.55
-    cce_x, cce_w = 0.7, 3.0
-    ocb_x, ocb_w = 3.85, 3.0
-    dbu_x, dbu_w = 7.00, 2.8
-    tjs_x, tjs_w = 9.95, 3.0
-    audit_x, audit_w = 13.15, 2.20
+        draw_branch_heading(ax, col_cx, heading_y, branch["label"], branch["color"], va="center")
+        draw_branch_column(
+            ax, col_x, lane_y, col_w, lane_h, branch["label"], branch["color"], show_label=False,
+        )
+        draw_box(
+            ax, col_x, dbu_y, col_w, task_h,
+            branch["dbu_task"], "DBU notebook",
+            fill=PALETTE["task_fill"], edge=branch["color"],
+            title_size=9.5, subtitle_size=8, lw=2.0,
+        )
+        draw_box(
+            ax, col_x, rollup_y, col_w, task_h,
+            branch["rollup_task"], "rollup notebook",
+            fill=PALETTE["task_fill"], edge=branch["color"],
+            title_size=9.5, subtitle_size=8, lw=2.0,
+        )
+        arrow(ax, col_cx, dbu_y, col_cx, rollup_y + task_h, lw=1.6)
 
-    draw_box(
-        ax, cce_x, table_y, cce_w, table_h,
-        "dbspend360_\ncloud_cost_explorer",
-        "per cluster / day\ncompute | storage | network | other",
-        fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
-        title_size=10.5, subtitle_size=9,
-    )
-    draw_box(
-        ax, ocb_x, table_y, ocb_w, table_h,
-        "dbspend360_\nother_cost_breakdown",
-        "per-service detail of\nthe `other` cost bucket",
-        fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
-        title_size=10.5, subtitle_size=9,
-    )
-    draw_box(
-        ax, dbu_x, table_y, dbu_w, table_h,
-        "dbspend360_\ndbu_cost",
-        "DBU $ per\ncluster / job / run / day",
-        fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
-        title_size=10.5, subtitle_size=9,
-    )
-    draw_box(
-        ax, tjs_x, table_y, tjs_w, table_h,
-        "dbspend360_\ntotal_job_spends",
-        "single source of truth\njob-level cost (cloud + DBU)",
-        fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
-        title_size=10.5, subtitle_size=9,
+    # Source -> cloud_cost_explorer
+    arrow(ax, src_x_left + src_w_left / 2, src_y, cx, cloud_y + cloud_h, lw=1.6)
+    arrow(
+        ax, src_x_right + src_w_right / 2, src_y, cx, cloud_y + cloud_h,
+        lw=1.6, rad=-0.12,
     )
 
-    # ---- Supporting tables (stacked on the right, aligned with main row)
-    support_h = 0.70
-    draw_box(
-        ax, audit_x, table_y + table_h - support_h, audit_w, support_h,
-        "dbspend360_audit_log",
-        "per-task SUCCESS / FAILED",
-        fill=PALETTE["support_fill"], edge=PALETTE["support_edge"],
-        title_size=10, subtitle_size=8.5,
+    # cloud_cost_explorer -> three cloud-dependent DBU tasks
+    for i in range(3):
+        arrow(ax, cx, cloud_y, col_centers[i], dbu_y + task_h, lw=1.5, rad=0.06 * (i - 1))
+
+    # cloud_cost_explorer -> pipeline_spends (rollup only)
+    arrow(
+        ax, cx + cloud_w * 0.35, cloud_y, col_centers[3], rollup_y + task_h,
+        lw=1.4, rad=-0.12,
     )
-    draw_box(
-        ax, audit_x, table_y, audit_w, support_h,
-        "dbspend360_error_log",
-        "cloud <-> DBU mismatches",
-        fill=PALETTE["support_fill"], edge=PALETTE["support_edge"],
-        title_size=10, subtitle_size=8.5,
+
+    # system tables -> pipeline_dbu_costs (independent DBU task)
+    arrow(
+        ax, src_x_right + src_w_right / 2, src_y, col_centers[3], dbu_y + task_h,
+        color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.3, rad=0.18,
+    )
+
+    draw_legend(
+        ax,
+        lane_x + 0.05,
+        2.55,
+        [
+            ("task dependency", "-", PALETTE["arrow"]),
+            ("reads system tables (no upstream task)", (0, (4, 3)), PALETTE["arrow_dashed"]),
+        ],
+    )
+
+    ax.text(
+        col_centers[3],
+        rollup_y - 0.22,
+        "Pipeline branch: DBU task has no cloud_cost_explorer dependency;\n"
+        "rollup notebook joins cloud_cost_explorer output.",
+        ha="center",
+        va="top",
+        fontsize=7.5,
+        color=PALETTE["branch_pipeline"],
+        bbox=dict(facecolor="white", edgecolor=PALETTE["branch_pipeline"], boxstyle="round,pad=0.25", linewidth=1.0),
+        zorder=5,
+    )
+
+    ax.text(
+        cx,
+        0.55,
+        "* GCP cost explorer notebook is a stub; AWS and Azure are functional end-to-end today.",
+        ha="center",
+        va="center",
+        fontsize=8.5,
+        style="italic",
+        color=PALETTE["subtitle"],
     )
     ax.text(
-        audit_x + audit_w / 2,
-        table_y + table_h + 0.05,
-        "(written by every task)",
-        ha="center", va="bottom",
-        fontsize=8.5, style="italic",
+        cx,
+        1.05,
+        "Branches are independent — a failure in one does not block the others.",
+        ha="center",
+        va="center",
+        fontsize=9,
         color=PALETTE["subtitle"],
     )
 
-    # ---- Task -> Table arrows (forward only - no curved back-references)
-    arrow(ax, t1_x + t1_w * 0.30, task_y, cce_x + cce_w / 2, table_y + table_h, lw=1.6)
-    arrow(ax, t1_x + t1_w * 0.75, task_y, ocb_x + ocb_w / 2, table_y + table_h, lw=1.6)
-    arrow(ax, t2_x + t2_w / 2, task_y, dbu_x + dbu_w / 2, table_y + table_h, lw=1.6)
-    arrow(ax, t3_x + t3_w / 2, task_y, tjs_x + tjs_w / 2, table_y + table_h, lw=1.6)
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
-    # ---- Tier 4: Consumption
-    sys_lf_x, sys_lf_w, sys_lf_h = 0.7, 3.2, 1.10
-    sys_lf_y = 1.10
-    app_x, app_w, app_h = 4.4, 5.4, 1.55
-    app_y = 0.85
-    llm_x, llm_w, llm_h = 10.2, 5.0, 1.55
+
+# -----------------------------------------------------------------------------
+# Diagram 1b: Data tables + app consumption
+# -----------------------------------------------------------------------------
+
+
+def render_architecture_data_app(path: Path):
+    """Curated Delta tables and how the four-tab app consumes them."""
+    fig_w, fig_h = 20, 13.5
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=160)
+    ax.set_xlim(0, 20)
+    ax.set_ylim(0, 13.5)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    cx = 10.0
+    ax.text(
+        cx,
+        13.05,
+        "DBSPEND360  -  Data & Consumption",
+        ha="center",
+        va="center",
+        fontsize=17,
+        fontweight="bold",
+        color=PALETTE["title"],
+    )
+    ax.text(
+        cx,
+        12.55,
+        "Curated Unity Catalog tables and the four-tab Databricks App + AI insights",
+        ha="center",
+        va="center",
+        fontsize=11,
+        color=PALETTE["subtitle"],
+    )
+
+    draw_lane(ax, 0.4, 9.55, 19.2, 2.15, "1. Shared tables  (from cloud_cost_explorer)", label_offset=0.20)
+    draw_lane(ax, 0.4, 5.85, 19.2, 3.45, "2. Branch tables  (one pair + rollup per tab)", label_offset=0.20)
+    draw_lane(ax, 0.4, 0.45, 19.2, 5.15, "3. Consumption", label_offset=0.20)
+
+    shared_y, tbl_h = 9.85, 1.35
+    cluster_cloud_x, cluster_cloud_w = 0.6, 5.8
+    pool_cloud_x, pool_cloud_w = 6.9, 5.8
+    other_x, other_w = 13.2, 5.8
 
     draw_box(
-        ax, sys_lf_x, sys_lf_y, sys_lf_w, sys_lf_h,
-        "system.lakeflow.jobs",
-        "joined at query time\nto resolve job names",
-        fill=PALETTE["system_fill"], edge=PALETTE["system_edge"],
-        title_size=10.5, subtitle_size=9,
+        ax, cluster_cloud_x, shared_y, cluster_cloud_w, tbl_h,
+        "dbspend360_\ncloud_cost_explorer", "ClusterId tag\nJob / AP / Pipeline",
+        fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
+        title_size=10, subtitle_size=8.5,
     )
+    draw_box(
+        ax, pool_cloud_x, shared_y, pool_cloud_w, tbl_h,
+        "dbspend360_pool_\ncloud_cost_explorer", "InstancePoolId tag\nInstance Pools",
+        fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
+        title_size=10, subtitle_size=8.5,
+    )
+    draw_box(
+        ax, other_x, shared_y, other_w, tbl_h,
+        "dbspend360_\nother_cost_breakdown", "per-service `other`\ndrill-down",
+        fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
+        title_size=10, subtitle_size=8.5,
+    )
+
+    ax.text(
+        10.0, 9.62,
+        "dbspend360_audit_log  +  dbspend360_error_log  (written by every task)",
+        ha="center", va="center", fontsize=8.5, style="italic", color=PALETTE["subtitle"],
+    )
+
+    branch_tbl_y = 7.45
+    col_w = 4.4
+    col_gap = 0.35
+    col_x0 = 0.55
+    tbl_pair_h = 1.10
+    rollup_tbl_y = 6.15
+
+    branch_centers: list[float] = []
+    rollup_positions: list[tuple[float, float, float, dict]] = []
+    for i, branch in enumerate(BRANCHES):
+        col_x = col_x0 + i * (col_w + col_gap)
+        col_cx = col_x + col_w / 2
+        branch_centers.append(col_cx)
+
+        draw_branch_heading(ax, col_cx, 8.95, branch["label"], branch["color"], va="center")
+        draw_branch_column(
+            ax, col_x, 6.0, col_w, 2.80, branch["label"], branch["color"], show_label=False,
+        )
+        draw_box(
+            ax, col_x, branch_tbl_y, col_w, tbl_pair_h,
+            branch["dbu_table"], None,
+            fill=PALETTE["table_fill"], edge=branch["color"],
+            title_size=8.5, lw=1.6,
+        )
+        draw_box(
+            ax, col_x, rollup_tbl_y, col_w, tbl_pair_h,
+            branch["rollup_table"], "rollup table",
+            fill=PALETTE["rollup_fill"], edge=branch["color"],
+            title_size=8.5, subtitle_size=7.5, lw=2.0,
+        )
+        rollup_positions.append((col_cx, rollup_tbl_y, col_w, branch))
+
+        cloud_src = branch.get("cloud_source")
+        if cloud_src == "pool":
+            arrow(
+                ax, pool_cloud_x + pool_cloud_w / 2, shared_y, col_cx, rollup_tbl_y + tbl_pair_h,
+                color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.1, rad=0.08,
+            )
+        elif cloud_src == "cluster":
+            arrow(
+                ax, cluster_cloud_x + cluster_cloud_w / 2, shared_y, col_cx, rollup_tbl_y + tbl_pair_h,
+                color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.0, rad=0.05 * (i - 1.5),
+            )
+
+    # --- Consumption layer ---
+    pill_w = 3.55
+    pill_h = 0.55
+    pill_y = 4.35
+    app_x, app_w, app_h = 4.35, 11.3, 1.45
+    app_y = 2.05
+    app_top = app_y + app_h
+
+    for col_cx, _ry, col_w_actual, branch in rollup_positions:
+        pill_x = col_cx - pill_w / 2
+        draw_tab_pill(ax, pill_x, pill_y, pill_w, pill_h, branch["tab"], branch["color"])
+        arrow(ax, col_cx, rollup_tbl_y, col_cx, pill_y + pill_h, lw=1.4)
+        arrow(ax, col_cx, pill_y, col_cx, app_top, lw=1.4)
+
     draw_box(
         ax, app_x, app_y, app_w, app_h,
         "DBSPEND360 Databricks App",
-        "FastAPI + React   |   cost dashboards, drill-downs,\ngrouped / job / cluster views",
+        "SQL warehouse queries  |  four cost tabs  |  dashboards  |  drill-down panels",
         fill=PALETTE["consumer_fill"], edge=PALETTE["consumer_edge"],
-        title_size=12, subtitle_size=9.5,
-    )
-    draw_box(
-        ax, llm_x, app_y, llm_w, llm_h,
-        "Foundation Model\ndatabricks-claude-sonnet-4",
-        "AI cost & cluster recommendations\nvia Databricks Model Serving",
-        fill=PALETTE["llm_fill"], edge=PALETTE["llm_edge"],
-        title_size=12, subtitle_size=9.5,
+        title_size=12, subtitle_size=9,
     )
 
-    # ---- Table -> App arrows
-    # total_job_spends -> App (primary feed)
-    arrow(ax, tjs_x + tjs_w * 0.40, table_y, app_x + app_w * 0.60, app_y + app_h, lw=1.6)
-    # other_cost_breakdown -> App (drill-down, dashed)
+    enrich_x, enrich_w, enrich_h = 0.55, 3.45, 2.35
+    enrich_y = 1.55
+    draw_box(
+        ax, enrich_x, enrich_y, enrich_w, enrich_h,
+        "Query-time enrichment",
+        "system.lakeflow.jobs  |  system.compute.clusters\n"
+        "system.compute.instance_pools  |  system.lakeflow.pipelines",
+        fill=PALETTE["system_fill"], edge=PALETTE["system_edge"],
+        title_size=9.5, subtitle_size=7.5,
+    )
     arrow(
-        ax, ocb_x + ocb_w / 2, table_y,
-        app_x + app_w * 0.25, app_y + app_h,
+        ax, enrich_x + enrich_w, enrich_y + enrich_h / 2, app_x, app_y + app_h * 0.55,
         color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.2,
     )
-    # system.lakeflow.jobs -> App (enrichment, dashed)
-    arrow(
-        ax, sys_lf_x + sys_lf_w, sys_lf_y + sys_lf_h * 0.55,
-        app_x, app_y + app_h * 0.45,
-        color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.2,
+
+    drill_w, drill_h = 2.8, 0.62
+    drill_x = 16.55
+    drill_y = 3.55
+    draw_box(
+        ax, drill_x, drill_y, drill_w, drill_h,
+        "other\ndrill-down", None,
+        fill="#FFFFFF", edge=PALETTE["table_edge"],
+        title_size=8, lw=1.4,
     )
-    # App -> LLM (queries foundation model)
+    arrow(
+        ax, other_x + other_w / 2, shared_y, drill_x + drill_w / 2, drill_y + drill_h,
+        color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.0, rad=-0.15,
+    )
+    arrow(
+        ax, drill_x, drill_y + drill_h / 2, app_x + app_w, app_y + app_h * 0.72,
+        color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.0,
+    )
+
+    llm_x, llm_w = 16.15, 3.55
+    draw_box(
+        ax, llm_x, app_y, llm_w, app_h,
+        "Foundation Model\ndatabricks-claude-sonnet-4",
+        "AI recommendations\nvia Model Serving",
+        fill=PALETTE["llm_fill"], edge=PALETTE["llm_edge"],
+        title_size=11, subtitle_size=9,
+    )
     arrow(ax, app_x + app_w, app_y + app_h / 2, llm_x, app_y + app_h / 2, lw=1.8)
 
-    # ---- Footnote
-    ax.text(
-        8.0, 0.05,
-        "* GCP cost explorer notebook is a stub; AWS and Azure are functional end-to-end today.",
-        ha="center", va="center",
-        fontsize=8.5, style="italic",
-        color=PALETTE["subtitle"],
+    draw_legend(
+        ax,
+        0.55,
+        0.95,
+        [
+            ("rollup table -> app tab", "-", PALETTE["arrow"]),
+            ("cloud explorer join / drill-down / enrichment", (0, (4, 3)), PALETTE["arrow_dashed"]),
+        ],
     )
 
     fig.savefig(path, bbox_inches="tight", facecolor="white")
@@ -433,170 +732,201 @@ def render_architecture(path: Path):
 
 
 def render_implementation_flow(path: Path):
-    """Strictly centered single-column flow.
-
-    Layout principles:
-      * The diagram is a single vertical column with `cx` as the centerline.
-      * Every box's horizontal center sits exactly on `cx`.
-      * The two output tables of Task 1 are placed symmetrically left and
-        right of `cx` so the column stays balanced.
-      * Supporting tables (audit + error) live in a soft banner directly
-        under the subtitle - this keeps the right margin clean and lets
-        `bbox_inches="tight"` produce a horizontally centered crop.
-      * The App box's subtitle documents the `other_cost_breakdown`
-        drill-down explicitly, so no separate side-arrow is needed
-        (an earlier version had one and it broke the centering).
-    """
-    fig_w, fig_h = 13, 16
+    """Nine-task / four-branch DAG consumed by the four-tab app."""
+    fig_w, fig_h = 20, 16
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=160)
-    ax.set_xlim(0, 13)
-    ax.set_ylim(-0.6, 15.4)
+    ax.set_xlim(0, 20)
+    ax.set_ylim(0, fig_h)
     ax.set_aspect("equal")
     ax.axis("off")
 
-    cx = 6.5  # canvas centerline -> everything centered uses this
+    cx = 10.0
 
-    # Title rendered as ax.text (instead of fig.suptitle) so its horizontal
-    # position is tied to the axes content extent, which guarantees centering
-    # when bbox_inches="tight" trims the figure.
+    # Uniform vertical rhythm — top-down placement keeps title flush with content.
+    V_GAP = 0.28
+    TASK_H = 1.05
+    TBL_H = 0.95
+    CLOUD_H = 1.10
+    CONFIG_H = 0.85
+    SUPPORT_H = 0.70
+    APP_H = 1.45
+    HEADING_H = 0.38
+
+    title_y = fig_h - 0.45
+    subtitle_y = fig_h - 0.95
+
+    support_y = subtitle_y - 0.40 - SUPPORT_H
+    config_y = support_y - V_GAP - CONFIG_H
+    cloud_y = config_y - V_GAP - CLOUD_H
+    tbl_y = cloud_y - V_GAP - TBL_H
+    heading_y = tbl_y - V_GAP - HEADING_H  # bottom edge of heading pill, va="bottom"
+    dbu_y = heading_y - V_GAP - TASK_H
+    dbu_top = dbu_y + TASK_H
+    rollup_task_y = dbu_y - V_GAP - TASK_H
+    dbu_tbl_y = rollup_task_y - V_GAP - TBL_H
+    rollup_tbl_y = dbu_tbl_y - V_GAP - TBL_H
+    app_y = rollup_tbl_y - V_GAP - APP_H
+    app_top = app_y + APP_H
+
+    lane_y = rollup_tbl_y
+    lane_h = dbu_top - rollup_tbl_y
+
     ax.text(
-        cx, 15.05,
+        cx, title_y,
         "DBSPEND360  -  Implementation Flow",
         ha="center", va="center",
-        fontsize=18, fontweight="bold",
-        color=PALETTE["title"],
+        fontsize=17, fontweight="bold", color=PALETTE["title"],
     )
     ax.text(
-        cx, 14.45,
-        "End-to-end ordering of DBSpend360 job tasks, the tables they produce, and the consuming app",
+        cx, subtitle_y,
+        "Nine job tasks, shared cloud ingest, four rollup tables for the app tabs",
         ha="center", va="center",
-        fontsize=11,
-        color=PALETTE["subtitle"],
+        fontsize=10, color=PALETTE["subtitle"],
     )
 
-    # Supporting-tables banner (centered under subtitle, drawn as a real
-    # rounded rectangle so it reads as a first-class element rather than an
-    # afterthought)
     draw_box(
-        ax, 1.8, 13.3, 9.4, 0.85,
+        ax, 2.5, support_y, 15.0, SUPPORT_H,
         "Supporting tables  -  written by every task",
-        "dbspend360_audit_log  (per-task SUCCESS / FAILED)   |   "
-        "dbspend360_error_log  (cloud <-> DBU mismatches)",
+        "dbspend360_audit_log  |  dbspend360_error_log",
         fill=PALETTE["support_fill"], edge=PALETTE["support_edge"],
-        title_size=10.5, subtitle_size=9,
-        rounding=0.05, lw=1.2,
+        title_size=10, subtitle_size=9, rounding=0.05, lw=1.2,
     )
-
-    # ---- Centered single-column flow
-    # Cloud Provider config
     draw_box(
-        ax, 3.0, 11.7, 7.0, 1.0,
-        "Cloud Provider selected in config/app.<env>.config",
-        "platform = AWS  |  Azure  |  GCP*    ->    drives cloud_provider job parameter",
+        ax, 4.0, config_y, 12.0, CONFIG_H,
+        "Cloud Provider in config/app.<env>.config",
+        "platform = AWS | Azure | GCP*  ->  cloud_provider job parameter",
         fill=PALETTE["source_fill"], edge=PALETTE["source_edge"],
-        title_size=11, subtitle_size=9,
+        title_size=10.5, subtitle_size=9,
     )
-
-    # Task 1
     draw_box(
-        ax, 3.0, 9.9, 7.0, 1.4,
-        "Task 1   -   cloud_cost_explorer",
+        ax, 5.5, cloud_y, 9.0, CLOUD_H,
+        "cloud_cost_explorer",
         "Runs <cloud_provider>_cloud_cost_explorer_app\n"
-        "Reads the cloud's cost API and classifies into compute / storage / network / other",
+        "writes cloud_cost_explorer + pool_cloud_cost_explorer + other_cost_breakdown",
         fill=PALETTE["task_fill"], edge=PALETTE["task_edge"],
-        title_size=12,
+        title_size=11.5, subtitle_size=9,
     )
 
-    # Two output tables of Task 1 - symmetric left/right of cx
-    # Each box width = 5.2; left runs 0.7..5.9, right runs 7.1..12.3
-    # -> distance from cx for both inner edges = 0.6, outer edges = 5.8
+    tbl_w = 5.5
     draw_box(
-        ax, 0.7, 8.2, 5.2, 1.3,
-        "dbspend360_cloud_cost_explorer",
-        "per cluster / day cloud cost\n(compute, storage, network, other)",
+        ax, 0.5, tbl_y, tbl_w, TBL_H,
+        "dbspend360_cloud_cost_explorer", "ClusterId tag",
         fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
-        title_size=10.5,
+        title_size=9.5, subtitle_size=8.5,
     )
     draw_box(
-        ax, 7.1, 8.2, 5.2, 1.3,
-        "dbspend360_other_cost_breakdown",
-        "per-service detail of the\n`other` cost bucket",
+        ax, 7.25, tbl_y, tbl_w, TBL_H,
+        "dbspend360_pool_cloud_cost_explorer", "DatabricksInstancePoolId tag",
         fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
-        title_size=10.5,
+        title_size=9.5, subtitle_size=8.5,
     )
-
-    # Task 2
     draw_box(
-        ax, 3.0, 6.4, 7.0, 1.4,
-        "Task 2   -   Dbspend360dbu_costs",
-        "Runs dbspend360_dbu_cost_app\n"
-        "Joins system.billing.usage + list_prices + system.compute.clusters",
-        fill=PALETTE["task_fill"], edge=PALETTE["task_edge"],
-        title_size=12,
-    )
-
-    # dbu_cost
-    draw_box(
-        ax, 3.5, 4.9, 6.0, 1.2,
-        "dbspend360_dbu_cost",
-        "DBU $ per cluster / job / run / day",
+        ax, 14.0, tbl_y, tbl_w, TBL_H,
+        "dbspend360_other_cost_breakdown", "per-service `other` bucket",
         fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
-        title_size=11,
+        title_size=9.5, subtitle_size=8.5,
     )
 
-    # Task 3
-    draw_box(
-        ax, 3.0, 3.2, 7.0, 1.4,
-        "Task 3   -   databricks_job_spends",
-        "Runs databricks_job_spends_app\n"
-        "Inner-joins cloud_cost_explorer with dbu_cost on (cluster_id, date)",
-        fill=PALETTE["task_fill"], edge=PALETTE["task_edge"],
-        title_size=12,
-    )
+    col_w = 4.5
+    col_gap = 0.35
+    col_x0 = 0.5
 
-    # total_job_spends
-    draw_box(
-        ax, 3.5, 1.7, 6.0, 1.2,
-        "dbspend360_total_job_spends",
-        "Single source of truth: cloud_cost + databricks_cost = total_cost",
-        fill=PALETTE["table_fill"], edge=PALETTE["table_edge"],
-        title_size=11,
-    )
+    branch_centers: list[float] = []
+    for branch in BRANCHES:
+        col_x = col_x0 + len(branch_centers) * (col_w + col_gap)
+        col_cx = col_x + col_w / 2
+        branch_centers.append(col_cx)
 
-    # App + AI Insights (full-width final row, centered on cx)
-    # Width 9.4 -> x = 1.8..11.2, mirroring the supporting-tables banner above
+        draw_branch_heading(ax, col_cx, heading_y, branch["label"], branch["color"])
+        draw_branch_column(
+            ax, col_x, lane_y, col_w, lane_h, branch["label"], branch["color"], show_label=False,
+        )
+        draw_box(
+            ax, col_x, dbu_y, col_w, TASK_H,
+            branch["dbu_task"], "DBU notebook",
+            fill=PALETTE["task_fill"], edge=branch["color"],
+            title_size=9, subtitle_size=8, lw=2.0,
+        )
+        draw_box(
+            ax, col_x, rollup_task_y, col_w, TASK_H,
+            branch["rollup_task"], "rollup notebook",
+            fill=PALETTE["task_fill"], edge=branch["color"],
+            title_size=9, subtitle_size=8, lw=2.0,
+        )
+        draw_box(
+            ax, col_x, dbu_tbl_y, col_w, TBL_H,
+            branch["dbu_table"], None,
+            fill=PALETTE["table_fill"], edge=branch["color"],
+            title_size=8, lw=1.6,
+        )
+        draw_box(
+            ax, col_x, rollup_tbl_y, col_w, TBL_H,
+            branch["rollup_table"], "rollup table",
+            fill=PALETTE["rollup_fill"], edge=branch["color"],
+            title_size=8, subtitle_size=7.5, lw=2.0,
+        )
+
     draw_box(
-        ax, 1.8, 0.0, 9.4, 1.4,
+        ax, 1.5, app_y, 17.0, APP_H,
         "DBSPEND360 Databricks App  +  AI Insights",
-        "FastAPI + React dashboards on dbspend360_total_job_spends   |   "
-        "drill-downs on dbspend360_other_cost_breakdown\n"
-        "AI cost & cluster recommendations via databricks-claude-sonnet-4 (Model Serving)",
+        "Four tabs: Job Clusters | All-Purpose Clusters | Instance Pools | Pipeline Compute\n"
+        "each reads its rollup table; other_cost_breakdown for drill-down; "
+        "databricks-claude-sonnet-4 for recommendations",
         fill=PALETTE["consumer_fill"], edge=PALETTE["consumer_edge"],
-        title_size=12,
+        title_size=11.5, subtitle_size=9,
     )
 
-    # ---- Arrows (all centered on cx)
-    arrow(ax, cx, 11.7, cx, 11.3, lw=2.2)         # config -> Task 1
-    arrow(ax, 5.0, 9.9, 3.4, 9.5, lw=1.8)         # Task 1 -> cloud_cost (left split)
-    arrow(ax, 8.0, 9.9, 9.6, 9.5, lw=1.8)         # Task 1 -> other_cost (right split)
-    arrow(ax, 3.4, 8.2, 5.4, 7.8, lw=1.8)         # cloud_cost -> Task 2
-    arrow(ax, 9.6, 8.2, 7.6, 7.8, lw=1.8)         # other_cost -> Task 2  (joins back to centerline)
-    arrow(ax, cx, 6.4, cx, 6.1, lw=2.0)           # Task 2 -> dbu_cost
-    arrow(ax, cx, 4.9, cx, 4.6, lw=2.0)           # dbu_cost -> Task 3
-    arrow(ax, cx, 3.2, cx, 2.9, lw=2.0)           # Task 3 -> total_job_spends
-    arrow(ax, cx, 1.7, cx, 1.4, lw=2.2)           # total_job_spends -> App
+    # Arrows — endpoints derived from the same layout constants
+    arrow(ax, cx, config_y, cx, cloud_y + CLOUD_H, lw=2.0)
+    arrow(ax, cx, cloud_y, cx, tbl_y + TBL_H, lw=2.0)
+    arrow(ax, 7.5, cloud_y, 3.25, tbl_y + TBL_H, lw=1.5)
+    arrow(ax, 10.0, cloud_y, 10.0, tbl_y + TBL_H, lw=1.5)
+    arrow(ax, 12.5, cloud_y, 16.75, tbl_y + TBL_H, lw=1.5)
 
-    # Footnote (centered)
+    for i in range(3):
+        arrow(ax, 10.0, cloud_y, branch_centers[i], dbu_top, lw=1.5, rad=0.05 * (i - 1))
+
+    ax.text(18.6, dbu_y + 0.35, "system\nbilling", ha="center", fontsize=7.5, color=PALETTE["system_edge"])
+    arrow(
+        ax, 18.6, dbu_y + 0.55, branch_centers[3], dbu_top,
+        color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.3, rad=-0.2,
+    )
+
+    for col_cx in branch_centers:
+        arrow(ax, col_cx, dbu_y, col_cx, rollup_task_y + TASK_H, lw=1.5)
+        arrow(ax, col_cx, rollup_task_y, col_cx, dbu_tbl_y + TBL_H, lw=1.5)
+        arrow(ax, col_cx, dbu_tbl_y, col_cx, rollup_tbl_y + TBL_H, lw=1.5)
+
+    arrow(ax, 10.0, cloud_y, branch_centers[3], rollup_task_y + TASK_H, lw=1.4, rad=-0.15)
+    arrow(
+        ax, 10.0, tbl_y, branch_centers[2], rollup_task_y + TASK_H,
+        color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.2, rad=0.1,
+    )
+
+    for col_cx in branch_centers:
+        arrow(ax, col_cx, rollup_tbl_y, col_cx, app_top, lw=1.5)
+    arrow(
+        ax, 16.75, tbl_y, 15.5, app_top,
+        color=PALETTE["arrow_dashed"], style=(0, (4, 3)), lw=1.1, rad=0.2,
+    )
+
+    footnote_y = app_y - 0.30
     ax.text(
-        cx, -0.35,
+        cx, footnote_y,
+        "Branches are independent — a failure in one does not block the others.",
+        ha="center", va="center", fontsize=9, color=PALETTE["subtitle"],
+    )
+    ax.text(
+        cx, footnote_y - 0.38,
         "* GCP cost explorer notebook is currently a stub; AWS and Azure are functional end-to-end.",
-        ha="center", va="center",
-        fontsize=8.5,
-        style="italic",
-        color=PALETTE["subtitle"],
+        ha="center", va="center", fontsize=8.5, style="italic", color=PALETTE["subtitle"],
     )
 
-    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    # Crop axes to content so the title sits at the top and footnotes hug the bottom.
+    ax.set_ylim(footnote_y - 0.55, fig_h)
+    ax.set_xlim(0.2, 19.8)
+
+    fig.savefig(path, bbox_inches="tight", pad_inches=0.12, facecolor="white")
     plt.close(fig)
 
 
@@ -608,11 +938,15 @@ def render_implementation_flow(path: Path):
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    arch_path = OUTPUT_DIR / "architecture.png"
+    pipeline_path = OUTPUT_DIR / "architecture_pipeline.png"
+    data_app_path = OUTPUT_DIR / "architecture_data_app.png"
     flow_path = OUTPUT_DIR / "implementation_flow.png"
 
-    print(f"Writing {arch_path}")
-    render_architecture(arch_path)
+    print(f"Writing {pipeline_path}")
+    render_architecture_pipeline(pipeline_path)
+
+    print(f"Writing {data_app_path}")
+    render_architecture_data_app(data_app_path)
 
     print(f"Writing {flow_path}")
     render_implementation_flow(flow_path)
