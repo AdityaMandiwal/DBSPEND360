@@ -31,7 +31,7 @@ DBSPEND360 splits into a **Databricks Job pipeline** (nine tasks, four independe
 
 Nine-task Databricks Job DAG: a shared `cloud_cost_explorer` ingest fans out into four independent branches (Job Clusters, All-Purpose, Instance Pools, Pipeline Compute). Each branch runs a DBU notebook and a rollup notebook. The Pipeline Compute DBU task reads system billing tables directly; its rollup notebook joins `cloud_cost_explorer` output. Branch failures are isolated — one branch failing does not block the others.
 
-![DBSPEND360 pipeline architecture: Cloud Cost Explorer APIs and Databricks system tables feed cloud_cost_explorer, which fans out into four independent branches — Job Clusters, All-Purpose, Instance Pools, and Pipeline Compute — each with a DBU notebook and rollup notebook.](release/readme_images/architecture_pipeline.png)
+![DBSPEND360 Databricks Job DAG: cloud_cost_explorer fans out to four serverless branches — all_purpose_dbu_costs → all_purpose_spends, pool_dbu_costs → pool_spends, dbu_costs → databricks_job_spends, and pipeline_dbu_costs → pipeline_spends.](release/readme_images/architecture_pipeline.png)
 
 ### Data & Consumption
 
