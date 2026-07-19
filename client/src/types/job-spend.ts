@@ -210,15 +210,6 @@ export interface OtherCostBreakdownResponse {
   end_date: string;
 }
 
-export interface CoverageTrendPoint {
-  report_date: string;
-  coverage_pct: number;
-}
-
-export interface CoverageTrendResponse {
-  data: CoverageTrendPoint[];
-}
-
 export interface ApiResponse<T> {
   success: boolean;
   data: T;

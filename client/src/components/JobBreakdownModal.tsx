@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { Calendar, Server, DollarSign, Brain, Lightbulb, Info, Search } from 'lucide-react';
 import {
   Dialog,
@@ -152,8 +152,6 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                       data={pieData}
                       cx="50%"
                       cy="50%"
-                      labelLine={false}
-                      label={({ name, percent }: { name?: string; percent?: number }) => `${name ?? ''} (${((percent ?? 0) * 100).toFixed(1)}%)`}
                       outerRadius={80}
                       fill="#8884d8"
                       dataKey="value"
@@ -163,7 +161,6 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                       ))}
                     </Pie>
                     <Tooltip content={<CustomTooltip />} />
-                    <Legend />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
@@ -179,7 +176,12 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                       ></div>
                       <span className="font-medium">{item.name}</span>
                     </div>
-                    <span className="font-bold">{formatCurrency(item.value)}</span>
+                    <div className="text-right">
+                      <span className="font-bold">{formatCurrency(item.value)}</span>
+                      <span className="text-xs text-muted-foreground ml-2">
+                        ({breakdown.total_cost > 0 ? ((item.value / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%)
+                      </span>
+                    </div>
                   </div>
                 ))}
                 <div className="flex items-center justify-between p-2 bg-muted rounded font-bold">

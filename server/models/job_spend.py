@@ -298,19 +298,6 @@ class OtherCostBreakdownResponse(BaseModel):
     end_date: date
 
 
-class CoverageTrendPoint(BaseModel):
-    """Single data point for classification coverage over time."""
-
-    report_date: date
-    coverage_pct: float
-
-
-class CoverageTrendResponse(BaseModel):
-    """Response for classification coverage trend."""
-
-    data: list[CoverageTrendPoint]
-
-
 class FeatureFlagsResponse(BaseModel):
     """Feature flags exposed to the frontend."""
 

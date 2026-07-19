@@ -16,7 +16,6 @@ from server.models.job_spend import (
     ClusterDetails,
     CostAnalysis,
     CostBreakdown,
-    CoverageTrendResponse,
     FeatureFlagsResponse,
     GroupedJob,
     JobProductBreakdownResponse,
@@ -673,48 +672,6 @@ async def get_other_cost_breakdown(
         raise HTTPException(
             status_code=500,
             detail='Failed to retrieve other cost breakdown'
-        )
-
-
-@router.get('/classification-coverage-trend', response_model=CoverageTrendResponse)
-async def get_classification_coverage_trend(
-    start_date: Optional[date] = Query(
-        None, description='Optional start date to bound the trend (YYYY-MM-DD)'
-    ),
-    end_date: Optional[date] = Query(
-        None, description='Optional end date to bound the trend (YYYY-MM-DD)'
-    ),
-    limit: int = Query(100, ge=1, le=366, description='Max data points to return'),
-):
-    """Get classification coverage percentage over time.
-
-    Parsed from pipeline audit log entries. Shows how well cloud costs
-    are being classified into compute/storage/network categories.
-
-    When `start_date`/`end_date` are supplied the trend is bounded to that
-    window so the chart's x-axis tracks the dashboard's selected date range.
-    """
-    try:
-        if start_date and end_date and start_date > end_date:
-            raise HTTPException(
-                status_code=400,
-                detail='Start date must be before or equal to end date'
-            )
-
-        service = get_databricks_service()
-        return await service.get_classification_coverage_trend(
-            limit=limit,
-            start_date=start_date,
-            end_date=end_date,
-        )
-
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception('Error retrieving coverage trend')
-        raise HTTPException(
-            status_code=500,
-            detail='Failed to retrieve coverage trend'
         )
 
 

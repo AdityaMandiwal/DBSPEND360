@@ -8,7 +8,6 @@ import { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
-import { CoverageTrendChart } from './CoverageTrendChart';
 import { ErrorState } from '@/components/ui/error-state';
 
 interface SummaryCardsProps {
@@ -380,13 +379,6 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
           </CardContent>
         </Card>
       </div>
-
-      {/* Coverage Trend */}
-      {showSegmented && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <CoverageTrendChart dateRange={dateRange} />
-        </div>
-      )}
 
       {/* Other Cost Breakdown Modal */}
       <OtherCostBreakdownModal

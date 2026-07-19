@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 import { canQueryRange } from '@/lib/utils';
-import { JobSpendFilter, DateRange, OtherCostBreakdownResponse, CoverageTrendResponse } from '@/types/job-spend';
+import { JobSpendFilter, DateRange, OtherCostBreakdownResponse } from '@/types/job-spend';
 
 // Resolves the active AI model's display label from /api/ai-info so the
 // "Powered by ..." badges aren't hard-coded. Falls back to "Claude Sonnet 4"
@@ -106,14 +106,5 @@ export const useOtherCostBreakdown = (
     queryFn: () => apiClient.getOtherCostBreakdown(dateRange, clusterId),
     staleTime: 5 * 60 * 1000,
     enabled: enabled && canQueryRange(dateRange.start_date, dateRange.end_date),
-  });
-};
-
-export const useCoverageTrend = (dateRange?: DateRange) => {
-  return useQuery<CoverageTrendResponse>({
-    queryKey: ['coverage-trend', dateRange?.start_date, dateRange?.end_date],
-    queryFn: () => apiClient.getCoverageTrend(dateRange),
-    staleTime: 10 * 60 * 1000,
-    refetchOnWindowFocus: false,
   });
 };

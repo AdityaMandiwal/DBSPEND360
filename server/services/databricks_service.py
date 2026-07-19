@@ -13,8 +13,6 @@ from server.models.job_spend import (
     AllPurposeUserSpend,
     ClusterDetails,
     CostBreakdown,
-    CoverageTrendPoint,
-    CoverageTrendResponse,
     GroupedAllPurposeCluster,
     GroupedAllPurposeUser,
     GroupedInstancePool,
@@ -2004,68 +2002,6 @@ class DatabricksService:
                 items=[], total_other_cost=0.0,
                 start_date=start_date, end_date=end_date,
             )
-
-    async def get_classification_coverage_trend(
-        self,
-        limit: int = 30,
-        start_date: Optional[date] = None,
-        end_date: Optional[date] = None,
-    ) -> CoverageTrendResponse:
-        """Get classification coverage trend from the audit log.
-
-        Parses `classification_coverage=XX.X%` from the message column
-        of successful cloud cost explorer runs. When `start_date`/`end_date`
-        are provided the audit rows are filtered to that window so the trend
-        tracks the dashboard's selected date range.
-        """
-        schema_name = app_config.schema_name
-        if not schema_name:
-            return CoverageTrendResponse(data=[])
-
-        audit_table = f'{schema_name}.dbspend360_audit_log'
-
-        date_filter = ''
-        if start_date:
-            date_filter += f"\n          AND end_date >= '{start_date.isoformat()}'"
-        if end_date:
-            date_filter += f"\n          AND end_date <= '{end_date.isoformat()}'"
-
-        query = f"""
-        SELECT
-            end_date AS report_date,
-            CAST(
-                regexp_extract(message, 'classification_coverage=([0-9.]+)%', 1)
-                AS DOUBLE
-            ) AS coverage_pct
-        FROM {audit_table}
-        WHERE table_name = 'dbspend360_cloud_cost_explorer'
-          AND status = 'SUCCESS'
-          AND message LIKE '%classification_coverage=%'{date_filter}
-        ORDER BY end_date DESC
-        LIMIT {limit}
-        """
-
-        try:
-            response = self.client.statement_execution.execute_statement(
-                warehouse_id=self.warehouse_id,
-                statement=query
-            )
-
-            data: List[CoverageTrendPoint] = []
-            if response.result and response.result.data_array:
-                for row in response.result.data_array:
-                    if row[0] and row[1] is not None:
-                        data.append(CoverageTrendPoint(
-                            report_date=date.fromisoformat(row[0]),
-                            coverage_pct=float(row[1]),
-                        ))
-
-            data.reverse()
-            return CoverageTrendResponse(data=data)
-
-        except Exception as e:
-            logger.error('Error fetching coverage trend: %s', str(e))
-            return CoverageTrendResponse(data=[])
 
     # ------------------------------------------------------------------
     # All-Purpose cluster queries
