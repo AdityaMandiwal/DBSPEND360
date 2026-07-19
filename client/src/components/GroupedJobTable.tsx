@@ -23,12 +23,14 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useGroupedJobSpends } from '@/hooks/useGroupedJobSpends';
 import { useJobRuns } from '@/hooks/useJobRuns';
+import { useFeatures } from '@/hooks/useFeatures';
 import { useDatabricksHost } from '@/hooks/useDatabricksHost';
 import { DateRange, GroupedJob, JobRun } from '@/types/job-spend';
 import { formatCalendarDate, HIGH_COST_USD } from '@/lib/utils';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { DbuProductBreakdownPopover } from '@/components/DbuProductBreakdownPopover';
 
 const formatRunCurrency = (amount: number) =>
   new Intl.NumberFormat('en-US', {
@@ -245,6 +247,8 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
   }, [isBackgroundFetching, onFetchingChange]);
 
   const { data: databricksHost } = useDatabricksHost();
+  const { data: features } = useFeatures();
+  const showDbuBreakdown = features?.enable_job_dbu_breakdown ?? false;
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -489,8 +493,17 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
         </Button>
       ),
       cell: ({ row }) => (
-        <div className="text-right font-medium text-red-600">
-          {formatCurrency(row.getValue('total_databricks_cost'))}
+        <div className="flex items-center justify-end gap-1">
+          <span className="font-medium text-red-600">
+            {formatCurrency(row.getValue('total_databricks_cost'))}
+          </span>
+          {showDbuBreakdown && (
+            <DbuProductBreakdownPopover
+              jobId={row.original.job_id}
+              dateRange={dateRange}
+              storedDbuCost={row.original.total_databricks_cost}
+            />
+          )}
         </div>
       ),
     },

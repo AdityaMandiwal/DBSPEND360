@@ -110,6 +110,33 @@ export interface DateRange {
   end_date: string; // ISO date string
 }
 
+export interface FeatureFlagsResponse {
+  enable_cost_analysis: boolean;
+  enable_cluster_analysis: boolean;
+  enable_ai_insights: boolean;
+  enable_export: boolean;
+  enable_job_dbu_breakdown: boolean;
+}
+
+export interface JobProductBreakdownItem {
+  billing_origin_product: string;
+  label: string;
+  cost: number;
+  percentage: number;
+}
+
+export interface JobProductBreakdownResponse {
+  job_id: string;
+  start_date: string;
+  end_date: string;
+  items: JobProductBreakdownItem[];
+  total_cost: number;
+  rollup_databricks_cost?: number | null;
+  has_multiple_products: boolean;
+  is_estimate: boolean;
+  unpriced_warning?: string | null;
+}
+
 export interface DatePreset {
   label: string;
   start_date: string;

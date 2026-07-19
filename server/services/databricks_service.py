@@ -24,6 +24,8 @@ from server.models.job_spend import (
     InstancePoolDailySpend,
     InstancePoolDetails,
     InstancePoolSummaryMetrics,
+    JobProductBreakdownItem,
+    JobProductBreakdownResponse,
     JobRun,
     JobSpend,
     OtherCostBreakdownItem,
@@ -83,6 +85,13 @@ class AmbiguousPipelineError(Exception):
 # an acceptable trade for a ~5x faster job list/search.
 JOB_NAME_MAP_TTL_SECONDS = 30 * 60
 
+# Friendly labels for billing_origin_product in job DBU breakdowns.
+_JOB_PRODUCT_LABELS: Dict[str, str] = {
+    'JOBS': 'Job Compute',
+    'MODEL_SERVING': 'Model Serving',
+    'AI_FUNCTIONS': 'AI Functions',
+}
+
 
 class DatabricksService:
     """Service for interacting with Databricks SQL Warehouse."""
@@ -126,6 +135,10 @@ class DatabricksService:
         # Failure tuples (f"Pool {id}", None) are cached too so a flaky or
         # nonexistent pool ID does not re-issue the REST API on every render.
         self.pool_metadata_cache: Dict[str, Tuple[str, Optional[str]]] = {}
+        # Read-time job DBU product breakdown cache keyed by (job_id, start, end).
+        self._product_breakdown_cache: Dict[
+            Tuple[str, str, str], Tuple[JobProductBreakdownResponse, float]
+        ] = {}
 
     async def get_job_name(self, job_id: str) -> str:
         """Get job name from Jobs API with caching."""
@@ -856,6 +869,135 @@ class DatabricksService:
                 runs.append(run)
 
         return runs
+
+    def _product_label(self, billing_origin_product: str) -> str:
+        return _JOB_PRODUCT_LABELS.get(
+            billing_origin_product, billing_origin_product
+        )
+
+    async def get_job_product_breakdown(
+        self,
+        job_id: str,
+        start_date: date,
+        end_date: date,
+    ) -> JobProductBreakdownResponse:
+        """Read-time DBU split by billing_origin_product for one job.
+
+        Queries ``system.billing.usage`` joined to ``system.billing.list_prices``
+        filtered by ``usage_metadata.job_id`` and ``job_run_id IS NOT NULL``.
+        Does NOT mirror the rollup ETL's ``cluster_source = 'JOB'`` inner join —
+        the goal is to expose all products that billed against job runs.
+        """
+        cache_key = (job_id, start_date.isoformat(), end_date.isoformat())
+        cache_ttl = app_config.cache_ttl_minutes * 60
+        now = time.monotonic()
+        cached = self._product_breakdown_cache.get(cache_key)
+        if cached and (now - cached[1]) < cache_ttl:
+            return cached[0]
+
+        escaped_job_id = job_id.replace("'", "''")
+        wait_timeout = f'{self.query_timeout}s'
+
+        breakdown_query = f"""
+        WITH usage_priced AS (
+            SELECT
+                u.billing_origin_product,
+                u.usage_quantity,
+                CAST(lp.pricing['default'] AS DOUBLE) AS unit_price
+            FROM system.billing.usage u
+            LEFT JOIN system.billing.list_prices lp
+                ON  u.sku_name = lp.sku_name
+                AND u.usage_start_time >= lp.price_start_time
+                AND (
+                    u.usage_start_time < lp.price_end_time
+                    OR lp.price_end_time IS NULL
+                )
+            WHERE u.usage_metadata.job_id = '{escaped_job_id}'
+              AND u.usage_metadata.job_run_id IS NOT NULL
+              AND u.usage_date >= '{start_date.isoformat()}'
+              AND u.usage_date <= '{end_date.isoformat()}'
+        )
+        SELECT
+            COALESCE(billing_origin_product, 'UNKNOWN') AS product,
+            ROUND(SUM(usage_quantity * unit_price), 2) AS cost,
+            SUM(
+                CASE WHEN unit_price IS NULL THEN usage_quantity ELSE 0 END
+            ) AS unpriced_qty
+        FROM usage_priced
+        GROUP BY 1
+        HAVING cost > 0 OR unpriced_qty > 0
+        ORDER BY cost DESC
+        """
+
+        rollup_query = f"""
+        SELECT ROUND(SUM(databricks_cost), 2)
+        FROM {self.table_name}
+        WHERE job_id = '{escaped_job_id}'
+          AND usage_date >= '{start_date.isoformat()}'
+          AND usage_date <= '{end_date.isoformat()}'
+        """
+
+        breakdown_response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=breakdown_query,
+            wait_timeout=wait_timeout,
+        )
+
+        rollup_response = self.client.statement_execution.execute_statement(
+            warehouse_id=self.warehouse_id,
+            statement=rollup_query,
+            wait_timeout=wait_timeout,
+        )
+
+        items: List[JobProductBreakdownItem] = []
+        total_unpriced_qty = 0.0
+        raw_items: List[tuple[str, float]] = []
+        if breakdown_response.result and breakdown_response.result.data_array:
+            for row in breakdown_response.result.data_array:
+                cost = float(row[1]) if row[1] is not None else 0.0
+                unpriced_qty = float(row[2]) if row[2] is not None else 0.0
+                total_unpriced_qty += unpriced_qty
+                if cost > 0:
+                    raw_items.append((row[0] or 'UNKNOWN', cost))
+
+        total_cost = round(sum(cost for _, cost in raw_items), 2)
+        for product, cost in raw_items:
+            percentage = round((cost / total_cost) * 100, 1) if total_cost > 0 else 0.0
+            items.append(
+                JobProductBreakdownItem(
+                    billing_origin_product=product,
+                    label=self._product_label(product),
+                    cost=cost,
+                    percentage=percentage,
+                )
+            )
+
+        rollup_databricks_cost = None
+        if rollup_response.result and rollup_response.result.data_array:
+            raw_rollup = rollup_response.result.data_array[0][0]
+            if raw_rollup is not None:
+                rollup_databricks_cost = float(raw_rollup)
+
+        unpriced_warning = None
+        if total_unpriced_qty > 0:
+            unpriced_warning = (
+                'Some usage rows had no matching list price; breakdown may be '
+                'understated.'
+            )
+
+        response = JobProductBreakdownResponse(
+            job_id=job_id,
+            start_date=start_date,
+            end_date=end_date,
+            items=items,
+            total_cost=total_cost,
+            rollup_databricks_cost=rollup_databricks_cost,
+            has_multiple_products=len(items) > 1,
+            is_estimate=True,
+            unpriced_warning=unpriced_warning,
+        )
+        self._product_breakdown_cache[cache_key] = (response, now)
+        return response
 
     async def get_cluster_details(self, cluster_id: str) -> Optional[ClusterDetails]:
         """Get cluster configuration details from system.compute.clusters."""

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 from server.config.cloud_platform import cloud_config
+from server.config.config_loader import app_config
 from server.models.job_spend import (
     CloudPlatformInfo,
     ClusterAnalysis,
@@ -16,7 +17,9 @@ from server.models.job_spend import (
     CostAnalysis,
     CostBreakdown,
     CoverageTrendResponse,
+    FeatureFlagsResponse,
     GroupedJob,
+    JobProductBreakdownResponse,
     JobRun,
     OtherCostBreakdownResponse,
     PaginatedGroupedJobs,
@@ -190,6 +193,59 @@ async def get_job_runs(
         raise HTTPException(
             status_code=500,
             detail='Failed to retrieve job runs'
+        )
+
+
+@router.get('/features', response_model=FeatureFlagsResponse)
+async def get_feature_flags():
+    """Expose feature flags so the UI can gate optional affordances."""
+    return FeatureFlagsResponse(
+        enable_cost_analysis=app_config.enable_cost_analysis,
+        enable_cluster_analysis=app_config.enable_cluster_analysis,
+        enable_ai_insights=app_config.enable_ai_insights,
+        enable_export=app_config.enable_export,
+        enable_job_dbu_breakdown=app_config.enable_job_dbu_breakdown,
+    )
+
+
+@router.get('/job/{job_id}/product-breakdown', response_model=JobProductBreakdownResponse)
+async def get_job_product_breakdown(
+    job_id: str,
+    start_date: date = Query(..., description='Start date for filtering (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date for filtering (YYYY-MM-DD)'),
+):
+    """Read-time DBU breakdown by billing product for one job.
+
+    Queries ``system.billing.usage`` at list price. Lazy-loaded from the Job
+    Clusters tab when a user opens the DBU breakdown popover.
+    """
+    if not app_config.enable_job_dbu_breakdown:
+        raise HTTPException(
+            status_code=404,
+            detail='Job DBU breakdown is disabled',
+        )
+
+    try:
+        if start_date > end_date:
+            raise HTTPException(
+                status_code=400,
+                detail='Start date must be before or equal to end date'
+            )
+
+        service = get_databricks_service()
+        return await service.get_job_product_breakdown(
+            job_id=job_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('Error retrieving product breakdown for job %s', job_id)
+        raise HTTPException(
+            status_code=500,
+            detail='Failed to retrieve job product breakdown'
         )
 
 

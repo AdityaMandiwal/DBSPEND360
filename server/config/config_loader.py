@@ -202,6 +202,13 @@ class AppConfig:
         """Check if export feature is enabled."""
         return self.config.getboolean("features", "enable_export", fallback=True)
 
+    @property
+    def enable_job_dbu_breakdown(self) -> bool:
+        """Check if job-level DBU product breakdown (read-time) is enabled."""
+        return self.config.getboolean(
+            "features", "enable_job_dbu_breakdown", fallback=False
+        )
+
     # Performance Configuration
     @property
     def query_timeout_seconds(self) -> int:
@@ -305,7 +312,8 @@ class AppConfig:
                 "enable_cost_analysis": self.enable_cost_analysis,
                 "enable_cluster_analysis": self.enable_cluster_analysis,
                 "enable_ai_insights": self.enable_ai_insights,
-                "enable_export": self.enable_export
+                "enable_export": self.enable_export,
+                "enable_job_dbu_breakdown": self.enable_job_dbu_breakdown,
             },
             "performance": {
                 "query_timeout_seconds": self.query_timeout_seconds,

@@ -311,6 +311,39 @@ class CoverageTrendResponse(BaseModel):
     data: list[CoverageTrendPoint]
 
 
+class FeatureFlagsResponse(BaseModel):
+    """Feature flags exposed to the frontend."""
+
+    enable_cost_analysis: bool
+    enable_cluster_analysis: bool
+    enable_ai_insights: bool
+    enable_export: bool
+    enable_job_dbu_breakdown: bool
+
+
+class JobProductBreakdownItem(BaseModel):
+    """Single billing product contributing to a job's DBU cost."""
+
+    billing_origin_product: str
+    label: str
+    cost: float
+    percentage: float
+
+
+class JobProductBreakdownResponse(BaseModel):
+    """Read-time DBU breakdown by billing_origin_product for one job."""
+
+    job_id: str
+    start_date: date
+    end_date: date
+    items: list[JobProductBreakdownItem]
+    total_cost: float
+    rollup_databricks_cost: Optional[float] = None
+    has_multiple_products: bool
+    is_estimate: bool = True
+    unpriced_warning: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # All-Purpose cluster models
 #

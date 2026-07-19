@@ -17,6 +17,7 @@ export type { CostAnalysis } from './models/CostAnalysis';
 export type { CostBreakdown } from './models/CostBreakdown';
 export type { CoverageTrendPoint } from './models/CoverageTrendPoint';
 export type { CoverageTrendResponse } from './models/CoverageTrendResponse';
+export type { FeatureFlagsResponse } from './models/FeatureFlagsResponse';
 export type { GroupedAllPurposeCluster } from './models/GroupedAllPurposeCluster';
 export type { GroupedAllPurposeUser } from './models/GroupedAllPurposeUser';
 export type { GroupedInstancePool } from './models/GroupedInstancePool';
@@ -28,6 +29,8 @@ export type { InstancePoolClusterSpend } from './models/InstancePoolClusterSpend
 export type { InstancePoolDailySpend } from './models/InstancePoolDailySpend';
 export type { InstancePoolDetails } from './models/InstancePoolDetails';
 export type { InstancePoolSummaryMetrics } from './models/InstancePoolSummaryMetrics';
+export type { JobProductBreakdownItem } from './models/JobProductBreakdownItem';
+export type { JobProductBreakdownResponse } from './models/JobProductBreakdownResponse';
 export type { JobRun } from './models/JobRun';
 export type { JobSpend } from './models/JobSpend';
 export type { OtherCostBreakdownItem } from './models/OtherCostBreakdownItem';
