@@ -16,6 +16,7 @@ import { useState } from 'react';
 import { format, subDays } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PipelineSummaryCards } from './PipelineSummaryCards';
+import { CoverageBanner } from './CoverageBanner';
 import { PipelineFilterControls } from './PipelineFilterControls';
 import { PipelinesTable } from './PipelinesTable';
 import type { DateRange } from '@/types/job-spend';
@@ -44,6 +45,7 @@ const PipelineDashboard = () => {
 
   return (
     <div className="space-y-6">
+      <CoverageBanner tab="pipeline" />
       <PipelineSummaryCards
         dateRange={dateRange}
         selectedWorkloads={selectedWorkloads}

@@ -7,8 +7,9 @@ import type { ClusterAnalysis } from '../models/ClusterAnalysis';
 import type { ClusterDetails } from '../models/ClusterDetails';
 import type { CostAnalysis } from '../models/CostAnalysis';
 import type { CostBreakdown } from '../models/CostBreakdown';
-import type { CoverageTrendResponse } from '../models/CoverageTrendResponse';
+import type { FeatureFlagsResponse } from '../models/FeatureFlagsResponse';
 import type { GroupedJob } from '../models/GroupedJob';
+import type { JobProductBreakdownResponse } from '../models/JobProductBreakdownResponse';
 import type { JobRun } from '../models/JobRun';
 import type { OtherCostBreakdownResponse } from '../models/OtherCostBreakdownResponse';
 import type { PaginatedGroupedJobs } from '../models/PaginatedGroupedJobs';
@@ -126,6 +127,50 @@ export class DashboardService {
                 'start_date': startDate,
                 'end_date': endDate,
                 'limit': limit,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Feature Flags
+     * Expose feature flags so the UI can gate optional affordances.
+     * @returns FeatureFlagsResponse Successful Response
+     * @throws ApiError
+     */
+    public static getFeatureFlagsApiFeaturesGet(): CancelablePromise<FeatureFlagsResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/features',
+        });
+    }
+    /**
+     * Get Job Product Breakdown
+     * Read-time DBU breakdown by billing product for one job.
+     *
+     * Queries ``system.billing.usage`` at list price. Lazy-loaded from the Job
+     * Clusters tab when a user opens the DBU breakdown popover.
+     * @param jobId
+     * @param startDate Start date for filtering (YYYY-MM-DD)
+     * @param endDate End date for filtering (YYYY-MM-DD)
+     * @returns JobProductBreakdownResponse Successful Response
+     * @throws ApiError
+     */
+    public static getJobProductBreakdownApiJobJobIdProductBreakdownGet(
+        jobId: string,
+        startDate: string,
+        endDate: string,
+    ): CancelablePromise<JobProductBreakdownResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/job/{job_id}/product-breakdown',
+            path: {
+                'job_id': jobId,
+            },
+            query: {
+                'start_date': startDate,
+                'end_date': endDate,
             },
             errors: {
                 422: `Validation Error`,
@@ -378,39 +423,6 @@ export class DashboardService {
         });
     }
     /**
-     * Get Classification Coverage Trend
-     * Get classification coverage percentage over time.
-     *
-     * Parsed from pipeline audit log entries. Shows how well cloud costs
-     * are being classified into compute/storage/network categories.
-     *
-     * When `start_date`/`end_date` are supplied the trend is bounded to that
-     * window so the chart's x-axis tracks the dashboard's selected date range.
-     * @param startDate Optional start date to bound the trend (YYYY-MM-DD)
-     * @param endDate Optional end date to bound the trend (YYYY-MM-DD)
-     * @param limit Max data points to return
-     * @returns CoverageTrendResponse Successful Response
-     * @throws ApiError
-     */
-    public static getClassificationCoverageTrendApiClassificationCoverageTrendGet(
-        startDate?: (string | null),
-        endDate?: (string | null),
-        limit: number = 100,
-    ): CancelablePromise<CoverageTrendResponse> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/classification-coverage-trend',
-            query: {
-                'start_date': startDate,
-                'end_date': endDate,
-                'limit': limit,
-            },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * Get Cloud Platform Config
      * Get cloud platform configuration for dynamic UI labeling.
      * @returns CloudPlatformInfo Successful Response
@@ -420,6 +432,22 @@ export class DashboardService {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/cloud-platform',
+        });
+    }
+    /**
+     * Get Ai Info
+     * Expose the active AI model so the UI doesn't hard-code its name.
+     *
+     * Returns the raw serving-endpoint name plus a human-readable label used by
+     * the "Powered by ..." badges on the analysis panels. Kept lightweight (no
+     * LLMService instantiation) so it never depends on credentials being set.
+     * @returns any Successful Response
+     * @throws ApiError
+     */
+    public static getAiInfoApiAiInfoGet(): CancelablePromise<any> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/ai-info',
         });
     }
 }

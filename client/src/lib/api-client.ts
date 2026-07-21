@@ -1,4 +1,4 @@
-import { SummaryMetrics, CostBreakdown, PaginatedJobSpends, DateRange, JobSpendFilter, DatePreset, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformConfig, OtherCostBreakdownResponse, CoverageTrendResponse, GroupedJob } from '@/types/job-spend';
+import { SummaryMetrics, CostBreakdown, PaginatedJobSpends, DateRange, JobSpendFilter, DatePreset, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformConfig, OtherCostBreakdownResponse, GroupedJob } from '@/types/job-spend';
 import {
   AllPurposeFilter,
   AllPurposeSummaryMetrics,
@@ -7,9 +7,11 @@ import {
   PaginatedAllPurposeClusters,
   PaginatedAllPurposeUsers,
 } from '@/types/all-purpose';
+import type { CoverageSummary } from '@/types/coverage';
 import {
   GroupedInstancePool,
   InstancePoolAnalysis,
+  InstancePoolDailyTrendPoint,
   InstancePoolDetails,
   InstancePoolFilter,
   InstancePoolSummaryMetrics,
@@ -155,22 +157,12 @@ class ApiClient {
     return this.fetchApi<OtherCostBreakdownResponse>(`/other-cost-breakdown?${params}`);
   }
 
-  async getCoverageTrend(
-    dateRange?: DateRange,
-    limit: number = 100,
-  ): Promise<CoverageTrendResponse> {
-    const params = new URLSearchParams({ limit: limit.toString() });
-    if (dateRange?.start_date) {
-      params.append('start_date', dateRange.start_date);
-    }
-    if (dateRange?.end_date) {
-      params.append('end_date', dateRange.end_date);
-    }
-    return this.fetchApi<CoverageTrendResponse>(`/classification-coverage-trend?${params}`);
-  }
-
   async healthCheck(): Promise<{ status: string; service: string }> {
     return this.fetchApi<{ status: string; service: string }>('/health');
+  }
+
+  async getCoverageSummary(): Promise<CoverageSummary> {
+    return this.fetchApi<CoverageSummary>('/coverage');
   }
 
   // ---------------------------------------------------------------------
@@ -283,6 +275,18 @@ class ApiClient {
     });
     return this.fetchApi<InstancePoolSummaryMetrics>(
       `/instance-pools/summary?${params}`,
+    );
+  }
+
+  async getInstancePoolDailyTrend(
+    dateRange: DateRange,
+  ): Promise<InstancePoolDailyTrendPoint[]> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+    });
+    return this.fetchApi<InstancePoolDailyTrendPoint[]>(
+      `/instance-pools/daily-trend?${params}`,
     );
   }
 

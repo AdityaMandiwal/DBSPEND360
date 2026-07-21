@@ -15,6 +15,7 @@ import { useState } from 'react';
 import { format, subDays } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { InstancePoolsSummaryCards } from './InstancePoolsSummaryCards';
+import { CoverageBanner } from './CoverageBanner';
 import { InstancePoolFilterControls } from './InstancePoolFilterControls';
 import { InstancePoolsTable } from './InstancePoolsTable';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
@@ -42,6 +43,7 @@ const InstancePoolsDashboard = () => {
 
   return (
     <div className="space-y-6">
+      <CoverageBanner tab="pool" />
       <InstancePoolsSummaryCards dateRange={dateRange} />
 
       <Card>

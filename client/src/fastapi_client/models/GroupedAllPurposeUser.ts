@@ -22,6 +22,7 @@ export type GroupedAllPurposeUser = {
     total_storage_cost?: (number | null);
     total_network_cost?: (number | null);
     total_other_cost?: (number | null);
+    workspace_covered?: boolean;
     clusters?: Array<AllPurposeClusterSpend>;
     /**
      * Calculate total cost across all clusters this user owns.

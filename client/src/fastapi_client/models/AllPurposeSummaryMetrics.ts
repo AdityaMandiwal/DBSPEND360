@@ -25,5 +25,6 @@ export type AllPurposeSummaryMetrics = {
     total_network_cost?: (number | null);
     total_other_cost?: (number | null);
     date_range_days: number;
+    dbu_in_non_covered_workspaces?: number;
 };
 

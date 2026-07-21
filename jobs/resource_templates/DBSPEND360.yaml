@@ -3,6 +3,16 @@ resources:
     DBSpend360:
       name: DBSpend360
       tasks:
+        - task_key: create_covered_workspaces_table
+          notebook_task:
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/ddls/dbspend360_covered_workspaces
+            source: WORKSPACE
+        - task_key: covered_workspaces
+          depends_on:
+            - task_key: create_covered_workspaces_table
+          notebook_task:
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/dbspend360_covered_workspaces_app
+            source: WORKSPACE
         - task_key: cloud_cost_explorer
           notebook_task:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/${cloud_provider}_cloud_cost_explorer_app
@@ -10,6 +20,7 @@ resources:
         - task_key: Dbspend360dbu_costs
           depends_on:
             - task_key: cloud_cost_explorer
+            - task_key: covered_workspaces
           notebook_task:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/dbspend360_dbu_cost_app
             source: WORKSPACE
@@ -22,6 +33,7 @@ resources:
         - task_key: Dbspend360_all_purpose_dbu_costs
           depends_on:
             - task_key: cloud_cost_explorer
+            - task_key: covered_workspaces
           notebook_task:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/dbspend360_all_purpose_dbu_cost_app
             source: WORKSPACE
@@ -34,6 +46,7 @@ resources:
         - task_key: Dbspend360_pool_dbu_costs
           depends_on:
             - task_key: cloud_cost_explorer
+            - task_key: covered_workspaces
           notebook_task:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/dbspend360_pool_dbu_cost_app
             source: WORKSPACE
@@ -44,6 +57,8 @@ resources:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/pool_spends_app
             source: WORKSPACE
         - task_key: Dbspend360_pipeline_dbu_costs
+          depends_on:
+            - task_key: covered_workspaces
           notebook_task:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/dbspend360_pipeline_dbu_cost_app
             source: WORKSPACE

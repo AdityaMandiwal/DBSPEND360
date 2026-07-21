@@ -21,5 +21,6 @@ export type PipelineDailySpend = {
     cost_basis: string;
     cloud_cost?: (number | null);
     total_cost?: number;
+    workspace_covered?: boolean;
 };
 

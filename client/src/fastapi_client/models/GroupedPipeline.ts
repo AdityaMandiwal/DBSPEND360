@@ -40,6 +40,7 @@ export type GroupedPipeline = {
     total_databricks_cost: number;
     total_cloud_cost?: (number | null);
     total_cost: number;
+    workspace_covered?: boolean;
     days?: Array<PipelineDailySpend>;
 };
 

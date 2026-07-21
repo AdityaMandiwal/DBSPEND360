@@ -27,5 +27,6 @@ export type InstancePoolSummaryMetrics = {
     total_databricks_cost: number;
     total_cloud_cost?: (number | null);
     date_range_days: number;
+    dbu_in_non_covered_workspaces?: number;
 };
 

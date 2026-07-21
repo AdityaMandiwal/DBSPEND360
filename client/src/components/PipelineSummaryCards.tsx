@@ -146,6 +146,13 @@ export const PipelineSummaryCards = ({
               {metrics.date_range_days} day
               {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
               {formatCurrency(dailyAverageSpend)}/day avg
+              {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
+                <>
+                  {' '}
+                  · {formatCurrency(metrics.dbu_in_non_covered_workspaces ?? 0)}{' '}
+                  DBU in non-covered workspaces
+                </>
+              )}
             </p>
           </CardContent>
         </Card>

@@ -22,13 +22,17 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { useGroupedJobSpends } from '@/hooks/useGroupedJobSpends';
+import { CloudCostCell } from '@/components/CloudCostCell';
+import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from '@/lib/all-purpose-display';
 import { useJobRuns } from '@/hooks/useJobRuns';
+import { useFeatures } from '@/hooks/useFeatures';
 import { useDatabricksHost } from '@/hooks/useDatabricksHost';
 import { DateRange, GroupedJob, JobRun } from '@/types/job-spend';
 import { formatCalendarDate, HIGH_COST_USD } from '@/lib/utils';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { DbuProductBreakdownPopover } from '@/components/DbuProductBreakdownPopover';
 
 const formatRunCurrency = (amount: number) =>
   new Intl.NumberFormat('en-US', {
@@ -146,7 +150,11 @@ const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, isSegmentedPla
                         </>
                       ) : (
                         <div className="text-sm text-blue-600">
-                          {computeLabel}: {formatRunCurrency(run.cloud_cost)}
+                          {computeLabel}:{' '}
+                          <CloudCostCell
+                            value={run.cloud_cost}
+                            workspaceCovered={run.workspace_covered}
+                          />
                         </div>
                       )}
                       <div className="text-sm text-red-600">
@@ -245,6 +253,8 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
   }, [isBackgroundFetching, onFetchingChange]);
 
   const { data: databricksHost } = useDatabricksHost();
+  const { data: features } = useFeatures();
+  const showDbuBreakdown = features?.enable_job_dbu_breakdown ?? false;
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -472,7 +482,11 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
       ),
       cell: ({ row }) => (
         <div className="text-right font-medium text-blue-600">
-          {formatCurrency(row.getValue('total_cloud_cost'))}
+          <CloudCostCell
+            value={row.original.total_cloud_cost}
+            workspaceCovered={row.original.workspace_covered}
+            missingNote={ALL_PURPOSE_CLOUD_MISSING_NOTE}
+          />
         </div>
       ),
     },
@@ -489,8 +503,17 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
         </Button>
       ),
       cell: ({ row }) => (
-        <div className="text-right font-medium text-red-600">
-          {formatCurrency(row.getValue('total_databricks_cost'))}
+        <div className="flex items-center justify-end gap-1">
+          <span className="font-medium text-red-600">
+            {formatCurrency(row.getValue('total_databricks_cost'))}
+          </span>
+          {showDbuBreakdown && (
+            <DbuProductBreakdownPopover
+              jobId={row.original.job_id}
+              dateRange={dateRange}
+              storedDbuCost={row.original.total_databricks_cost}
+            />
+          )}
         </div>
       ),
     },

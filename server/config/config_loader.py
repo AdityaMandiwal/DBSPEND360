@@ -181,6 +181,27 @@ class AppConfig:
             )
         return f"{schema}.dbspend360_total_pipeline_spends"
 
+    @property
+    def covered_workspaces_table_name(self) -> str:
+        """Get the covered-workspaces map table name.
+
+        Populated by `dbspend360_covered_workspaces_app` via ARM discovery.
+        Used by `/api/coverage` and as the join source for `workspace_covered`.
+        """
+        explicit = self.config.get(
+            "databricks", "covered_workspaces_table_name", fallback=None
+        )
+        if explicit:
+            return explicit
+        schema = self.schema_name
+        if not schema:
+            raise ConfigurationError(
+                "Cannot resolve covered_workspaces_table_name: neither "
+                "[databricks] covered_workspaces_table_name nor [databricks] "
+                "schema_name is set."
+            )
+        return f"{schema}.dbspend360_covered_workspaces"
+
     # Feature Flags
     @property
     def enable_cost_analysis(self) -> bool:
@@ -201,6 +222,13 @@ class AppConfig:
     def enable_export(self) -> bool:
         """Check if export feature is enabled."""
         return self.config.getboolean("features", "enable_export", fallback=True)
+
+    @property
+    def enable_job_dbu_breakdown(self) -> bool:
+        """Check if job-level DBU product breakdown (read-time) is enabled."""
+        return self.config.getboolean(
+            "features", "enable_job_dbu_breakdown", fallback=False
+        )
 
     # Performance Configuration
     @property
@@ -305,7 +333,8 @@ class AppConfig:
                 "enable_cost_analysis": self.enable_cost_analysis,
                 "enable_cluster_analysis": self.enable_cluster_analysis,
                 "enable_ai_insights": self.enable_ai_insights,
-                "enable_export": self.enable_export
+                "enable_export": self.enable_export,
+                "enable_job_dbu_breakdown": self.enable_job_dbu_breakdown,
             },
             "performance": {
                 "query_timeout_seconds": self.query_timeout_seconds,

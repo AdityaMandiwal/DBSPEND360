@@ -30,6 +30,7 @@ export interface SummaryMetrics {
   classification_coverage_pct?: number | null;
   coverage_status?: string | null;
   coverage_warning?: string | null;
+  dbu_in_non_covered_workspaces?: number;
   date_range_days: number;
 }
 
@@ -67,6 +68,7 @@ export interface JobRun {
   storage_cost?: number | null;
   network_cost?: number | null;
   other_cost?: number | null;
+  workspace_covered?: boolean;
 }
 
 export interface GroupedJob {
@@ -79,6 +81,7 @@ export interface GroupedJob {
   total_storage_cost?: number | null;
   total_network_cost?: number | null;
   total_other_cost?: number | null;
+  workspace_covered?: boolean;
   runs: JobRun[];
   total_cost: number;
   cloud_percentage: number;
@@ -108,6 +111,33 @@ export interface PaginatedGroupedJobs {
 export interface DateRange {
   start_date: string; // ISO date string
   end_date: string; // ISO date string
+}
+
+export interface FeatureFlagsResponse {
+  enable_cost_analysis: boolean;
+  enable_cluster_analysis: boolean;
+  enable_ai_insights: boolean;
+  enable_export: boolean;
+  enable_job_dbu_breakdown: boolean;
+}
+
+export interface JobProductBreakdownItem {
+  billing_origin_product: string;
+  label: string;
+  cost: number;
+  percentage: number;
+}
+
+export interface JobProductBreakdownResponse {
+  job_id: string;
+  start_date: string;
+  end_date: string;
+  items: JobProductBreakdownItem[];
+  total_cost: number;
+  rollup_databricks_cost?: number | null;
+  has_multiple_products: boolean;
+  is_estimate: boolean;
+  unpriced_warning?: string | null;
 }
 
 export interface DatePreset {
@@ -181,15 +211,6 @@ export interface OtherCostBreakdownResponse {
   total_other_cost: number;
   start_date: string;
   end_date: string;
-}
-
-export interface CoverageTrendPoint {
-  report_date: string;
-  coverage_pct: number;
-}
-
-export interface CoverageTrendResponse {
-  data: CoverageTrendPoint[];
 }
 
 export interface ApiResponse<T> {

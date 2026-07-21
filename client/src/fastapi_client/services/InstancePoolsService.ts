@@ -4,6 +4,7 @@
 /* eslint-disable */
 import type { GroupedInstancePool } from '../models/GroupedInstancePool';
 import type { InstancePoolAnalysis } from '../models/InstancePoolAnalysis';
+import type { InstancePoolDailyTrendPoint } from '../models/InstancePoolDailyTrendPoint';
 import type { InstancePoolDetails } from '../models/InstancePoolDetails';
 import type { InstancePoolSummaryMetrics } from '../models/InstancePoolSummaryMetrics';
 import type { PaginatedInstancePools } from '../models/PaginatedInstancePools';
@@ -32,6 +33,34 @@ export class InstancePoolsService {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/instance-pools/summary',
+            query: {
+                'start_date': startDate,
+                'end_date': endDate,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Instance Pool Daily Trend
+     * Get daily aggregate pool spend for the trend sparkline.
+     *
+     * Returns one point per calendar day in the window (zero-filled when no
+     * covered-workspace pool spend landed). Powers the Daily Pool Spend Trend
+     * card on the Instance Pools tab.
+     * @param startDate Start date (YYYY-MM-DD)
+     * @param endDate End date (YYYY-MM-DD)
+     * @returns InstancePoolDailyTrendPoint Successful Response
+     * @throws ApiError
+     */
+    public static getInstancePoolDailyTrendApiInstancePoolsDailyTrendGet(
+        startDate: string,
+        endDate: string,
+    ): CancelablePromise<Array<InstancePoolDailyTrendPoint>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/instance-pools/daily-trend',
             query: {
                 'start_date': startDate,
                 'end_date': endDate,

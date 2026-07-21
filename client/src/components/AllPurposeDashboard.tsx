@@ -14,6 +14,7 @@ import { format, subDays } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { AllPurposeSummaryCards } from './AllPurposeSummaryCards';
+import { CoverageBanner } from './CoverageBanner';
 import { AllPurposeClusterFilterControls } from './AllPurposeClusterFilterControls';
 import { AllPurposeClustersTable } from './AllPurposeClustersTable';
 import { AllPurposeUsersTable } from './AllPurposeUsersTable';
@@ -82,6 +83,7 @@ const AllPurposeDashboard = () => {
 
   return (
     <div className="space-y-6">
+      <CoverageBanner tab="all_purpose" />
       <AllPurposeSummaryCards dateRange={dateRange} />
 
       <Card>

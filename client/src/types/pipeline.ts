@@ -70,6 +70,7 @@ export interface GroupedPipeline {
   total_databricks_cost: number;
   total_cloud_cost?: number | null;
   total_cost: number;
+  workspace_covered?: boolean;
   // Drill-down expansion: per-day rows for this pipeline. Populated on the
   // `/grouped` endpoint, empty on `/top-pipelines` (skipped for cost;
   // mirrors the existing top-N pattern on the other tabs).
@@ -104,6 +105,7 @@ export interface PipelineSummaryMetrics {
   mixed_spend: number; // partial (classic portion DBU only)
   total_databricks_cost: number;
   total_cloud_cost?: number | null;
+  dbu_in_non_covered_workspaces?: number;
   workload_breakdown: Record<string, number>;
   date_range_days: number;
 }

@@ -144,6 +144,13 @@ export const AllPurposeSummaryCards = ({
             <p className="text-xs text-muted-foreground mt-1">
               {metrics.date_range_days} day
               {metrics.date_range_days !== 1 ? 's' : ''} period
+              {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
+                <>
+                  {' '}
+                  · {formatCurrency(metrics.dbu_in_non_covered_workspaces ?? 0)}{' '}
+                  DBU in non-covered workspaces
+                </>
+              )}
             </p>
           </CardContent>
         </Card>

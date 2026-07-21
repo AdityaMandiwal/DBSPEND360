@@ -39,5 +39,6 @@ export type PipelineSummaryMetrics = {
     total_cloud_cost?: (number | null);
     workload_breakdown?: Record<string, number>;
     date_range_days: number;
+    dbu_in_non_covered_workspaces?: number;
 };
 

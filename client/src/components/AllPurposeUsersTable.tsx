@@ -43,6 +43,7 @@ import {
   AWS_CLOUD_LABEL,
 } from '@/hooks/useCloudGate';
 import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from '@/lib/all-purpose-display';
+import { CloudCostCell } from '@/components/CloudCostCell';
 import { ClusterDetailsModal } from './JobBreakdownModal';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 
@@ -61,20 +62,19 @@ const formatCurrency = (n: number) => currencyFormatter.format(n);
 
 // EC2/EBS cloud cost cell. NULL = unknown / not attributable to this cluster
 // (ran on a pool, or Cost Explorer lag) — render "—" + tooltip, never "$0.00".
-const CloudCostValue = ({ value }: { value: number | null | undefined }) => {
-  if (value == null) {
-    return (
-      <span
-        className="text-muted-foreground cursor-help"
-        title={ALL_PURPOSE_CLOUD_MISSING_NOTE}
-        aria-label={ALL_PURPOSE_CLOUD_MISSING_NOTE}
-      >
-        —
-      </span>
-    );
-  }
-  return <>{formatCurrency(value)}</>;
-};
+const CloudCostValue = ({
+  value,
+  workspaceCovered = true,
+}: {
+  value: number | null | undefined;
+  workspaceCovered?: boolean;
+}) => (
+  <CloudCostCell
+    value={value}
+    workspaceCovered={workspaceCovered}
+    missingNote={ALL_PURPOSE_CLOUD_MISSING_NOTE}
+  />
+);
 
 const PAGE_SIZE = 25;
 
@@ -250,7 +250,10 @@ export const AllPurposeUsersTable = ({
                         </>
                       )}
                       <TableCell className="px-4 text-right font-medium text-blue-600">
-                        <CloudCostValue value={user.total_cloud_cost} />
+                        <CloudCostValue
+                          value={user.total_cloud_cost}
+                          workspaceCovered={user.workspace_covered}
+                        />
                       </TableCell>
                       <TableCell className="px-4 text-right font-medium text-red-600">
                         {formatCurrency(user.total_databricks_cost)}
@@ -483,7 +486,11 @@ const UserClusterBreakdown = ({
                     </>
                   ) : (
                     <div className="text-sm text-blue-600">
-                      {computeLabel}: <CloudCostValue value={cluster.cloud_cost} />
+                      {computeLabel}:{' '}
+                      <CloudCostValue
+                        value={cluster.cloud_cost}
+                        workspaceCovered={cluster.workspace_covered}
+                      />
                     </div>
                   )}
                   <div className="text-sm text-red-600">
