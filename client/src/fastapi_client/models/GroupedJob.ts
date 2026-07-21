@@ -22,6 +22,7 @@ export type GroupedJob = {
     total_storage_cost?: (number | null);
     total_network_cost?: (number | null);
     total_other_cost?: (number | null);
+    workspace_covered?: boolean;
     runs: Array<JobRun>;
     /**
      * Calculate total cost across all runs.

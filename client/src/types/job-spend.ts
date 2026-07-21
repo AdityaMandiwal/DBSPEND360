@@ -30,6 +30,7 @@ export interface SummaryMetrics {
   classification_coverage_pct?: number | null;
   coverage_status?: string | null;
   coverage_warning?: string | null;
+  dbu_in_non_covered_workspaces?: number;
   date_range_days: number;
 }
 
@@ -67,6 +68,7 @@ export interface JobRun {
   storage_cost?: number | null;
   network_cost?: number | null;
   other_cost?: number | null;
+  workspace_covered?: boolean;
 }
 
 export interface GroupedJob {
@@ -79,6 +81,7 @@ export interface GroupedJob {
   total_storage_cost?: number | null;
   total_network_cost?: number | null;
   total_other_cost?: number | null;
+  workspace_covered?: boolean;
   runs: JobRun[];
   total_cost: number;
   cloud_percentage: number;

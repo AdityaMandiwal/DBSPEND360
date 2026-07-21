@@ -7,7 +7,6 @@ import type { ClusterAnalysis } from '../models/ClusterAnalysis';
 import type { ClusterDetails } from '../models/ClusterDetails';
 import type { CostAnalysis } from '../models/CostAnalysis';
 import type { CostBreakdown } from '../models/CostBreakdown';
-import type { CoverageTrendResponse } from '../models/CoverageTrendResponse';
 import type { FeatureFlagsResponse } from '../models/FeatureFlagsResponse';
 import type { GroupedJob } from '../models/GroupedJob';
 import type { JobProductBreakdownResponse } from '../models/JobProductBreakdownResponse';
@@ -417,39 +416,6 @@ export class DashboardService {
                 'start_date': startDate,
                 'end_date': endDate,
                 'cluster_id': clusterId,
-            },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * Get Classification Coverage Trend
-     * Get classification coverage percentage over time.
-     *
-     * Parsed from pipeline audit log entries. Shows how well cloud costs
-     * are being classified into compute/storage/network categories.
-     *
-     * When `start_date`/`end_date` are supplied the trend is bounded to that
-     * window so the chart's x-axis tracks the dashboard's selected date range.
-     * @param startDate Optional start date to bound the trend (YYYY-MM-DD)
-     * @param endDate Optional end date to bound the trend (YYYY-MM-DD)
-     * @param limit Max data points to return
-     * @returns CoverageTrendResponse Successful Response
-     * @throws ApiError
-     */
-    public static getClassificationCoverageTrendApiClassificationCoverageTrendGet(
-        startDate?: (string | null),
-        endDate?: (string | null),
-        limit: number = 100,
-    ): CancelablePromise<CoverageTrendResponse> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/classification-coverage-trend',
-            query: {
-                'start_date': startDate,
-                'end_date': endDate,
-                'limit': limit,
             },
             errors: {
                 422: `Validation Error`,

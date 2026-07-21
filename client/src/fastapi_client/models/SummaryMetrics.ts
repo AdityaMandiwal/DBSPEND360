@@ -20,6 +20,7 @@ export type SummaryMetrics = {
     classification_coverage_pct?: (number | null);
     coverage_status?: (string | null);
     coverage_warning?: (string | null);
+    dbu_in_non_covered_workspaces?: number;
     date_range_days: number;
 };
 

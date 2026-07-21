@@ -24,6 +24,7 @@ export type AllPurposeClusterSpend = {
     network_cost?: (number | null);
     other_cost?: (number | null);
     data_security_mode?: (string | null);
+    workspace_covered?: boolean;
     /**
      * Calculate total cost as sum of cloud and Databricks costs.
      */

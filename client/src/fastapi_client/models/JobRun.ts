@@ -16,6 +16,7 @@ export type JobRun = {
     storage_cost?: (number | null);
     network_cost?: (number | null);
     other_cost?: (number | null);
+    workspace_covered?: boolean;
     /**
      * Calculate total cost as sum of cloud and Databricks costs.
      */

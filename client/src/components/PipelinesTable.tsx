@@ -48,6 +48,10 @@ import {
   MIXED_CLOUD_NOTE,
   workloadBadgeClasses,
 } from '@/lib/pipeline-display';
+import {
+  CLOUD_NOT_COVERED_LABEL,
+  CLOUD_NOT_COVERED_NOTE,
+} from '@/lib/cloud-coverage-display';
 import type { GroupedPipeline, PipelineDailySpend } from '@/types/pipeline';
 import type { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
@@ -86,11 +90,24 @@ const CloudCostCell = ({
   cloudCost,
   isServerless,
   isMixed,
+  workspaceCovered = true,
 }: {
   cloudCost?: number | null;
   isServerless: boolean;
   isMixed: boolean;
+  workspaceCovered?: boolean;
 }) => {
+  if (workspaceCovered === false && cloudCost == null) {
+    return (
+      <span
+        className="cursor-help font-medium text-amber-700 dark:text-amber-300"
+        title={CLOUD_NOT_COVERED_NOTE}
+        aria-label={CLOUD_NOT_COVERED_NOTE}
+      >
+        {CLOUD_NOT_COVERED_LABEL}
+      </span>
+    );
+  }
   if (cloudCost == null) {
     const note = cloudMissingNote(isServerless);
     return (
@@ -316,6 +333,7 @@ export const PipelinesTable = ({
                           cloudCost={pipeline.total_cloud_cost}
                           isServerless={pipeline.compute_mode === 'serverless'}
                           isMixed={pipeline.compute_mode === 'mixed'}
+                          workspaceCovered={pipeline.workspace_covered}
                         />
                       </TableCell>
                       <TableCell className="px-4 text-right font-medium text-red-600">
@@ -495,6 +513,7 @@ const PipelineDayBreakdown = ({
               key={`${pkey(pipeline)}|${day.usage_date}`}
               day={day}
               cloudLabel={cloudLabel}
+              workspaceCovered={pipeline.workspace_covered}
             />
           ))}
       </div>
@@ -505,9 +524,11 @@ const PipelineDayBreakdown = ({
 const DayRow = ({
   day,
   cloudLabel,
+  workspaceCovered = true,
 }: {
   day: PipelineDailySpend;
   cloudLabel: string;
+  workspaceCovered?: boolean;
 }) => {
   const caveat = costBasisCaveat(day.cost_basis);
   return (
@@ -532,6 +553,7 @@ const DayRow = ({
               cloudCost={day.cloud_cost}
               isServerless={day.cost_basis === 'full'}
               isMixed={day.cost_basis === 'partial'}
+              workspaceCovered={workspaceCovered}
             />
           </div>
           <div className="text-sm text-red-600">

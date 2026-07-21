@@ -13,30 +13,38 @@
 //     KPIs (plan §4.1) — the "cluster count" half is the closest lens on
 //     "how many workloads are this pool serving" that v1 has, given
 //     pools are inherently multi-tenant (plan §3.4).
-//   - Orphan pool KPI (`pool_snapshot_missing = TRUE`) surfaces lost
-//     metadata churn (cross-region or pre-Oct-2023 deleted-pool
-//     retention; plan §3.5 / §10). Surfaced as its own card so
-//     operators can spot the §3.5 three-state UX in aggregate.
+//   - Daily Pool Spend Trend sparkline (avg/day + peak day) replaces the
+//     old orphan-metadata tile so operators see spend shape at a glance.
 //
 // See plan §4.1 / CP10 (`docs/plan_instance_pools_tab.md`).
 
 import {
   Activity,
-  AlertTriangle,
   Cloud,
   DollarSign,
   Info,
   Layers,
   Server,
+  TrendingUp,
 } from 'lucide-react';
+import { format, parseISO } from 'date-fns';
+import {
+  Area,
+  AreaChart,
+  ResponsiveContainer,
+  Tooltip,
+  YAxis,
+} from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorState } from '@/components/ui/error-state';
 import {
+  useInstancePoolDailyTrend,
   useInstancePoolSummary,
   useTopInstancePools,
 } from '@/hooks/useInstancePools';
 import type { DateRange } from '@/types/job-spend';
+import type { InstancePoolDailyTrendPoint } from '@/types/instance-pool';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 
@@ -59,6 +67,28 @@ const formatNumber = (n: number) => integerFormatter.format(n);
 const formatPercent = (part: number, whole: number) =>
   whole > 0 ? `${Math.round((part / whole) * 100)}%` : '0%';
 
+const formatTrendDate = (isoDate: string) => {
+  try {
+    return format(parseISO(isoDate), 'MMM d');
+  } catch {
+    return isoDate;
+  }
+};
+
+const summarizeTrend = (points: InstancePoolDailyTrendPoint[]) => {
+  if (points.length === 0) {
+    return { avgPerDay: 0, peak: null as InstancePoolDailyTrendPoint | null };
+  }
+  const total = points.reduce((sum, p) => sum + p.total_cost, 0);
+  const peak = points.reduce((best, p) =>
+    p.total_cost > best.total_cost ? p : best,
+  );
+  return {
+    avgPerDay: total / points.length,
+    peak: peak.total_cost > 0 ? peak : null,
+  };
+};
+
 export const InstancePoolsSummaryCards = ({
   dateRange,
 }: InstancePoolsSummaryCardsProps) => {
@@ -74,6 +104,12 @@ export const InstancePoolsSummaryCards = ({
     refetch: refetchMetrics,
   } = useInstancePoolSummary(dateRange);
   const {
+    data: trendPoints,
+    isLoading: isTrendLoading,
+    isError: isTrendError,
+    refetch: refetchTrend,
+  } = useInstancePoolDailyTrend(dateRange);
+  const {
     data: topPools,
     isLoading: isTopPoolsLoading,
     isError: isTopPoolsError,
@@ -81,12 +117,11 @@ export const InstancePoolsSummaryCards = ({
   } = useTopInstancePools(dateRange, 5);
 
   // Metrics-derived values are computed null-safely so the metrics-dependent
-  // sections (KPI strip + pool-metadata card) render skeletons/errors
+  // sections (KPI strip + trend card) render skeletons/errors
   // independently from the top-5 pools list below (poly3 — no whole-strip block).
   const dailyAverageSpend = metrics
     ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
     : 0;
-  const hasOrphanedPools = !!metrics && metrics.orphaned_pools > 0;
 
   // CP8: pool EC2/EBS cloud cost is now joined into the rollup (plan §4.4),
   // so the headline is total spend (DBU + cloud), not DBU alone.
@@ -97,6 +132,10 @@ export const InstancePoolsSummaryCards = ({
     metrics && cloudCost != null && metrics.total_spend > 0
       ? formatPercent(cloudCost, metrics.total_spend)
       : null;
+
+  const trendSummary = trendPoints ? summarizeTrend(trendPoints) : null;
+  const hasTrendSpend =
+    !!trendPoints && trendPoints.some((p) => p.total_cost > 0);
 
   return (
     <div className="space-y-6">
@@ -133,6 +172,13 @@ export const InstancePoolsSummaryCards = ({
               {metrics.date_range_days} day
               {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
               {formatCurrency(dailyAverageSpend)}/day avg
+              {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
+                <>
+                  {' '}
+                  · {formatCurrency(metrics.dbu_in_non_covered_workspaces ?? 0)}{' '}
+                  DBU in non-covered workspaces
+                </>
+              )}
             </p>
           </CardContent>
         </Card>
@@ -221,80 +267,124 @@ export const InstancePoolsSummaryCards = ({
         </p>
       )}
 
-      {/* Bottom strip: orphan pools card (left) + top-5 pools card (right) */}
+      {/* Bottom strip: daily trend card (left) + top-5 pools card (right) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Orphan / metadata-state card — surfaces §3.5 three-state UX
-            at the aggregate level. */}
         <Card>
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
-              <AlertTriangle
-                className={`h-5 w-5 ${
-                  hasOrphanedPools
-                    ? 'text-amber-500'
-                    : 'text-muted-foreground'
-                }`}
-              />
-              Pool Metadata
+              <TrendingUp className="h-5 w-5 text-muted-foreground" />
+              Daily Pool Spend Trend
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {isMetricsLoading ? (
+            {isTrendLoading ? (
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Skeleton className="h-4 w-[120px]" />
-                  <Skeleton className="h-8 w-[60px]" />
+                <Skeleton className="h-[72px] w-full" />
+                <div className="flex justify-between">
+                  <Skeleton className="h-8 w-[90px]" />
+                  <Skeleton className="h-8 w-[110px]" />
                 </div>
-                <Skeleton className="h-12 w-full mt-3" />
               </div>
-            ) : isMetricsError ? (
+            ) : isTrendError ? (
               <ErrorState
                 compact
-                message="Couldn't load pool metadata."
-                onRetry={() => refetchMetrics()}
+                message="Couldn't load daily pool spend trend."
+                onRetry={() => refetchTrend()}
               />
-            ) : !metrics ? (
+            ) : !trendPoints || trendPoints.length === 0 ? (
               <div className="text-center text-muted-foreground py-4 text-sm">
                 No data available
               </div>
             ) : (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-muted-foreground">
-                  Orphaned pools
+              <div className="space-y-3">
+                <div className="h-[72px] w-full">
+                  {hasTrendSpend ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart
+                        data={trendPoints}
+                        margin={{ top: 4, right: 0, left: 0, bottom: 0 }}
+                      >
+                        <defs>
+                          <linearGradient
+                            id="poolTrendFill"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="0%"
+                              stopColor="#2563eb"
+                              stopOpacity={0.35}
+                            />
+                            <stop
+                              offset="100%"
+                              stopColor="#2563eb"
+                              stopOpacity={0.02}
+                            />
+                          </linearGradient>
+                        </defs>
+                        <YAxis hide domain={[0, 'auto']} />
+                        <Tooltip
+                          cursor={{ stroke: '#94a3b8', strokeWidth: 1 }}
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.length) return null;
+                            const point = payload[0]
+                              .payload as InstancePoolDailyTrendPoint;
+                            return (
+                              <div className="rounded-md border bg-background px-2.5 py-1.5 text-xs shadow-sm">
+                                <div className="font-medium">
+                                  {formatTrendDate(point.usage_date)}
+                                </div>
+                                <div className="text-muted-foreground">
+                                  {formatCurrency(point.total_cost)}
+                                </div>
+                              </div>
+                            );
+                          }}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="total_cost"
+                          stroke="#2563eb"
+                          strokeWidth={1.5}
+                          fill="url(#poolTrendFill)"
+                          isAnimationActive={false}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                      No pool spend in this window
+                    </div>
+                  )}
                 </div>
-                <div className="text-right">
-                  <div
-                    className={`text-2xl font-bold ${
-                      hasOrphanedPools
-                        ? 'text-amber-600'
-                        : 'text-muted-foreground'
-                    }`}
-                    title="Pools with billing rows but no row in system.compute.instance_pools — typically deleted before retention or located in another region"
-                  >
-                    {formatNumber(metrics.orphaned_pools)}
+                <div className="flex items-start justify-between gap-3 border-t pt-3">
+                  <div>
+                    <div className="text-xs text-muted-foreground">Avg / day</div>
+                    <div className="text-sm font-semibold">
+                      {formatCurrency(trendSummary?.avgPerDay ?? 0)}
+                    </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    of {formatNumber(metrics.total_pools)} pool
-                    {metrics.total_pools === 1 ? '' : 's'}
+                  <div className="text-right">
+                    <div className="text-xs text-muted-foreground">Peak day</div>
+                    {trendSummary?.peak ? (
+                      <>
+                        <div className="text-sm font-semibold">
+                          {formatCurrency(trendSummary.peak.total_cost)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {formatTrendDate(trendSummary.peak.usage_date)}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-sm font-semibold text-muted-foreground">
+                        —
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
-              <div className="text-xs text-muted-foreground border-t pt-3">
-                {hasOrphanedPools ? (
-                  <>
-                    Cost data is still accurate for orphaned pools — only the
-                    pool config is missing. Most common cause: deleted before
-                    Oct 2023, or pool snapshot lives in another region.
-                  </>
-                ) : (
-                  <>
-                    All pools have current metadata in
-                    {' '}<span className="font-mono">system.compute.instance_pools</span>.
-                  </>
-                )}
-              </div>
-            </div>
             )}
           </CardContent>
         </Card>

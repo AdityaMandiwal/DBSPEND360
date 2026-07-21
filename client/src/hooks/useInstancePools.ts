@@ -99,6 +99,18 @@ export const useInstancePoolSummary = (dateRange: DateRange) => {
   });
 };
 
+// Hook: daily pool spend series for the trend sparkline
+// (`/api/instance-pools/daily-trend`).
+export const useInstancePoolDailyTrend = (dateRange: DateRange) => {
+  return useQuery({
+    queryKey: ['instance-pools-daily-trend', dateRange],
+    queryFn: () => apiClient.getInstancePoolDailyTrend(dateRange),
+    staleTime: STALE_TIME_MS,
+    refetchOnWindowFocus: false,
+    enabled: canQueryRange(dateRange.start_date, dateRange.end_date),
+  });
+};
+
 // Hook: top-N most expensive pools (`/api/instance-pools/top-pools`).
 // Mirrors `useAllPurposeTopClusters` / `useTopJobs`. Server caps `limit`
 // at 20.

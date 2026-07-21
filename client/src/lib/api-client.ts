@@ -7,9 +7,11 @@ import {
   PaginatedAllPurposeClusters,
   PaginatedAllPurposeUsers,
 } from '@/types/all-purpose';
+import type { CoverageSummary } from '@/types/coverage';
 import {
   GroupedInstancePool,
   InstancePoolAnalysis,
+  InstancePoolDailyTrendPoint,
   InstancePoolDetails,
   InstancePoolFilter,
   InstancePoolSummaryMetrics,
@@ -159,6 +161,10 @@ class ApiClient {
     return this.fetchApi<{ status: string; service: string }>('/health');
   }
 
+  async getCoverageSummary(): Promise<CoverageSummary> {
+    return this.fetchApi<CoverageSummary>('/coverage');
+  }
+
   // ---------------------------------------------------------------------
   // All-Purpose Clusters tab
   //
@@ -269,6 +275,18 @@ class ApiClient {
     });
     return this.fetchApi<InstancePoolSummaryMetrics>(
       `/instance-pools/summary?${params}`,
+    );
+  }
+
+  async getInstancePoolDailyTrend(
+    dateRange: DateRange,
+  ): Promise<InstancePoolDailyTrendPoint[]> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+    });
+    return this.fetchApi<InstancePoolDailyTrendPoint[]>(
+      `/instance-pools/daily-trend?${params}`,
     );
   }
 

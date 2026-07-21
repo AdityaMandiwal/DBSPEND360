@@ -6,6 +6,8 @@ Instance Pools tab (parallel to the Job Clusters and All-Purpose
 Clusters routers in `dashboard.py` and `all_purpose.py`):
 
 - `/summary`           — KPI strip (mirrors `/api/all-purpose/summary`)
+- `/daily-trend`       — calendar-day pool spend series for the
+                          Daily Pool Spend Trend sparkline
 - `/grouped`           — paginated By-Pool table with two-level
                           drill-down (`days[].clusters[]`)
 - `/top-pools`         — top-N most expensive pools (flat;
@@ -36,6 +38,7 @@ from fastapi import APIRouter, HTTPException, Query
 from server.models.job_spend import (
     GroupedInstancePool,
     InstancePoolAnalysis,
+    InstancePoolDailyTrendPoint,
     InstancePoolDetails,
     InstancePoolSummaryMetrics,
     PaginatedInstancePools,
@@ -112,6 +115,34 @@ async def get_instance_pool_summary(
         raise HTTPException(
             status_code=500,
             detail='Failed to retrieve instance pool summary metrics',
+        )
+
+
+@router.get('/daily-trend', response_model=list[InstancePoolDailyTrendPoint])
+async def get_instance_pool_daily_trend(
+    start_date: date = Query(..., description='Start date (YYYY-MM-DD)'),
+    end_date: date = Query(..., description='End date (YYYY-MM-DD)'),
+):
+    """Get daily aggregate pool spend for the trend sparkline.
+
+    Returns one point per calendar day in the window (zero-filled when no
+    covered-workspace pool spend landed). Powers the Daily Pool Spend Trend
+    card on the Instance Pools tab.
+    """
+    try:
+        _validate_date_range(start_date, end_date)
+        service = get_databricks_service()
+        return await service.get_instance_pool_daily_trend(
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('Error retrieving instance pool daily trend')
+        raise HTTPException(
+            status_code=500,
+            detail='Failed to retrieve instance pool daily trend',
         )
 
 

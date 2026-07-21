@@ -181,6 +181,27 @@ class AppConfig:
             )
         return f"{schema}.dbspend360_total_pipeline_spends"
 
+    @property
+    def covered_workspaces_table_name(self) -> str:
+        """Get the covered-workspaces map table name.
+
+        Populated by `dbspend360_covered_workspaces_app` via ARM discovery.
+        Used by `/api/coverage` and as the join source for `workspace_covered`.
+        """
+        explicit = self.config.get(
+            "databricks", "covered_workspaces_table_name", fallback=None
+        )
+        if explicit:
+            return explicit
+        schema = self.schema_name
+        if not schema:
+            raise ConfigurationError(
+                "Cannot resolve covered_workspaces_table_name: neither "
+                "[databricks] covered_workspaces_table_name nor [databricks] "
+                "schema_name is set."
+            )
+        return f"{schema}.dbspend360_covered_workspaces"
+
     # Feature Flags
     @property
     def enable_cost_analysis(self) -> bool:

@@ -56,6 +56,7 @@ import {
   POOL_CLOUD_MISSING_NOTE,
   POOL_PER_CLUSTER_CLOUD_NOTE,
 } from '@/lib/pool-display';
+import { CloudCostCell } from '@/components/CloudCostCell';
 import type {
   GroupedInstancePool,
   InstancePoolClusterSpend,
@@ -101,20 +102,19 @@ const CLUSTER_DISPLAY_CAP = 25;
 // the value is NULL (no pool-tag cloud row landed yet). Pool VM cost is
 // pool-level, so this cell never appears on per-cluster rows (those use
 // `PerClusterCloudCell`).
-const PoolCloudCostCell = ({ cloudCost }: { cloudCost?: number | null }) => {
-  if (cloudCost == null) {
-    return (
-      <span
-        className="text-muted-foreground cursor-help"
-        title={POOL_CLOUD_MISSING_NOTE}
-        aria-label={POOL_CLOUD_MISSING_NOTE}
-      >
-        —
-      </span>
-    );
-  }
-  return <span>{formatCurrency(cloudCost)}</span>;
-};
+const PoolCloudCostCell = ({
+  cloudCost,
+  workspaceCovered = true,
+}: {
+  cloudCost?: number | null;
+  workspaceCovered?: boolean;
+}) => (
+  <CloudCostCell
+    value={cloudCost}
+    workspaceCovered={workspaceCovered}
+    missingNote={POOL_CLOUD_MISSING_NOTE}
+  />
+);
 
 // Per-cluster cloud cell — always "—". Pool VM cost is tracked at the pool
 // level (on the synthesized `__pool_overhead__` row), not attributable to a
@@ -355,7 +355,10 @@ export const InstancePoolsTable = ({
                         )}
                       </TableCell>
                       <TableCell className="px-4 text-right font-medium text-blue-600">
-                        <PoolCloudCostCell cloudCost={pool.total_cloud_cost} />
+                        <PoolCloudCostCell
+                          cloudCost={pool.total_cloud_cost}
+                          workspaceCovered={pool.workspace_covered}
+                        />
                       </TableCell>
                       <TableCell className="px-4 text-right font-medium text-red-600">
                         {formatCurrency(pool.total_databricks_cost)}
@@ -581,7 +584,10 @@ const PoolDayBreakdown = ({
                   <div className="flex items-center space-x-4">
                     <div className="text-sm text-blue-600">
                       {cloudLabel}:{' '}
-                      <PoolCloudCostCell cloudCost={day.cloud_cost} />
+                      <PoolCloudCostCell
+                        cloudCost={day.cloud_cost}
+                        workspaceCovered={pool.workspace_covered}
+                      />
                     </div>
                     <div className="text-sm text-red-600">
                       DBU: {formatCurrency(day.databricks_cost)}
@@ -595,6 +601,7 @@ const PoolDayBreakdown = ({
                   <DayClusterBreakdown
                     day={day}
                     cloudLabel={cloudLabel}
+                    workspaceCovered={pool.workspace_covered}
                     onSelectCluster={onSelectCluster}
                   />
                 )}
@@ -613,10 +620,12 @@ const PoolDayBreakdown = ({
 const DayClusterBreakdown = ({
   day,
   cloudLabel,
+  workspaceCovered = true,
   onSelectCluster,
 }: {
   day: InstancePoolDailySpend;
   cloudLabel: string;
+  workspaceCovered?: boolean;
   onSelectCluster: (clusterId: string) => void;
 }) => {
   if (day.clusters.length === 0) {
@@ -656,6 +665,7 @@ const DayClusterBreakdown = ({
             <ClusterRow
               key={cluster.cluster_id}
               cluster={cluster}
+              workspaceCovered={workspaceCovered}
               onSelectCluster={onSelectCluster}
             />
           ))}
@@ -686,9 +696,11 @@ const DayClusterBreakdown = ({
 
 const ClusterRow = ({
   cluster,
+  workspaceCovered = true,
   onSelectCluster,
 }: {
   cluster: InstancePoolClusterSpend;
+  workspaceCovered?: boolean;
   onSelectCluster: (clusterId: string) => void;
 }) => {
   // Plan §3.3 edge case — billing rows where `cluster_id IS NULL` are
@@ -723,7 +735,10 @@ const ClusterRow = ({
           // The pool EC2/EBS cost lands on this synthetic row (plan §4.4),
           // so render it here — this is what makes the row's Total add up
           // (DBU + cloud) instead of showing a Total with no components.
-          <PoolCloudCostCell cloudCost={cluster.cloud_cost} />
+          <PoolCloudCostCell
+            cloudCost={cluster.cloud_cost}
+            workspaceCovered={workspaceCovered}
+          />
         ) : (
           <PerClusterCloudCell />
         )}

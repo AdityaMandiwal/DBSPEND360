@@ -16,3 +16,8 @@ export const ALL_PURPOSE_CLOUD_MISSING_NOTE =
   'EC2/EBS cost is not attributed to this cluster. It may run on an instance ' +
   'pool (machine cost is shown on the Instance Pools tab) or its Cost Explorer ' +
   "data hasn't landed yet.";
+
+export {
+  CLOUD_NOT_COVERED_LABEL,
+  CLOUD_NOT_COVERED_NOTE,
+} from '@/lib/cloud-coverage-display';

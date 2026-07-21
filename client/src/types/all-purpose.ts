@@ -21,6 +21,7 @@ export interface AllPurposeUserSpend {
   storage_cost?: number | null;
   network_cost?: number | null;
   other_cost?: number | null;
+  workspace_covered?: boolean;
   total_cost: number;
   cloud_percentage: number;
   databricks_percentage: number;
@@ -57,6 +58,7 @@ export interface GroupedAllPurposeCluster {
   total_storage_cost?: number | null;
   total_network_cost?: number | null;
   total_other_cost?: number | null;
+  workspace_covered?: boolean;
   // Drill-down expansion: per-day rows for this cluster. Empty on the
   // /top-clusters endpoint (skipped for cost), populated on /grouped-by-cluster.
   users: AllPurposeUserSpend[];
@@ -79,6 +81,7 @@ export interface GroupedAllPurposeUser {
   total_storage_cost?: number | null;
   total_network_cost?: number | null;
   total_other_cost?: number | null;
+  workspace_covered?: boolean;
   // Drill-down expansion: per-cluster rows for this user. Empty on the
   // /top-users endpoint, populated on /grouped-by-user.
   clusters: AllPurposeClusterSpend[];
@@ -103,6 +106,7 @@ export interface AllPurposeSummaryMetrics {
   total_network_cost?: number | null;
   total_other_cost?: number | null;
   date_range_days: number;
+  dbu_in_non_covered_workspaces?: number;
 }
 
 export interface PaginatedAllPurposeClusters {

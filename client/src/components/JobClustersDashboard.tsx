@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { format, subDays } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { SummaryCards } from './SummaryCards';
+import { CoverageBanner } from './CoverageBanner';
 import { FilterControls } from './FilterControls';
 import { GroupedJobTable } from './GroupedJobTable';
 import { JobBreakdownModal } from './JobBreakdownModal';
@@ -35,6 +36,8 @@ const JobClustersDashboard = () => {
 
   return (
     <div className="space-y-6">
+      <CoverageBanner tab="job" />
+
       {/* Summary Cards */}
       <SummaryCards dateRange={dateRange} />
 

@@ -76,6 +76,7 @@ export interface GroupedInstancePool {
   total_databricks_cost: number;
   total_cloud_cost?: number | null;
   total_cost: number;
+  workspace_covered?: boolean;
   // Drill-down expansion: per-day rows for this pool. Populated on the
   // `/grouped` endpoint, empty on `/top-pools` (skipped for cost; mirrors
   // the existing `users: []` / `runs: []` pattern on the other top-N
@@ -106,6 +107,14 @@ export interface InstancePoolSummaryMetrics {
   total_databricks_cost: number;
   total_cloud_cost?: number | null;
   date_range_days: number;
+  dbu_in_non_covered_workspaces?: number;
+}
+
+// Calendar-day series for the Daily Pool Spend Trend sparkline.
+// Zero-filled for days with no covered-workspace pool spend.
+export interface InstancePoolDailyTrendPoint {
+  usage_date: string; // ISO date string (YYYY-MM-DD)
+  total_cost: number;
 }
 
 // Pool configuration details for the pool details modal.

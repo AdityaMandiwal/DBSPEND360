@@ -22,6 +22,8 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { useGroupedJobSpends } from '@/hooks/useGroupedJobSpends';
+import { CloudCostCell } from '@/components/CloudCostCell';
+import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from '@/lib/all-purpose-display';
 import { useJobRuns } from '@/hooks/useJobRuns';
 import { useFeatures } from '@/hooks/useFeatures';
 import { useDatabricksHost } from '@/hooks/useDatabricksHost';
@@ -148,7 +150,11 @@ const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, isSegmentedPla
                         </>
                       ) : (
                         <div className="text-sm text-blue-600">
-                          {computeLabel}: {formatRunCurrency(run.cloud_cost)}
+                          {computeLabel}:{' '}
+                          <CloudCostCell
+                            value={run.cloud_cost}
+                            workspaceCovered={run.workspace_covered}
+                          />
                         </div>
                       )}
                       <div className="text-sm text-red-600">
@@ -476,7 +482,11 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
       ),
       cell: ({ row }) => (
         <div className="text-right font-medium text-blue-600">
-          {formatCurrency(row.getValue('total_cloud_cost'))}
+          <CloudCostCell
+            value={row.original.total_cloud_cost}
+            workspaceCovered={row.original.workspace_covered}
+            missingNote={ALL_PURPOSE_CLOUD_MISSING_NOTE}
+          />
         </div>
       ),
     },
