@@ -201,7 +201,6 @@ async def get_feature_flags():
     return FeatureFlagsResponse(
         enable_cost_analysis=app_config.enable_cost_analysis,
         enable_cluster_analysis=app_config.enable_cluster_analysis,
-        enable_ai_insights=app_config.enable_ai_insights,
         enable_export=app_config.enable_export,
         enable_job_dbu_breakdown=app_config.enable_job_dbu_breakdown,
     )

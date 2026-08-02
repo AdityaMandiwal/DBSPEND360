@@ -316,7 +316,6 @@ class FeatureFlagsResponse(BaseModel):
 
   enable_cost_analysis: bool
   enable_cluster_analysis: bool
-  enable_ai_insights: bool
   enable_export: bool
   enable_job_dbu_breakdown: bool
 
