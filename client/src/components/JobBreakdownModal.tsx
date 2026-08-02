@@ -59,12 +59,24 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
         { name: 'Databricks (DBU)', value: breakdown.databricks_cost, color: '#ef4444' },
       ]
     : [];
-  const pieData = isAws ? awsCostSplit : (breakdown?.cost_split ?? []);
+  // Drop zero-value slices (common on Azure when compute_cost lands as 0.0
+  // while dollars sit in storage) so the chart/legend aren't visual clutter.
+  const pieData = (isAws ? awsCostSplit : (breakdown?.cost_split ?? [])).filter(
+    (entry) => (entry.value ?? 0) > 0,
+  );
   // Positive allowlist (D14): segmented compute/storage/network is shown only for
   // Azure/GCP. AWS, Unknown, and the config-loading window all fall to the
   // always-correct cloud-vs-DBU 2-slice — never the data-shape branch.
   const hasSegmented = breakdown?.compute_cost != null;
   const showSegmented = hasSegmented && isSegmentedPlatform;
+  const segmentPct = (value: number) =>
+    breakdown && breakdown.total_cost > 0
+      ? ((value / breakdown.total_cost) * 100).toFixed(1)
+      : '0.0';
+  const computeVal = breakdown?.compute_cost ?? 0;
+  const storageVal = breakdown?.storage_cost ?? 0;
+  const networkVal = breakdown?.network_cost ?? 0;
+  const otherVal = breakdown?.other_cost ?? 0;
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -255,50 +267,56 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                   <h4 className="font-semibold">Cost Analysis</h4>
 
                   {showSegmented ? (
-                    <>
-                      <div className={`grid gap-3 ${(breakdown.other_cost ?? 0) > 0 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                    <div className="grid grid-cols-2 gap-3">
+                      {computeVal > 0 && (
                         <div className="text-center p-3 bg-blue-50 dark:bg-blue-500/10 rounded">
                           <div className="text-xl font-bold text-blue-600 dark:text-blue-400">
-                            {breakdown.total_cost > 0 ? (((breakdown.compute_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                            {segmentPct(computeVal)}%
                           </div>
                           <div className="text-xs text-blue-600 dark:text-blue-400">Compute</div>
                         </div>
+                      )}
+                      {storageVal > 0 && (
                         <div className="text-center p-3 bg-green-50 dark:bg-green-500/10 rounded">
                           <div className="text-xl font-bold text-green-600 dark:text-green-400">
-                            {breakdown.total_cost > 0 ? (((breakdown.storage_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                            {segmentPct(storageVal)}%
                           </div>
                           <div className="text-xs text-green-600 dark:text-green-400">Storage</div>
                         </div>
+                      )}
+                      {networkVal > 0 && (
                         <div className="text-center p-3 bg-amber-50 dark:bg-amber-500/10 rounded">
                           <div className="text-xl font-bold text-amber-600 dark:text-amber-400">
-                            {breakdown.total_cost > 0 ? (((breakdown.network_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                            {segmentPct(networkVal)}%
                           </div>
                           <div className="text-xs text-amber-600 dark:text-amber-400">Network</div>
                         </div>
-                        {(breakdown.other_cost ?? 0) > 0 && (
-                          <button
-                            type="button"
-                            className="text-center p-3 bg-muted/60 rounded cursor-pointer hover:bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            onClick={() => setIsOtherBreakdownOpen(true)}
-                            title="Click to view breakdown of unclassified costs"
-                            aria-label="View breakdown of unclassified costs"
-                          >
-                            <div className="text-xl font-bold text-muted-foreground">
-                              {breakdown.total_cost > 0 ? (((breakdown.other_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
-                            </div>
-                            <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
-                              Other <Search className="h-2.5 w-2.5" aria-hidden="true" />
-                            </div>
-                          </button>
-                        )}
+                      )}
+                      {otherVal > 0 && (
+                        <button
+                          type="button"
+                          className="text-center p-3 bg-muted/60 rounded cursor-pointer hover:bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={() => setIsOtherBreakdownOpen(true)}
+                          title="Click to view breakdown of unclassified costs"
+                          aria-label="View breakdown of unclassified costs"
+                        >
+                          <div className="text-xl font-bold text-muted-foreground">
+                            {segmentPct(otherVal)}%
+                          </div>
+                          <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
+                            Other <Search className="h-2.5 w-2.5" aria-hidden="true" />
+                          </div>
+                        </button>
+                      )}
+                      {breakdown.databricks_cost > 0 && (
                         <div className="text-center p-3 bg-red-50 dark:bg-red-500/10 rounded">
                           <div className="text-xl font-bold text-red-600 dark:text-red-400">
-                            {breakdown.total_cost > 0 ? ((breakdown.databricks_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                            {segmentPct(breakdown.databricks_cost)}%
                           </div>
                           <div className="text-xs text-red-600 dark:text-red-400">DBU</div>
                         </div>
-                      </div>
-                    </>
+                      )}
+                    </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-4">
                       <div className="text-center p-3 bg-blue-50 dark:bg-blue-500/10 rounded">

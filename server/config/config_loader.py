@@ -214,11 +214,6 @@ class AppConfig:
         return self.config.getboolean("features", "enable_cluster_analysis", fallback=True)
 
     @property
-    def enable_ai_insights(self) -> bool:
-        """Check if AI insights feature is enabled."""
-        return self.config.getboolean("features", "enable_ai_insights", fallback=True)
-
-    @property
     def enable_export(self) -> bool:
         """Check if export feature is enabled."""
         return self.config.getboolean("features", "enable_export", fallback=True)
@@ -332,7 +327,6 @@ class AppConfig:
             "features": {
                 "enable_cost_analysis": self.enable_cost_analysis,
                 "enable_cluster_analysis": self.enable_cluster_analysis,
-                "enable_ai_insights": self.enable_ai_insights,
                 "enable_export": self.enable_export,
                 "enable_job_dbu_breakdown": self.enable_job_dbu_breakdown,
             },

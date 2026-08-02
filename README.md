@@ -203,7 +203,7 @@ The app uses `databricks-claude-sonnet-4` as the foundation model to generate co
 
 * `CAN QUERY` on the `databricks-claude-sonnet-4` model serving endpoint.
 
-If this grant is missing, the dashboard still loads but the AI Cost Analysis panel will not render. Also confirm `enable_ai_insights = true` under `[features]` in your config file (`config/app.dev.config` ships with it set to `false` for local development).
+If this grant is missing, the dashboard still loads but the AI Cost Analysis panel will not render. AI analysis is gated by `enable_cost_analysis` / `enable_cluster_analysis` under `[features]` in your config file.
 
 #### Optional: System Table Access
 

@@ -92,8 +92,8 @@ a Cloud vs DBU cost breakdown.
   - Instance pool analysis (`/api/instance-pools/{pool_id}/analyze`)
   - Pipeline analysis (`/api/pipelines/{pipeline_id}/analyze`)
 - Prompts substitute the active cloud provider so insights stay grounded.
-- Gated by `enable_cost_analysis` / `enable_cluster_analysis` /
-  `enable_ai_insights` flags in `config/app.dev.config`.
+- Gated by `enable_cost_analysis` / `enable_cluster_analysis` flags in
+  `config/app.dev.config`.
 
 ### 7. Cloud-provider awareness
 - `[cloud] platform` (AWS / Azure / GCP) drives notebook selection, cluster

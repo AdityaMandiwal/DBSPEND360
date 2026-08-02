@@ -8,7 +8,6 @@
 export type FeatureFlagsResponse = {
     enable_cost_analysis: boolean;
     enable_cluster_analysis: boolean;
-    enable_ai_insights: boolean;
     enable_export: boolean;
     enable_job_dbu_breakdown: boolean;
 };
