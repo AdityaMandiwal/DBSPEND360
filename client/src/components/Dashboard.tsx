@@ -5,8 +5,15 @@ import JobClustersDashboard from './JobClustersDashboard';
 import AllPurposeDashboard from './AllPurposeDashboard';
 import InstancePoolsDashboard from './InstancePoolsDashboard';
 import PipelineDashboard from './PipelineDashboard';
+import SqlWarehousesDashboard from './SqlWarehousesDashboard';
 
-const VALID_TABS = ['job-clusters', 'all-purpose', 'instance-pools', 'pipelines'] as const;
+const VALID_TABS = [
+  'job-clusters',
+  'all-purpose',
+  'instance-pools',
+  'pipelines',
+  'sql-warehouses',
+] as const;
 type TabValue = (typeof VALID_TABS)[number];
 const DEFAULT_TAB: TabValue = 'job-clusters';
 
@@ -62,6 +69,7 @@ const Dashboard = () => {
             <TabsTrigger value="all-purpose">All-Purpose Clusters</TabsTrigger>
             <TabsTrigger value="instance-pools">Instance Pools</TabsTrigger>
             <TabsTrigger value="pipelines">Pipeline Compute</TabsTrigger>
+            <TabsTrigger value="sql-warehouses">SQL Warehouses</TabsTrigger>
           </TabsList>
 
           <TabsContent value="job-clusters" className="mt-0">
@@ -78,6 +86,10 @@ const Dashboard = () => {
 
           <TabsContent value="pipelines" className="mt-0">
             <PipelineDashboard />
+          </TabsContent>
+
+          <TabsContent value="sql-warehouses" className="mt-0">
+            <SqlWarehousesDashboard />
           </TabsContent>
         </Tabs>
       </div>

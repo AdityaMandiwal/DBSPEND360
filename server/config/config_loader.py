@@ -182,6 +182,32 @@ class AppConfig:
         return f"{schema}.dbspend360_total_pipeline_spends"
 
     @property
+    def sql_warehouse_table_name(self) -> str:
+        """Get the SQL warehouse spends table name.
+
+        Defaults to `<schema_name>.dbspend360_total_sql_warehouse_spends` derived
+        from the configured `[databricks] schema_name` when not explicitly set.
+        Source for the SQL Warehouses tab; written by
+        `jobs/notebooks/sql_warehouse_spends_app.ipynb`. Same loud-failure
+        semantics as `pipeline_table_name` — neither key set raises
+        ConfigurationError so the SQL Warehouses tab fails fast on
+        misconfiguration rather than silently querying a non-existent table.
+        """
+        explicit = self.config.get(
+            "databricks", "sql_warehouse_table_name", fallback=None
+        )
+        if explicit:
+            return explicit
+        schema = self.schema_name
+        if not schema:
+            raise ConfigurationError(
+                "Cannot resolve sql_warehouse_table_name: neither "
+                "[databricks] sql_warehouse_table_name nor [databricks] "
+                "schema_name is set. Set one in the active app config."
+            )
+        return f"{schema}.dbspend360_total_sql_warehouse_spends"
+
+    @property
     def covered_workspaces_table_name(self) -> str:
         """Get the covered-workspaces map table name.
 
@@ -223,6 +249,13 @@ class AppConfig:
         """Check if job-level DBU product breakdown (read-time) is enabled."""
         return self.config.getboolean(
             "features", "enable_job_dbu_breakdown", fallback=False
+        )
+
+    @property
+    def enable_warehouse_analysis(self) -> bool:
+        """Check if SQL warehouse AI analysis feature is enabled."""
+        return self.config.getboolean(
+            "features", "enable_warehouse_analysis", fallback=True
         )
 
     # Performance Configuration
@@ -322,13 +355,15 @@ class AppConfig:
                 "schema_name": self.schema_name,
                 "all_purpose_table_name": self.all_purpose_table_name,
                 "pool_table_name": self.pool_table_name,
-                "pipeline_table_name": self.pipeline_table_name
+                "pipeline_table_name": self.pipeline_table_name,
+                "sql_warehouse_table_name": self.sql_warehouse_table_name
             },
             "features": {
                 "enable_cost_analysis": self.enable_cost_analysis,
                 "enable_cluster_analysis": self.enable_cluster_analysis,
                 "enable_export": self.enable_export,
                 "enable_job_dbu_breakdown": self.enable_job_dbu_breakdown,
+                "enable_warehouse_analysis": self.enable_warehouse_analysis,
             },
             "performance": {
                 "query_timeout_seconds": self.query_timeout_seconds,

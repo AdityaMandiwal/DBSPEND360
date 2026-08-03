@@ -25,6 +25,14 @@ import {
   PipelineFilter,
   PipelineSummaryMetrics,
 } from '@/types/pipeline';
+import {
+  GroupedSqlWarehouse,
+  PaginatedSqlWarehouses,
+  SqlWarehouseAnalysis,
+  SqlWarehouseDetails,
+  SqlWarehouseFilter,
+  SqlWarehouseSummaryMetrics,
+} from '@/types/sql-warehouse';
 import { API_BASE_URL } from '@/lib/api-config';
 
 // Error thrown by `fetchApi` for any non-2xx response. Subclasses `Error`
@@ -421,6 +429,79 @@ class ApiClient {
     const qs = params.toString();
     return this.fetchApi<PipelineAnalysis>(
       `/pipelines/${encodeURIComponent(pipelineId)}/analyze${qs ? `?${qs}` : ''}`,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // SQL Warehouses tab
+  //
+  // Mirrors the pipeline surface above; all under `/api/warehouses/*`. See
+  // `server/routers/sql_warehouses.py` and plan §3d
+  // (`docs/plans/sql-warehouse-costs.md`) for endpoint contracts.
+  //
+  // Two simplifications vs. pipelines: there is no `workload_type` chip
+  // filter, and `warehouse_id` is account-unique so no endpoint takes a
+  // `workspace_id` (and none can return a 409).
+  // ---------------------------------------------------------------------
+
+  async getSqlWarehouseSummary(
+    dateRange: DateRange,
+  ): Promise<SqlWarehouseSummaryMetrics> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+    });
+    return this.fetchApi<SqlWarehouseSummaryMetrics>(
+      `/warehouses/summary?${params}`,
+    );
+  }
+
+  async getSqlWarehouses(
+    filter: SqlWarehouseFilter,
+  ): Promise<PaginatedSqlWarehouses> {
+    const params = new URLSearchParams({
+      start_date: filter.start_date,
+      end_date: filter.end_date,
+      page: filter.page.toString(),
+      per_page: filter.per_page.toString(),
+    });
+
+    if (filter.search) {
+      params.append('search', filter.search);
+    }
+
+    return this.fetchApi<PaginatedSqlWarehouses>(
+      `/warehouses/grouped?${params}`,
+    );
+  }
+
+  async getTopSqlWarehouses(
+    dateRange: DateRange,
+    limit: number = 5,
+  ): Promise<GroupedSqlWarehouse[]> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+      limit: limit.toString(),
+    });
+    return this.fetchApi<GroupedSqlWarehouse[]>(
+      `/warehouses/top-warehouses?${params}`,
+    );
+  }
+
+  async getSqlWarehouseDetails(
+    warehouseId: string,
+  ): Promise<SqlWarehouseDetails> {
+    return this.fetchApi<SqlWarehouseDetails>(
+      `/warehouses/${encodeURIComponent(warehouseId)}/details`,
+    );
+  }
+
+  async getSqlWarehouseAnalysis(
+    warehouseId: string,
+  ): Promise<SqlWarehouseAnalysis> {
+    return this.fetchApi<SqlWarehouseAnalysis>(
+      `/warehouses/${encodeURIComponent(warehouseId)}/analyze`,
     );
   }
 }

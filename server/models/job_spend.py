@@ -1000,6 +1000,116 @@ class PaginatedPipelines(BaseModel):
   has_previous: bool
 
 
+# ---------------------------------------------------------------------------
+# SQL Warehouse models
+#
+# Wire-level types for the SQL Warehouses tab. Source table is
+# `dbspend360_total_sql_warehouse_spends`, keyed `(warehouse_id, usage_date)`.
+# `warehouse_id` is account-unique (validated), so no `workspace_id` in key.
+# DBU-only: SQL Warehouses run on Databricks-managed compute (Classic, Pro,
+# Serverless). DBU IS the complete cost — no cloud component.
+# ---------------------------------------------------------------------------
+
+
+class SqlWarehouseDailySpend(BaseModel):
+  """Per-day cost row in the SQL warehouse drill-down."""
+
+  usage_date: date
+  databricks_cost: float
+  total_cost: float
+  warehouse_type: Optional[str] = None
+  sku_name: Optional[str] = None
+
+
+class GroupedSqlWarehouse(BaseModel):
+  """Warehouse-level rollup for the By-Warehouse list view.
+
+  One row per warehouse within the queried window. `days` is the per-day
+  drill-down expansion. `metadata_missing` and `warehouse_deleted_at` encode
+  the three-state badge: active (both falsy), "Deleted" (warehouse_deleted_at
+  populated), "Metadata unavailable" (metadata_missing=True). DBU is the
+  complete cost for managed-compute warehouses — no separate cloud cost.
+  """
+
+  warehouse_id: str
+  warehouse_name: Optional[str] = None
+  warehouse_type: Optional[str] = None
+  warehouse_size: Optional[str] = None
+  creator_id: Optional[str] = None
+  auto_stop_mins: Optional[int] = None
+  min_clusters: Optional[int] = None
+  max_clusters: Optional[int] = None
+  metadata_missing: bool = False
+  warehouse_deleted_at: Optional[datetime] = None
+  active_days: int
+  total_databricks_cost: float
+  total_cost: float
+  workspace_covered: bool = True
+  days: list[SqlWarehouseDailySpend] = Field(default_factory=list)
+
+
+class SqlWarehouseSummaryMetrics(BaseModel):
+  """Summary metrics for the SQL Warehouses tab KPI strip.
+
+  DBU is the complete cost for managed-compute warehouses — no cloud cost
+  fields. The warehouse-count split is exhaustive: classic + pro + serverless
+  == total_warehouses.
+  """
+
+  total_warehouses: int
+  classic_warehouses: int
+  pro_warehouses: int
+  serverless_warehouses: int
+  total_spend: float
+  classic_spend: float
+  pro_spend: float
+  serverless_spend: float
+  total_databricks_cost: float
+  date_range_days: int
+  dbu_in_non_covered_workspaces: float = 0.0
+
+
+class SqlWarehouseDetails(BaseModel):
+  """Warehouse config details for the details modal.
+
+  Sourced from `system.compute.warehouses` (most-recent SCD snapshot),
+  denormalized into the rollup table. `metadata_missing=True` indicates
+  no system table row was found — ~77% of warehouses (common, not exceptional).
+  """
+
+  warehouse_id: str
+  warehouse_name: Optional[str] = None
+  warehouse_type: Optional[str] = None
+  warehouse_size: Optional[str] = None
+  creator_id: Optional[str] = None
+  auto_stop_mins: Optional[int] = None
+  min_clusters: Optional[int] = None
+  max_clusters: Optional[int] = None
+  metadata_missing: bool = False
+  warehouse_deleted_at: Optional[datetime] = None
+  tags: Optional[dict[str, str]] = None
+
+
+class SqlWarehouseAnalysis(BaseModel):
+  """LLM-generated cost analysis for a SQL warehouse."""
+
+  warehouse_id: str
+  analysis: str
+  timestamp: str = Field(default_factory=lambda: date.today().isoformat())
+
+
+class PaginatedSqlWarehouses(BaseModel):
+  """Paginated response for the By-Warehouse list view."""
+
+  data: list[GroupedSqlWarehouse]
+  total_count: int
+  page: int
+  per_page: int
+  total_pages: int
+  has_next: bool
+  has_previous: bool
+
+
 class ExcludedWorkspace(BaseModel):
   """Workspace with DBU usage but outside the ingested Azure subscription."""
 
@@ -1015,6 +1125,7 @@ class ExcludedDbuByTab(BaseModel):
   all_purpose: float = 0.0
   pipeline: float = 0.0
   pool: float = 0.0
+  sql_warehouse: float = 0.0
 
 
 class CoverageSummaryResponse(BaseModel):
