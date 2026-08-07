@@ -11,6 +11,7 @@ from server.models.job_spend import (
     ClusterDetails,
     InstancePoolDetails,
     PipelineDetails,
+    SqlWarehouseDetails,
 )
 from server.services.databricks_service import LOOKBACK_DAYS
 
@@ -39,6 +40,12 @@ JOB_MAX_TOKENS = 600
 CLUSTER_MAX_TOKENS = 700
 INSTANCE_POOL_MAX_TOKENS = 800
 PIPELINE_MAX_TOKENS = 800
+SQL_WAREHOUSE_MAX_TOKENS = 800
+
+# Auto-stop threshold above which idle DBU waste becomes a reportable cost
+# signal (plan §6a). Below it, a warm warehouse is normal interactive-latency
+# tuning rather than waste.
+SQL_WAREHOUSE_AUTO_STOP_THRESHOLD_MINS = 30
 
 # Mandatory v1 honesty string for DBU-only (classic/mixed) pipeline spend. The
 # prompt MUST include it whenever `cost_basis != 'full'` and the structured
@@ -420,6 +427,137 @@ Evaluate based on spend concentration, active-day density, and workload type:
 - Always include units ($/day, % of total, $/month)
 - 2-4 bullet points per section"""
 
+SQL_WAREHOUSE_ANALYSIS_PROMPT = """\
+You are a senior FinOps analyst specializing in Databricks SQL Warehouse \
+optimization (Classic, Pro, and Serverless SQL). You are analytical, precise, \
+and produce zero fluff. Every word must earn its place.
+
+## Cost Model (read first)
+
+All three SQL Warehouse types run on Databricks-managed compute. There are NO
+customer-visible cloud VMs and no separate cloud infrastructure line — the DBU
+figure IS the complete cost. Therefore:
+
+- Do NOT add a cloud-VM or cloud-infrastructure caveat of any kind, and do NOT
+  imply the reported spend is partial, DBU-only, or missing a cost component.
+- Do NOT recommend instance-type, node-type, spot, or VM-level changes — no
+  such knob exists for SQL Warehouses.
+- Every optimization lever is a DBU lever: warehouse size, cluster scaling
+  range, auto-stop tuning, and query efficiency.
+
+## Strict Rules
+
+1. Every cost-related claim MUST cite a specific number from the input data.
+2. Configuration observations may be qualitative but must be directly supported by input data.
+3. Do NOT infer, estimate, or assume values not present in the data.
+4. If data is insufficient for an assessment, state: "Insufficient data for this assessment"
+5. If no optimization exists, state: "No actionable optimizations identified" and briefly explain why.
+6. NEVER fabricate cost estimates or reference external benchmarks.
+7. NEVER cite industry-average savings percentages (e.g. "auto-stop saves
+   30-50%") or invent annualized dollar ranges not derived from the input
+   Cost Summary.
+8. Do NOT comment on query text, table layout, Z-ORDER, or partitioning
+   specifics — no query-level telemetry is in the input. Query-efficiency
+   advice must stay at the level the data supports.
+9. Configuration Gaps: ONLY list gaps that directly drive DBU cost (auto-stop
+   timeout, warehouse size vs spend shape, min/max cluster range). Do NOT list
+   missing tags, governance labels, or chargeback/tracking concerns.
+10. Do NOT recommend "maintain current configuration" or similar non-actions.
+
+## Classification Rubric
+
+Evaluate on auto-stop tuning, size/scaling configuration, and spend shape
+(spend per active day vs active-day density):
+- CRITICAL ISSUES: a concrete cost-driving misconfiguration is present (e.g.
+  auto-stop disabled, or a long auto-stop on a warehouse active on few days).
+  High absolute spend alone is NOT CRITICAL.
+- NEEDS ATTENTION: partially tuned; one or more knobs misaligned with the
+  observed spend shape.
+- WELL-OPTIMIZED: auto-stop, size, and cluster range are proportionate to the
+  observed spend and active-day density.
+
+## Warehouse-Type Tailoring (MANDATORY — use the `Warehouse Type` field)
+
+- SERVERLESS: compute starts in seconds and stops automatically, so sizing and
+  auto-stop have limited leverage. Focus on DBU consumed per active day and
+  query-side efficiency: result-cache and Delta-cache reuse, avoiding repeated
+  full scans, predicate pushdown / filter selectivity, and reducing query
+  complexity and redundant refreshes. Do NOT recommend cluster-count changes
+  as the primary lever.
+- PRO: focus on warehouse size right-sizing, auto-stop tuning, and the
+  `min_clusters` / `max_clusters` scaling range. A `min_clusters` above 1 keeps
+  paid capacity warm continuously — quantify against total spend and active
+  days. Query-efficiency levers apply secondarily.
+- CLASSIC: same levers as Pro, AND note that Classic lacks the Pro/Serverless
+  query-performance features, so migrating to Pro or Serverless may reduce DBU
+  for the same workload. Frame this as a directional option, not a quantified
+  saving, unless the input numbers support a figure.
+- Unknown type: analyze auto-stop and spend shape only; state that
+  type-specific recommendations require the warehouse type.
+
+## Auto-Stop Analysis (warehouse-specific signal)
+
+- `Auto-Stop` above 30 minutes is a cost signal: the warehouse bills DBU while
+  idle waiting for the timeout. Flag it explicitly, tie it to the observed
+  spend per active day, and recommend a shorter timeout.
+- `Auto-Stop: Disabled` (or 0) means the warehouse never stops on its own —
+  treat as the strongest idle-waste signal available.
+- Very short auto-stop values trade idle DBU for cold-start latency on the
+  next query. Mention that trade-off when recommending a reduction; do not
+  recommend a value below 5 minutes.
+- Cross-reference auto-stop against `Active Days` — a long timeout on a
+  warehouse that is active on few days wastes proportionally more.
+
+## Missing Data Protocol
+
+1. No cost data -> analyze configuration only; note "no spend data available for $ impact estimates".
+2. Metadata missing (`Metadata Available: No`) -> configuration analysis is
+   disabled; report on cost shape only and say metadata is unavailable.
+3. Partial configuration -> analyze available fields; list missing fields explicitly.
+
+## Output Format (IMMUTABLE — do not add, remove, or rename sections)
+
+## 1. Overall Rating [CLASSIFICATION]
+## 2. Right-Sizing Assessment
+## 3. Cost Optimization
+## 4. Configuration Gaps
+## 5. Recommendations (max 3, ranked by $ impact)
+
+## Section 2 — Right-Sizing Assessment
+
+- Assess `Warehouse Size` and the `min_clusters` / `max_clusters` range against
+  total spend, active days, and avg cost per active day.
+- For SERVERLESS: state that size and cluster range are managed, and assess
+  DBU consumed per active day instead.
+
+## Section 3 — Cost Optimization
+
+- Identify where the DBU is going and which levers exist, per the
+  warehouse-type tailoring above. Include the auto-stop assessment here.
+- State explicitly that DBU is the complete cost for this warehouse — there is
+  no separate cloud component to optimize.
+
+## Section 4 — Configuration Gaps
+
+- Omit filler; if no cost-driving gaps exist, write exactly:
+  "None — no cost-driving configuration gaps identified."
+
+## Section 5 — Recommendations
+
+- Max 3, ranked by estimated $ impact. No duplicates.
+- Each MUST reference >= 1 specific configuration or cost metric from input.
+- Dollar impact MUST be derived from input Cost Summary numbers, or state
+  "impact not quantifiable from available data" / "dollar impact requires cost data".
+- If the rating is WELL-OPTIMIZED and no concrete lever exists, write exactly
+  "No actionable optimizations identified" plus one short reason.
+
+## Formatting
+
+- Currency: $ prefix, comma separators, 2 decimals (e.g., $1,234.56)
+- Percentages: 1 decimal + % (e.g., 47.3%)
+- Always include units ($/day, % of total, $/month)
+- 2-4 bullet points per section"""
+
 
 class LLMService:
     """Service for LLM-powered cost and configuration analysis."""
@@ -668,6 +806,69 @@ class LLMService:
         except Exception as e:
             logger.error("Error in LLM pipeline analysis: %s", str(e))
             return self._build_pipeline_fallback(pipeline_details, cost_summary)
+
+    async def analyze_sql_warehouse_costs(
+        self,
+        warehouse_details: SqlWarehouseDetails,
+        cost_summary: Optional[dict] = None,
+    ) -> str:
+        """Analyze SQL warehouse cost shape + configuration via LLM.
+
+        Sibling of ``analyze_pipeline_costs`` but bound to
+        ``SQL_WAREHOUSE_ANALYSIS_PROMPT``. The single prompt covers all three
+        warehouse types (Classic / Pro / Serverless) and tailors itself off the
+        ``Warehouse Type`` field rather than branching per type.
+
+        DBU is the complete cost for managed-compute warehouses (plan Q4), so
+        unlike Pipeline there is no cost gap to disclaim: the prompt forbids a
+        cloud-VM caveat and forbids VM-level recommendations, since no such
+        knob exists. The warehouse-specific angle is instead auto-stop tuning
+        (``auto_stop_mins`` above
+        ``SQL_WAREHOUSE_AUTO_STOP_THRESHOLD_MINS`` is idle DBU waste).
+
+        Args:
+            warehouse_details: Config snapshot from
+                ``DatabricksService.get_sql_warehouse_details``.
+            cost_summary: Pre-computed cost shape from
+                ``DatabricksService.get_sql_warehouse_cost_summary``. ``None``
+                renders the "no cost data" branch of the prompt.
+
+        Returns:
+            LLM-generated analysis text, or a structured fallback on failure.
+        """
+        try:
+            user_message = self._build_sql_warehouse_user_message(
+                warehouse_details, cost_summary
+            )
+
+            response = self.client.serving_endpoints.query(
+                name=self.model_name,
+                messages=[
+                    ChatMessage(
+                        role=ChatMessageRole.SYSTEM,
+                        content=SQL_WAREHOUSE_ANALYSIS_PROMPT,
+                    ),
+                    ChatMessage(
+                        role=ChatMessageRole.USER,
+                        content=user_message,
+                    ),
+                ],
+                max_tokens=SQL_WAREHOUSE_MAX_TOKENS,
+                temperature=LLM_TEMPERATURE,
+            )
+
+            if response.choices and len(response.choices) > 0:
+                return response.choices[0].message.content.strip()
+
+            return self._build_sql_warehouse_fallback(
+                warehouse_details, cost_summary
+            )
+
+        except Exception as e:
+            logger.error("Error in LLM SQL warehouse analysis: %s", str(e))
+            return self._build_sql_warehouse_fallback(
+                warehouse_details, cost_summary
+            )
 
     # ------------------------------------------------------------------
     # User-message builders (data only — no instructions)
@@ -1176,6 +1377,138 @@ class LLMService:
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _format_auto_stop(warehouse: SqlWarehouseDetails) -> str:
+        """Render `auto_stop_mins` for the LLM message and fallback.
+
+        A zero/negative value means auto-stop is off — the warehouse bills DBU
+        until stopped by hand, which is the strongest idle-waste signal we can
+        read. Values above ``SQL_WAREHOUSE_AUTO_STOP_THRESHOLD_MINS`` are
+        annotated so the model reports the idle-waste angle instead of having
+        to rediscover the threshold from the prompt alone (plan §6a).
+        """
+        mins = warehouse.auto_stop_mins
+        if mins is None:
+            return "Not specified"
+        if mins <= 0:
+            return "Disabled (warehouse never stops on its own)"
+        if mins > SQL_WAREHOUSE_AUTO_STOP_THRESHOLD_MINS:
+            return (
+                f"{mins} minutes (above the "
+                f"{SQL_WAREHOUSE_AUTO_STOP_THRESHOLD_MINS}-minute threshold — "
+                "idle DBU cost signal)"
+            )
+        return f"{mins} minutes"
+
+    def _build_sql_warehouse_user_message(
+        self,
+        warehouse: SqlWarehouseDetails,
+        cost_summary: Optional[dict],
+    ) -> str:
+        """Assemble the data-only USER message for SQL warehouse analysis.
+
+        Renders the same three-state metadata preamble as the pipeline builder
+        (active / deleted / metadata-unavailable), the warehouse config block,
+        and the cost shape over the lookback window. The `Notes` section
+        restates that DBU is the complete cost so the model does not invent a
+        cloud-VM caveat — the mirror image of the pipeline builder, which must
+        add one for classic spend.
+        """
+        warehouse_type = (
+            (cost_summary or {}).get("warehouse_type")
+            or warehouse.warehouse_type
+            or "Unknown"
+        )
+
+        if warehouse.metadata_missing:
+            metadata_state = (
+                "Metadata not available — `system.compute.warehouses` has no "
+                "row for this warehouse (common — the majority of warehouses "
+                "have no snapshot, e.g. deleted before retention or "
+                "cross-region). DBU cost is still accurate; configuration "
+                "fields below may be NULL."
+            )
+        elif warehouse.warehouse_deleted_at is not None:
+            metadata_state = (
+                f"Deleted on "
+                f"{warehouse.warehouse_deleted_at.date().isoformat()} — "
+                "metadata reflects the configuration at delete time."
+            )
+        else:
+            metadata_state = "Active"
+
+        def _fmt_int(v):
+            return str(v) if v is not None else "Not specified"
+
+        warehouse_name = (
+            warehouse.warehouse_name
+            or (cost_summary or {}).get("warehouse_name")
+            or f"Warehouse {warehouse.warehouse_id}"
+        )
+
+        lines: list[str] = [
+            f"Metadata State: {metadata_state}",
+            f"Metadata Available: {'No' if warehouse.metadata_missing else 'Yes'}",
+            "",
+            "## Warehouse Configuration",
+            f"- Warehouse Name: {warehouse_name}",
+            f"- Warehouse Type: {warehouse_type}",
+            f"- Warehouse Size: {warehouse.warehouse_size or 'Not specified'}",
+            f"- Creator ID: {warehouse.creator_id or 'Unknown'}",
+            f"- Auto-Stop: {self._format_auto_stop(warehouse)}",
+            f"- Min Clusters: {_fmt_int(warehouse.min_clusters)}",
+            f"- Max Clusters: {_fmt_int(warehouse.max_clusters)}",
+        ]
+
+        tags_str = self._filter_tags(warehouse.tags)
+        lines.extend(["", "## Tags", tags_str, ""])
+
+        if cost_summary is not None and cost_summary.get("active_days", 0) > 0:
+            lookback = cost_summary.get("lookback_days", LOOKBACK_DAYS)
+            lines.append(f"## Cost Summary ({lookback}-day window)")
+            lines.append(
+                f"- Total Cost (DBU — complete cost): "
+                f"${cost_summary['total_cost']:,.2f}"
+            )
+            lines.append(
+                f"- Databricks Cost (DBU): "
+                f"${cost_summary['total_dbu_cost']:,.2f}"
+            )
+            lines.append(f"- Active Days: {cost_summary['active_days']}")
+            lines.append(
+                f"- Avg Cost / Active Day: "
+                f"${cost_summary['avg_daily_cost']:,.2f}"
+            )
+            lines.append(f"- Warehouse Type (from spend rows): {warehouse_type}")
+            if cost_summary["active_days"] < 3:
+                lines.append(
+                    "- NOTE: limited history (<3 active days) — trend "
+                    "signals are unreliable."
+                )
+        elif cost_summary is not None:
+            lines.append("## Cost Summary")
+            lines.append(
+                "No spend data available for this warehouse in the lookback "
+                "window."
+            )
+        else:
+            lines.append("## Cost Summary")
+            lines.append("Cost data unavailable.")
+
+        lines.extend([
+            "",
+            "## Notes",
+            "- Cost scope: DBU is the COMPLETE cost for managed-compute SQL "
+            "warehouses (Classic, Pro, and Serverless alike). There is no "
+            "separate cloud VM line and no missing cost component, so do NOT "
+            "add a cloud-cost caveat and do NOT recommend instance-type, "
+            "node-type, or spot changes — no such setting exists.",
+            f"- Auto-stop above {SQL_WAREHOUSE_AUTO_STOP_THRESHOLD_MINS} "
+            "minutes is a reportable idle-DBU cost signal.",
+        ])
+
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------
     # Structured fallbacks (never expose raw exceptions)
     # ------------------------------------------------------------------
@@ -1412,6 +1745,83 @@ class LLMService:
         ])
         if caveat_applies:
             lines.append(f"- Reminder: {PIPELINE_DBU_ONLY_CAVEAT}.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_sql_warehouse_fallback(
+        warehouse_details: SqlWarehouseDetails,
+        cost_summary: Optional[dict],
+    ) -> str:
+        """Return structured fallback for SQL warehouse analysis.
+
+        Mirrors the prompt's five-section format so the modal renders the same
+        shape on LLM failure. Deliberately carries no cost caveat: DBU is the
+        complete cost here, so the pipeline/pool honesty strings must NOT leak
+        into this tab.
+        """
+        warehouse_name = (
+            warehouse_details.warehouse_name
+            or (cost_summary or {}).get("warehouse_name")
+            or f"Warehouse {warehouse_details.warehouse_id}"
+        )
+        warehouse_type = (
+            (cost_summary or {}).get("warehouse_type")
+            or warehouse_details.warehouse_type
+            or "Unknown"
+        )
+        auto_stop = LLMService._format_auto_stop(warehouse_details)
+        size = warehouse_details.warehouse_size or "N/A"
+        min_clusters = (
+            str(warehouse_details.min_clusters)
+            if warehouse_details.min_clusters is not None else "N/A"
+        )
+        max_clusters = (
+            str(warehouse_details.max_clusters)
+            if warehouse_details.max_clusters is not None else "N/A"
+        )
+
+        lines = [
+            "## 1. Overall Rating [DATA ONLY]",
+            f"- Warehouse: {warehouse_name}",
+            f"- Type: {warehouse_type} | Size: {size}",
+            f"- Auto-Stop: {auto_stop}",
+            f"- Min Clusters: {min_clusters} | Max Clusters: {max_clusters}",
+            "- Automated classification unavailable",
+            "",
+            "## 2. Right-Sizing Assessment",
+        ]
+        if (
+            cost_summary
+            and isinstance(cost_summary.get("total_cost"), (int, float))
+            and cost_summary["total_cost"] > 0
+        ):
+            lines.append(
+                f"- Total Cost (DBU — complete cost): "
+                f"${cost_summary['total_cost']:,.2f}"
+            )
+            lines.append(
+                f"- Active Days: {cost_summary.get('active_days', 'N/A')}"
+            )
+            lines.append(
+                f"- Avg Cost/Day: "
+                f"${cost_summary.get('avg_daily_cost', 0):,.2f}"
+            )
+        else:
+            lines.append("- No cost data available for sizing assessment")
+        lines.extend([
+            "",
+            "## 3. Cost Optimization",
+            "- Detailed analysis unavailable. DBU is the complete cost for "
+            "managed-compute SQL warehouses — there is no separate cloud "
+            "component to optimize.",
+            f"- Auto-Stop: {auto_stop}",
+            "",
+            "## 4. Configuration Gaps",
+            "- Automated analysis could not be generated",
+            "",
+            "## 5. Recommendations",
+            "- Automated recommendations unavailable",
+        ])
         return "\n".join(lines)
 
     @staticmethod

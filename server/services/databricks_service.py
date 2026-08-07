@@ -21,6 +21,7 @@ from server.models.job_spend import (
   GroupedInstancePool,
   GroupedJob,
   GroupedPipeline,
+  GroupedSqlWarehouse,
   InstancePoolClusterSpend,
   InstancePoolDailySpend,
   InstancePoolDailyTrendPoint,
@@ -38,15 +39,37 @@ from server.models.job_spend import (
   PaginatedInstancePools,
   PaginatedJobSpends,
   PaginatedPipelines,
+  PaginatedSqlWarehouses,
   PipelineDailySpend,
   PipelineDetails,
   PipelineSummaryMetrics,
+  SqlWarehouseDailySpend,
+  SqlWarehouseDetails,
+  SqlWarehouseSummaryMetrics,
   SummaryMetrics,
 )
 
 logger = logging.getLogger(__name__)
 
 LOOKBACK_DAYS = 180
+
+# Lookback window for the SQL warehouse cost summary that feeds the LLM
+# analyze endpoint. Shorter than LOOKBACK_DAYS: warehouse sizing / auto-stop
+# advice is only actionable against recent usage, and interactive warehouses
+# churn far faster than jobs or pipelines.
+SQL_WAREHOUSE_LOOKBACK_DAYS = 30
+
+# Collapses `warehouse_type` into the three buckets the KPI strip splits on.
+# The rollup prefers `system.compute.warehouses.warehouse_type` over the
+# SKU-derived staging value, and the system table is the only source that can
+# report types outside SERVERLESS / PRO / CLASSIC (e.g. REAL_TIME). Those, plus
+# NULL, fold into SERVERLESS — they are Databricks-managed serverless-family
+# warehouses, and folding keeps `classic + pro + serverless == total` exact.
+_WAREHOUSE_TYPE_BUCKET_SQL = """CASE
+                     WHEN UPPER(COALESCE(warehouse_type, '')) LIKE '%PRO%' THEN 'PRO'
+                     WHEN UPPER(COALESCE(warehouse_type, '')) = 'CLASSIC'  THEN 'CLASSIC'
+                     ELSE 'SERVERLESS'
+                   END"""
 
 # Friendly `workload_type` labels (mirrors WORKLOAD_MAP in
 # `pipeline_spends_app.ipynb`, plan §5.5) that are *expected* to carry a
@@ -59,6 +82,33 @@ METADATA_BEARING_WORKLOADS = (
   'DBSQL Materialized View',
   'Online Table',
 )
+
+
+# Character used as the ESCAPE meta-character in every LIKE clause emitted by
+# the search path. Backslash is the conventional choice and matches the escape
+# emitted by `_escape_like_pattern`. Kept as a module constant so the SQL
+# template ("ESCAPE '\\'") and the Python-side escaper cannot drift.
+_LIKE_ESCAPE_CHAR = '\\'
+
+
+def _escape_like_pattern(term: str) -> str:
+  r"""Escape LIKE meta-characters (%, _, \) in a user-supplied search term.
+
+  The search endpoints splice a user string into a `LIKE '%…%'` pattern; without
+  this escape, `%` and `_` in the input behave as wildcards ("search=%"
+  matches every row), and a literal backslash would collide with the ESCAPE
+  clause. Order matters — the escape character itself must be doubled first
+  so subsequent `%`/`_` escapes are not themselves re-escaped.
+
+  Use in tandem with `ESCAPE '\\'` in the emitted SQL. This handles LIKE
+  metacharacters only; single-quote SQL-injection escaping (``.replace("'",
+  "''")``) is a separate concern and must still be applied after this.
+  """
+  return (
+    term.replace(_LIKE_ESCAPE_CHAR, _LIKE_ESCAPE_CHAR * 2)
+    .replace('%', _LIKE_ESCAPE_CHAR + '%')
+    .replace('_', _LIKE_ESCAPE_CHAR + '_')
+  )
 
 
 class AmbiguousPipelineError(Exception):
@@ -131,6 +181,7 @@ class DatabricksService:
     self.all_purpose_table_name = app_config.all_purpose_table_name
     self.pool_table_name = app_config.pool_table_name
     self.pipeline_table_name = app_config.pipeline_table_name
+    self.sql_warehouse_table_name = app_config.sql_warehouse_table_name
     self.covered_workspaces_table_name = app_config.covered_workspaces_table_name
     self.query_timeout = app_config.query_timeout_seconds
     self.job_name_cache: Dict[str, str] = {}  # Cache for job names
@@ -312,9 +363,8 @@ class DatabricksService:
 
     # Add job name filter if provided
     if job_name:
-      # Escape single quotes in job_name to prevent SQL injection
-      escaped_job_name = job_name.replace("'", "''")
-      where_clause += f" AND job_id LIKE '%{escaped_job_name}%'"
+      like_pattern = _escape_like_pattern(job_name).replace("'", "''")
+      where_clause += f" AND job_id LIKE '%{like_pattern}%' ESCAPE '\\\\'"
 
     # Count query for pagination
     count_query = f"""
@@ -730,9 +780,9 @@ class DatabricksService:
     # from the name map.
     usage_search_filter = ''
     if job_name:
-      escaped_search = job_name.replace("'", "''")
+      like_pattern = _escape_like_pattern(job_name).replace("'", "''")
       term = job_name.lower()
-      id_predicates = [f"job_id LIKE '%{escaped_search}%'"]
+      id_predicates = [f"job_id LIKE '%{like_pattern}%' ESCAPE '\\\\'"]
       name_matched_ids = [jid for jid, nm in name_map.items() if nm and term in nm.lower()]
       if name_matched_ids:
         # Cap the IN-list defensively; a term matching thousands of jobs
@@ -2196,14 +2246,14 @@ class DatabricksService:
     `search` is a free-text term matched against cluster_name,
     cluster_id, and owner_user_id (case-insensitive on cluster_name).
     """
-    escaped_search = search.replace("'", "''") if search else None
     search_clause = ''
-    if escaped_search:
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
       search_clause = (
         'WHERE ('
-        f"c.cluster_id LIKE '%{escaped_search}%' "
-        f"OR LOWER(COALESCE(cl.cluster_name, '')) LIKE LOWER('%{escaped_search}%') "
-        f"OR LOWER(COALESCE(c.owner_user_id, '')) LIKE LOWER('%{escaped_search}%')"
+        f"c.cluster_id LIKE '%{like_pattern}%' ESCAPE '\\\\' "
+        f"OR LOWER(COALESCE(cl.cluster_name, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\' "
+        f"OR LOWER(COALESCE(c.owner_user_id, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\'"
         ')'
       )
 
@@ -2328,10 +2378,12 @@ class DatabricksService:
     clusters. `clusters` is enriched via `_get_batch_user_clusters`
     with the per-cluster drill-down expansion.
     """
-    escaped_search = search.replace("'", "''") if search else None
     search_clause = ''
-    if escaped_search:
-      search_clause = f"WHERE LOWER(COALESCE(user_id, '')) LIKE LOWER('%{escaped_search}%')"
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
+      search_clause = (
+        f"WHERE LOWER(COALESCE(user_id, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\'"
+      )
 
     wsc_agg = self._workspace_covered_agg_sql(self.all_purpose_table_name)
     data_query = f"""
@@ -3064,17 +3116,18 @@ class DatabricksService:
     API (creator enrichment lives in the modal path only — plan §4.1
     regression-guarded by CP10).
     """
-    escaped_search = search.replace("'", "''") if search else None
     search_clause = ''
-    if escaped_search:
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
+      id_literal = search.replace("'", "''")
       search_clause = (
         'WHERE ('
-        f"LOWER(COALESCE(pool_name, '')) LIKE LOWER('%{escaped_search}%') "
-        f"OR instance_pool_id = '{escaped_search}' "
+        f"LOWER(COALESCE(pool_name, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\' "
+        f"OR instance_pool_id = '{id_literal}' "
         f'OR instance_pool_id IN ('
         f'    SELECT DISTINCT instance_pool_id'
         f'    FROM filtered'
-        f"    WHERE cluster_id = '{escaped_search}'"
+        f"    WHERE cluster_id = '{id_literal}'"
         f'))'
       )
 
@@ -3792,14 +3845,15 @@ class DatabricksService:
     """
     workload_filter = self._pipeline_workload_filter(workload_type)
 
-    escaped_search = search.replace("'", "''") if search else None
     search_clause = ''
-    if escaped_search:
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
+      id_literal = search.replace("'", "''")
       search_clause = (
         'WHERE ('
-        f"LOWER(COALESCE(pl.pipeline_name, '')) LIKE LOWER('%{escaped_search}%') "
-        f"OR pl.pipeline_id = '{escaped_search}' "
-        f"OR LOWER(COALESCE(pl.created_by, '')) LIKE LOWER('%{escaped_search}%')"
+        f"LOWER(COALESCE(pl.pipeline_name, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\' "
+        f"OR pl.pipeline_id = '{id_literal}' "
+        f"OR LOWER(COALESCE(pl.created_by, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\'"
         ')'
       )
 
@@ -4475,6 +4529,490 @@ class DatabricksService:
       )
       return None
 
+  async def get_sql_warehouse_summary_metrics(
+    self,
+    start_date: date,
+    end_date: date,
+  ) -> SqlWarehouseSummaryMetrics:
+    """Get summary metrics for the SQL Warehouses tab KPI strip.
+
+    DBU-only: SQL warehouses run on Databricks-managed compute for all three
+    types, so `total_spend` IS the DBU spend and there is no cloud component
+    to split out. The warehouse-count split is exhaustive — `classic` + `pro`
+    + `serverless` == `total_warehouses` — via `_WAREHOUSE_TYPE_BUCKET_SQL`,
+    and the `$` split sums to `total_spend` the same way.
+
+    Warehouses are collapsed to one row each *before* the counts so a
+    warehouse active on many days is counted once. Spend is attributed to
+    covered workspaces only; the non-covered remainder is surfaced separately
+    as `dbu_in_non_covered_workspaces` for the coverage banner rather than
+    being silently folded into the headline number.
+    """
+    wsc_agg = self._workspace_covered_agg_sql(self.sql_warehouse_table_name)
+    query = f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.sql_warehouse_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        wh AS (
+            SELECT warehouse_id,
+                   MAX({_WAREHOUSE_TYPE_BUCKET_SQL}) AS type_bucket,
+                   SUM(databricks_cost)              AS wh_databricks_cost,
+                   SUM(total_cost)                   AS wh_cost,
+                   {wsc_agg}
+            FROM filtered
+            GROUP BY warehouse_id
+        )
+        SELECT
+            COUNT(*)                                                    AS total_warehouses,
+            SUM(CASE WHEN type_bucket = 'CLASSIC'    THEN 1 ELSE 0 END) AS classic_warehouses,
+            SUM(CASE WHEN type_bucket = 'PRO'        THEN 1 ELSE 0 END) AS pro_warehouses,
+            SUM(CASE WHEN type_bucket = 'SERVERLESS' THEN 1 ELSE 0 END) AS serverless_warehouses,
+            COALESCE(SUM(CASE WHEN workspace_covered THEN wh_cost ELSE 0 END), 0) AS total_spend,
+            COALESCE(SUM(CASE WHEN workspace_covered AND type_bucket = 'CLASSIC'
+                              THEN wh_cost ELSE 0 END), 0)              AS classic_spend,
+            COALESCE(SUM(CASE WHEN workspace_covered AND type_bucket = 'PRO'
+                              THEN wh_cost ELSE 0 END), 0)              AS pro_spend,
+            COALESCE(SUM(CASE WHEN workspace_covered AND type_bucket = 'SERVERLESS'
+                              THEN wh_cost ELSE 0 END), 0)              AS serverless_spend,
+            COALESCE(SUM(CASE WHEN workspace_covered
+                              THEN wh_databricks_cost ELSE 0 END), 0)   AS total_databricks_cost,
+            COALESCE(SUM(CASE WHEN NOT workspace_covered
+                              THEN wh_databricks_cost ELSE 0 END), 0)   AS dbu_in_non_covered_workspaces
+        FROM wh
+        """
+
+    response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id,
+      statement=query,
+    )
+
+    date_range_days = (end_date - start_date).days + 1
+
+    if response.result and response.result.data_array:
+      row = response.result.data_array[0]
+      return SqlWarehouseSummaryMetrics(
+        total_warehouses=int(row[0]) if row[0] is not None else 0,
+        classic_warehouses=int(row[1]) if row[1] is not None else 0,
+        pro_warehouses=int(row[2]) if row[2] is not None else 0,
+        serverless_warehouses=int(row[3]) if row[3] is not None else 0,
+        total_spend=float(row[4]) if row[4] is not None else 0.0,
+        classic_spend=float(row[5]) if row[5] is not None else 0.0,
+        pro_spend=float(row[6]) if row[6] is not None else 0.0,
+        serverless_spend=float(row[7]) if row[7] is not None else 0.0,
+        total_databricks_cost=float(row[8]) if row[8] is not None else 0.0,
+        date_range_days=date_range_days,
+        dbu_in_non_covered_workspaces=float(row[9]) if row[9] is not None else 0.0,
+      )
+
+    return SqlWarehouseSummaryMetrics(
+      total_warehouses=0,
+      classic_warehouses=0,
+      pro_warehouses=0,
+      serverless_warehouses=0,
+      total_spend=0.0,
+      classic_spend=0.0,
+      pro_spend=0.0,
+      serverless_spend=0.0,
+      total_databricks_cost=0.0,
+      date_range_days=date_range_days,
+    )
+
+  def _sql_warehouse_level_sql(self, start_date: date, end_date: date) -> str:
+    """Shared `(warehouse_id)` rollup CTEs for the grouped / top-N reads.
+
+    The rollup is already at `(warehouse_id, usage_date)` grain, so the
+    warehouse-level collapse is a plain GROUP BY: `MAX(...)` on the
+    constant-per-warehouse metadata denormalized from
+    `system.compute.warehouses`, `BOOL_OR` on `metadata_missing`, and SUMs on
+    the costs. `warehouse_id` is account-unique (validated), so unlike
+    `pipeline_id` the key needs no `workspace_id` component.
+    """
+    wsc_agg = self._workspace_covered_agg_sql(self.sql_warehouse_table_name)
+    return f"""
+        WITH filtered AS (
+            SELECT *
+            FROM {self.sql_warehouse_table_name}
+            WHERE usage_date >= '{start_date.isoformat()}'
+              AND usage_date <= '{end_date.isoformat()}'
+        ),
+        warehouse_level AS (
+            SELECT warehouse_id,
+                   MAX(warehouse_name)        AS warehouse_name,
+                   MAX(warehouse_type)        AS warehouse_type,
+                   MAX(warehouse_size)        AS warehouse_size,
+                   MAX(creator_id)            AS creator_id,
+                   MAX(auto_stop_mins)        AS auto_stop_mins,
+                   MAX(min_clusters)          AS min_clusters,
+                   MAX(max_clusters)          AS max_clusters,
+                   BOOL_OR(metadata_missing)  AS metadata_missing,
+                   MAX(warehouse_deleted_at)  AS warehouse_deleted_at,
+                   COUNT(DISTINCT usage_date) AS active_days,
+                   SUM(databricks_cost)       AS total_databricks_cost,
+                   SUM(total_cost)            AS total_cost,
+                   {wsc_agg}
+            FROM filtered
+            GROUP BY warehouse_id
+        )"""
+
+  def _parse_grouped_sql_warehouse(
+    self,
+    row,
+    days: Optional[List[SqlWarehouseDailySpend]] = None,
+  ) -> GroupedSqlWarehouse:
+    """Build a `GroupedSqlWarehouse` from a warehouse-level result row.
+
+    Column order is fixed by `_sql_warehouse_level_sql`'s projection and is
+    shared by `get_sql_warehouses_grouped` and `get_top_sql_warehouses`.
+    """
+    return GroupedSqlWarehouse(
+      warehouse_id=row[0],
+      warehouse_name=row[1],
+      warehouse_type=row[2],
+      warehouse_size=row[3],
+      creator_id=row[4],
+      auto_stop_mins=int(row[5]) if row[5] is not None else None,
+      min_clusters=int(row[6]) if row[6] is not None else None,
+      max_clusters=int(row[7]) if row[7] is not None else None,
+      metadata_missing=self._parse_bool(row[8]) or False,
+      warehouse_deleted_at=self._parse_timestamp(row[9]),
+      active_days=int(row[10]) if row[10] is not None else 0,
+      total_databricks_cost=float(row[11]) if row[11] is not None else 0.0,
+      total_cost=float(row[12]) if row[12] is not None else 0.0,
+      workspace_covered=_parse_workspace_covered(row[13]),
+      days=days if days is not None else [],
+    )
+
+  async def get_sql_warehouses_grouped(
+    self,
+    start_date: date,
+    end_date: date,
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+  ) -> PaginatedSqlWarehouses:
+    """Paginated By-Warehouse rollup for the SQL Warehouses tab.
+
+    Sibling of `get_pipelines_grouped`: one row per warehouse in the window,
+    with the per-day expansion enriched by `_get_batch_warehouse_days` so the
+    sum of `days[].total_cost` equals the row's `total_cost` structurally.
+
+    `search` matches `warehouse_name` (case-insensitive substring) or
+    `warehouse_id` (exact). `total_matching` rides along via `COUNT(*) OVER()`
+    so pagination needs no second count query.
+    """
+    search_clause = ''
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
+      id_literal = search.replace("'", "''")
+      search_clause = (
+        'WHERE ('
+        f"LOWER(COALESCE(wl.warehouse_name, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\' "
+        f"OR wl.warehouse_id = '{id_literal}'"
+        ')'
+      )
+
+    data_query = f"""
+        {self._sql_warehouse_level_sql(start_date, end_date)}
+        SELECT wl.warehouse_id, wl.warehouse_name, wl.warehouse_type,
+               wl.warehouse_size, wl.creator_id, wl.auto_stop_mins,
+               wl.min_clusters, wl.max_clusters, wl.metadata_missing,
+               wl.warehouse_deleted_at, wl.active_days,
+               wl.total_databricks_cost, wl.total_cost, wl.workspace_covered,
+               COUNT(*) OVER() AS total_matching
+        FROM warehouse_level wl
+        {search_clause}
+        ORDER BY wl.total_cost DESC
+        LIMIT {limit} OFFSET {offset}
+        """
+
+    data_response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id,
+      statement=data_query,
+    )
+
+    total_count = 0
+    grouped: List[GroupedSqlWarehouse] = []
+    if data_response.result and data_response.result.data_array:
+      total_count = int(data_response.result.data_array[0][14] or 0)
+
+      warehouse_ids = [row[0] for row in data_response.result.data_array]
+      days_by_warehouse = await self._get_batch_warehouse_days(warehouse_ids, start_date, end_date)
+
+      for row in data_response.result.data_array:
+        grouped.append(
+          self._parse_grouped_sql_warehouse(row, days=days_by_warehouse.get(row[0], []))
+        )
+
+    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
+    current_page = (offset // limit) + 1
+
+    return PaginatedSqlWarehouses(
+      data=grouped,
+      total_count=total_count,
+      page=current_page,
+      per_page=limit,
+      total_pages=total_pages,
+      has_next=current_page < total_pages,
+      has_previous=current_page > 1,
+    )
+
+  async def _get_batch_warehouse_days(
+    self,
+    warehouse_ids: List[str],
+    start_date: date,
+    end_date: date,
+  ) -> Dict[str, List[SqlWarehouseDailySpend]]:
+    """Fetch the per-day expansion for a batch of warehouses.
+
+    The rollup is already at `(warehouse_id, usage_date)` grain, so the
+    GROUP BY is a defensive collapse rather than a real aggregation — it keeps
+    the read correct if the grain ever widens. Keyed on `warehouse_id` alone
+    because it is account-unique (validated).
+    """
+    if not warehouse_ids:
+      return {}
+
+    unique_ids = sorted({wid for wid in warehouse_ids if wid})
+    if not unique_ids:
+      return {}
+    in_clause = ', '.join(f"'{wid.replace(chr(39), chr(39) * 2)}'" for wid in unique_ids)
+
+    query = f"""
+        SELECT warehouse_id,
+               usage_date,
+               SUM(databricks_cost) AS databricks_cost,
+               SUM(total_cost)      AS total_cost,
+               MAX(warehouse_type)  AS warehouse_type,
+               MAX(sku_name)        AS sku_name
+        FROM {self.sql_warehouse_table_name}
+        WHERE warehouse_id IN ({in_clause})
+          AND usage_date >= '{start_date.isoformat()}'
+          AND usage_date <= '{end_date.isoformat()}'
+        GROUP BY warehouse_id, usage_date
+        ORDER BY warehouse_id, usage_date
+        """
+
+    response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id,
+      statement=query,
+    )
+
+    result: Dict[str, List[SqlWarehouseDailySpend]] = {}
+    if response.result and response.result.data_array:
+      for row in response.result.data_array:
+        result.setdefault(row[0], []).append(
+          SqlWarehouseDailySpend(
+            usage_date=date.fromisoformat(row[1]),
+            databricks_cost=float(row[2]) if row[2] is not None else 0.0,
+            total_cost=float(row[3]) if row[3] is not None else 0.0,
+            warehouse_type=row[4],
+            sku_name=row[5],
+          )
+        )
+
+    return result
+
+  async def get_top_sql_warehouses(
+    self,
+    start_date: date,
+    end_date: date,
+    limit: int = 5,
+  ) -> List[GroupedSqlWarehouse]:
+    """Get the top N most expensive SQL warehouses in the window.
+
+    Returns flat `GroupedSqlWarehouse` rows with `days=[]` — this endpoint
+    powers a top-N highlight card and intentionally skips the per-day
+    enrichment query for cost reasons (mirrors the other tabs' top-N
+    pattern). Use `get_sql_warehouses_grouped` for the drill-down view.
+    """
+    query = f"""
+        {self._sql_warehouse_level_sql(start_date, end_date)}
+        SELECT wl.warehouse_id, wl.warehouse_name, wl.warehouse_type,
+               wl.warehouse_size, wl.creator_id, wl.auto_stop_mins,
+               wl.min_clusters, wl.max_clusters, wl.metadata_missing,
+               wl.warehouse_deleted_at, wl.active_days,
+               wl.total_databricks_cost, wl.total_cost, wl.workspace_covered
+        FROM warehouse_level wl
+        ORDER BY wl.total_cost DESC
+        LIMIT {limit}
+        """
+
+    response = self.client.statement_execution.execute_statement(
+      warehouse_id=self.warehouse_id,
+      statement=query,
+    )
+
+    warehouses: List[GroupedSqlWarehouse] = []
+    if response.result and response.result.data_array:
+      for row in response.result.data_array:
+        warehouses.append(self._parse_grouped_sql_warehouse(row))
+
+    return warehouses
+
+  async def get_sql_warehouse_details(self, warehouse_id: str) -> SqlWarehouseDetails:
+    """Get warehouse configuration details for the details modal.
+
+    Reads the most recent rollup row for the warehouse — the metadata is
+    already denormalized from `system.compute.warehouses` by
+    `sql_warehouse_spends_app.ipynb`, so no live system-table join is needed
+    for the config fields. `tags` is the one field the rollup does not carry;
+    it is fetched best-effort and left `None` when unavailable.
+
+    Returns a sentinel with `metadata_missing=True` when no rollup row exists
+    so a made-up id renders the neutral badge instead of raising.
+    """
+    escaped_id = warehouse_id.replace("'", "''")
+
+    query = f"""
+        SELECT warehouse_id, warehouse_name, warehouse_type, warehouse_size,
+               creator_id, auto_stop_mins, min_clusters, max_clusters,
+               metadata_missing, warehouse_deleted_at
+        FROM {self.sql_warehouse_table_name}
+        WHERE warehouse_id = '{escaped_id}'
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY warehouse_id ORDER BY usage_date DESC) = 1
+        """
+
+    row = None
+    try:
+      response = self.client.statement_execution.execute_statement(
+        warehouse_id=self.warehouse_id,
+        statement=query,
+      )
+      if response.result and response.result.data_array:
+        row = response.result.data_array[0]
+    except Exception as exc:
+      logger.error(
+        'Error fetching SQL warehouse details for %s: %s',
+        warehouse_id,
+        str(exc),
+      )
+
+    if row is None:
+      return SqlWarehouseDetails(
+        warehouse_id=warehouse_id,
+        metadata_missing=True,
+      )
+
+    return SqlWarehouseDetails(
+      warehouse_id=row[0],
+      warehouse_name=row[1],
+      warehouse_type=row[2],
+      warehouse_size=row[3],
+      creator_id=row[4],
+      auto_stop_mins=int(row[5]) if row[5] is not None else None,
+      min_clusters=int(row[6]) if row[6] is not None else None,
+      max_clusters=int(row[7]) if row[7] is not None else None,
+      metadata_missing=self._parse_bool(row[8]) or False,
+      warehouse_deleted_at=self._parse_timestamp(row[9]),
+      tags=self._get_sql_warehouse_tags(escaped_id),
+    )
+
+  def _get_sql_warehouse_tags(self, escaped_warehouse_id: str) -> Optional[dict]:
+    """Best-effort `tags` lookup for the details modal.
+
+    `tags` is the only config field not denormalized into the rollup. A
+    failure here (system table unavailable, permissions) must not fail the
+    modal, so it degrades to `None` and the modal omits the section.
+    """
+    query = f"""
+        SELECT tags
+        FROM system.compute.warehouses
+        WHERE warehouse_id = '{escaped_warehouse_id}'
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY warehouse_id ORDER BY change_time DESC) = 1
+        """
+    try:
+      response = self.client.statement_execution.execute_statement(
+        warehouse_id=self.warehouse_id,
+        statement=query,
+      )
+      if response.result and response.result.data_array:
+        return self._parse_tags(response.result.data_array[0][0])
+    except Exception as exc:
+      logger.warning(
+        'Error fetching SQL warehouse tags for %s: %s',
+        escaped_warehouse_id,
+        str(exc),
+      )
+    return None
+
+  async def get_sql_warehouse_cost_summary(self, warehouse_id: str) -> Optional[dict]:
+    """Aggregated cost summary for a single warehouse over the lookback.
+
+    Feeds the LLM analyze endpoint (`/api/warehouses/{id}/analyze`). DBU is
+    the complete cost for managed compute, so `total_cost` and
+    `total_dbu_cost` are the same figure — carried as two keys so the prompt
+    can state that explicitly rather than implying a missing cloud component.
+
+    Returns ``None`` only on query failure; a warehouse with no spend in the
+    window returns a zero-valued dict so the LLM still gets scaffolding.
+    """
+    try:
+      escaped_id = warehouse_id.replace("'", "''")
+      lookback_date = (date.today() - timedelta(days=SQL_WAREHOUSE_LOOKBACK_DAYS)).isoformat()
+
+      query = f"""
+            WITH filtered AS (
+                SELECT *
+                FROM {self.sql_warehouse_table_name}
+                WHERE warehouse_id = '{escaped_id}'
+                  AND usage_date >= '{lookback_date}'
+            ),
+            day_level AS (
+                SELECT usage_date,
+                       SUM(databricks_cost) AS day_databricks_cost,
+                       SUM(total_cost)      AS day_total_cost
+                FROM filtered
+                GROUP BY usage_date
+            )
+            SELECT
+                COALESCE(SUM(day_total_cost), 0)      AS total_cost,
+                COALESCE(SUM(day_databricks_cost), 0) AS total_dbu_cost,
+                COUNT(*)                              AS active_days,
+                COALESCE(AVG(day_total_cost), 0)      AS avg_daily_cost,
+                (SELECT MAX(warehouse_type) FROM filtered) AS warehouse_type,
+                (SELECT MAX(warehouse_name) FROM filtered) AS warehouse_name
+            FROM day_level
+            """
+
+      response = self.client.statement_execution.execute_statement(
+        warehouse_id=self.warehouse_id,
+        statement=query,
+      )
+
+      if not response.result or not response.result.data_array:
+        return {
+          'total_cost': 0.0,
+          'total_dbu_cost': 0.0,
+          'active_days': 0,
+          'avg_daily_cost': 0.0,
+          'warehouse_type': None,
+          'warehouse_name': None,
+          'lookback_days': SQL_WAREHOUSE_LOOKBACK_DAYS,
+        }
+
+      row = response.result.data_array[0]
+      return {
+        'total_cost': float(row[0]) if row[0] is not None else 0.0,
+        'total_dbu_cost': float(row[1]) if row[1] is not None else 0.0,
+        'active_days': int(row[2]) if row[2] is not None else 0,
+        'avg_daily_cost': float(row[3]) if row[3] is not None else 0.0,
+        'warehouse_type': row[4],
+        'warehouse_name': row[5],
+        'lookback_days': SQL_WAREHOUSE_LOOKBACK_DAYS,
+      }
+    except Exception as exc:
+      logger.error(
+        'Error fetching SQL warehouse cost summary for %s: %s',
+        warehouse_id,
+        str(exc),
+      )
+      return None
+
   @staticmethod
   def _parse_bool(raw):
     """Parse a Spark BOOLEAN value returned by Statement Execution.
@@ -4609,6 +5147,10 @@ class DatabricksService:
         SELECT 'pool', COALESCE(SUM(databricks_cost), 0)
         FROM {self.pool_table_name}
         WHERE COALESCE(workspace_covered, true) = false
+        UNION ALL
+        SELECT 'sql_warehouse', COALESCE(SUM(databricks_cost), 0)
+        FROM {self.sql_warehouse_table_name}
+        WHERE COALESCE(workspace_covered, true) = false
         """
 
     covered_workspace_count = 0
@@ -4665,6 +5207,7 @@ class DatabricksService:
           all_purpose=tab_map.get('all_purpose', 0.0),
           pipeline=tab_map.get('pipeline', 0.0),
           pool=tab_map.get('pool', 0.0),
+          sql_warehouse=tab_map.get('sql_warehouse', 0.0),
         )
     except Exception as e:
       logger.warning(

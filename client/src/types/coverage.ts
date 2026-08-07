@@ -9,6 +9,7 @@ export type ExcludedDbuByTab = {
   all_purpose: number;
   pipeline: number;
   pool: number;
+  sql_warehouse: number;
 };
 
 export type CoverageSummary = {
