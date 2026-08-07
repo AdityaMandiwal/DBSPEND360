@@ -6,7 +6,8 @@
 //                             `system.compute.warehouses`. The warehouse name
 //                             is clickable and opens
 //                             `SqlWarehouseDetailsModal`; a neutral
-//                             three-state badge sits under it.
+//                             three-state badge and (when applicable) an
+//                             amber "Not covered" badge sit under it.
 //   Level 1 (warehouse→day) — expand to see per-day DBU / total rows. The
 //                             rollup is already at `(warehouse_id,
 //                             usage_date)` grain, so the sum of `days[]`
@@ -15,17 +16,22 @@
 // There is no cloud-cost column: SQL Warehouses run on Databricks-managed
 // compute, so DBU IS the complete cost. Rows arrive sorted by total_cost
 // descending from the backend.
+//
+// A row's `workspace_covered === false` signals that the warehouse runs in an
+// Azure subscription outside the ones DBSpend360 ingests. Its DBU is EXCLUDED
+// from the KPI totals but still shown on the row — hence the amber badge on
+// the name cell so users can reconcile the KPI vs. table sum by eye.
 
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronRight as ChevronRightIcon,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { ErrorState } from '@/components/ui/error-state';
-import { Skeleton } from '@/components/ui/skeleton';
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -33,25 +39,26 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { useSqlWarehouses } from '@/hooks/useSqlWarehouses';
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { useSqlWarehouses } from "@/hooks/useSqlWarehouses";
 import {
   formatCurrency,
   warehouseTypeBadgeClasses,
   warehouseTypeLabel,
-} from '@/lib/sql-warehouse-display';
+} from "@/lib/sql-warehouse-display";
+import { CLOUD_NOT_COVERED_LABEL } from "@/lib/cloud-coverage-display";
 import type {
   GroupedSqlWarehouse,
   SqlWarehouseDailySpend,
-} from '@/types/sql-warehouse';
-import type { DateRange } from '@/types/job-spend';
+} from "@/types/sql-warehouse";
+import type { DateRange } from "@/types/job-spend";
 import {
   formatCalendarDate,
   formatLocalISODate,
   HIGH_COST_USD,
-} from '@/lib/utils';
-import { SqlWarehouseDetailsModal } from './SqlWarehouseDetailsModal';
+} from "@/lib/utils";
+import { SqlWarehouseDetailsModal } from "./SqlWarehouseDetailsModal";
 
 interface SqlWarehousesTableProps {
   dateRange: DateRange;
@@ -181,12 +188,15 @@ export const SqlWarehousesTable = ({
                           aria-expanded={isExpanded}
                           aria-label={
                             isExpanded
-                              ? 'Collapse warehouse'
-                              : 'Expand warehouse'
+                              ? "Collapse warehouse"
+                              : "Expand warehouse"
                           }
                         >
                           {isExpanded ? (
-                            <ChevronDown className="h-4 w-4" aria-hidden="true" />
+                            <ChevronDown
+                              className="h-4 w-4"
+                              aria-hidden="true"
+                            />
                           ) : (
                             <ChevronRightIcon
                               className="h-4 w-4"
@@ -202,7 +212,7 @@ export const SqlWarehousesTable = ({
                           className="text-left truncate font-medium text-blue-600 hover:text-blue-800 hover:underline"
                           title={`View details for ${warehouse.warehouse_id}`}
                         >
-                          <span className={hasName ? '' : 'font-mono'}>
+                          <span className={hasName ? "" : "font-mono"}>
                             {displayName}
                           </span>
                         </button>
@@ -212,7 +222,10 @@ export const SqlWarehousesTable = ({
                         >
                           {warehouse.warehouse_id}
                         </div>
-                        <WarehouseStateBadge warehouse={warehouse} />
+                        <div className="flex flex-wrap items-center gap-1">
+                          <WarehouseStateBadge warehouse={warehouse} />
+                          <CoverageBadge warehouse={warehouse} />
+                        </div>
                       </TableCell>
                       <TableCell className="px-4">
                         <Badge
@@ -280,7 +293,7 @@ export const SqlWarehousesTable = ({
       {totalCount > 0 && (
         <div className="flex items-center justify-between">
           <div className="text-sm text-muted-foreground">
-            Showing {rows.length} warehouse{rows.length === 1 ? '' : 's'} of{' '}
+            Showing {rows.length} warehouse{rows.length === 1 ? "" : "s"} of{" "}
             {totalCount} total
             {searchTerm && ` (filtered by "${searchTerm}")`}
           </div>
@@ -375,6 +388,33 @@ const WarehouseStateBadge = ({
   return null;
 };
 
+// Amber "Not covered" badge shown when the warehouse's workspace runs in an
+// Azure subscription outside the ones DBSpend360 ingests. Palette matches the
+// Pipelines-tab `CloudCostCell` treatment (`cloud-coverage-display.ts`).
+//
+// The tab-specific tooltip differs from the shared `CLOUD_NOT_COVERED_NOTE`
+// because the SQL Warehouse KPI actively EXCLUDES non-covered DBU, whereas
+// other tabs include the DBU and only miss the cloud (VM) column. On this tab
+// there is no cloud column at all, so the shared note would mislead.
+const SQL_WAREHOUSE_NOT_COVERED_NOTE =
+  "This warehouse runs in an Azure subscription outside the ones DBSpend360 " +
+  "ingests. Its DBU cost is excluded from the SQL Warehouse KPI totals but " +
+  "still shown on this row.";
+
+const CoverageBadge = ({ warehouse }: { warehouse: GroupedSqlWarehouse }) => {
+  if (warehouse.workspace_covered !== false) return null;
+  return (
+    <Badge
+      variant="secondary"
+      className="mt-1 text-[10px] bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/15"
+      title={SQL_WAREHOUSE_NOT_COVERED_NOTE}
+      aria-label={SQL_WAREHOUSE_NOT_COVERED_NOTE}
+    >
+      {CLOUD_NOT_COVERED_LABEL}
+    </Badge>
+  );
+};
+
 // Per-day expansion panel for one warehouse. One row per usage_date; the
 // invariant "sum of days[].total_cost == warehouse total_cost" is structural.
 const WarehouseDayBreakdown = ({
@@ -394,7 +434,7 @@ const WarehouseDayBreakdown = ({
     <div className="p-4 border-l-4 border-l-blue-500 bg-muted/20">
       <h4 className="font-semibold text-sm text-muted-foreground mb-3">
         Daily breakdown ({warehouse.days.length} day
-        {warehouse.days.length === 1 ? '' : 's'})
+        {warehouse.days.length === 1 ? "" : "s"})
       </h4>
       <div className="space-y-2">
         {[...warehouse.days]

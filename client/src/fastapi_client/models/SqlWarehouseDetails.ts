@@ -7,7 +7,8 @@
  *
  * Sourced from `system.compute.warehouses` (most-recent SCD snapshot),
  * denormalized into the rollup table. `metadata_missing=True` indicates
- * no system table row was found — ~77% of warehouses (common, not exceptional).
+ * no system table row was found — the majority of warehouses (common, not
+ * exceptional).
  */
 export type SqlWarehouseDetails = {
     warehouse_id: string;

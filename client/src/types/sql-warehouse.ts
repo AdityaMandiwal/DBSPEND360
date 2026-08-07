@@ -30,7 +30,7 @@ export interface SqlWarehouseDailySpend {
 // `metadata_missing` + `warehouse_deleted_at` encode the three-state badge:
 //   - active                  : both falsy
 //   - "Deleted YYYY-MM-DD"    : `warehouse_deleted_at` populated
-//   - "Metadata unavailable"  : flag true — the common case (~77% of
+//   - "Metadata unavailable"  : flag true — the common case (the majority of
 //     warehouses have no `system.compute.warehouses` snapshot), so it renders
 //     neutral grey, not as a warning. Cost figures stay accurate either way.
 export interface GroupedSqlWarehouse {

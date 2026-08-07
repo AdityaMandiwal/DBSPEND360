@@ -1423,9 +1423,10 @@ class LLMService:
         if warehouse.metadata_missing:
             metadata_state = (
                 "Metadata not available — `system.compute.warehouses` has no "
-                "row for this warehouse (common: ~77% of warehouses, e.g. "
-                "deleted before retention or cross-region). DBU cost is still "
-                "accurate; configuration fields below may be NULL."
+                "row for this warehouse (common — the majority of warehouses "
+                "have no snapshot, e.g. deleted before retention or "
+                "cross-region). DBU cost is still accurate; configuration "
+                "fields below may be NULL."
             )
         elif warehouse.warehouse_deleted_at is not None:
             metadata_state = (

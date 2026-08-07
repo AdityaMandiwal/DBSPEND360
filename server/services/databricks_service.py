@@ -84,6 +84,33 @@ METADATA_BEARING_WORKLOADS = (
 )
 
 
+# Character used as the ESCAPE meta-character in every LIKE clause emitted by
+# the search path. Backslash is the conventional choice and matches the escape
+# emitted by `_escape_like_pattern`. Kept as a module constant so the SQL
+# template ("ESCAPE '\\'") and the Python-side escaper cannot drift.
+_LIKE_ESCAPE_CHAR = '\\'
+
+
+def _escape_like_pattern(term: str) -> str:
+  r"""Escape LIKE meta-characters (%, _, \) in a user-supplied search term.
+
+  The search endpoints splice a user string into a `LIKE '%…%'` pattern; without
+  this escape, `%` and `_` in the input behave as wildcards ("search=%"
+  matches every row), and a literal backslash would collide with the ESCAPE
+  clause. Order matters — the escape character itself must be doubled first
+  so subsequent `%`/`_` escapes are not themselves re-escaped.
+
+  Use in tandem with `ESCAPE '\\'` in the emitted SQL. This handles LIKE
+  metacharacters only; single-quote SQL-injection escaping (``.replace("'",
+  "''")``) is a separate concern and must still be applied after this.
+  """
+  return (
+    term.replace(_LIKE_ESCAPE_CHAR, _LIKE_ESCAPE_CHAR * 2)
+    .replace('%', _LIKE_ESCAPE_CHAR + '%')
+    .replace('_', _LIKE_ESCAPE_CHAR + '_')
+  )
+
+
 class AmbiguousPipelineError(Exception):
   """Raised when a `pipeline_id` is requested without a `workspace_id` but
   that id exists in more than one workspace.
@@ -336,9 +363,8 @@ class DatabricksService:
 
     # Add job name filter if provided
     if job_name:
-      # Escape single quotes in job_name to prevent SQL injection
-      escaped_job_name = job_name.replace("'", "''")
-      where_clause += f" AND job_id LIKE '%{escaped_job_name}%'"
+      like_pattern = _escape_like_pattern(job_name).replace("'", "''")
+      where_clause += f" AND job_id LIKE '%{like_pattern}%' ESCAPE '\\\\'"
 
     # Count query for pagination
     count_query = f"""
@@ -754,9 +780,9 @@ class DatabricksService:
     # from the name map.
     usage_search_filter = ''
     if job_name:
-      escaped_search = job_name.replace("'", "''")
+      like_pattern = _escape_like_pattern(job_name).replace("'", "''")
       term = job_name.lower()
-      id_predicates = [f"job_id LIKE '%{escaped_search}%'"]
+      id_predicates = [f"job_id LIKE '%{like_pattern}%' ESCAPE '\\\\'"]
       name_matched_ids = [jid for jid, nm in name_map.items() if nm and term in nm.lower()]
       if name_matched_ids:
         # Cap the IN-list defensively; a term matching thousands of jobs
@@ -2220,14 +2246,14 @@ class DatabricksService:
     `search` is a free-text term matched against cluster_name,
     cluster_id, and owner_user_id (case-insensitive on cluster_name).
     """
-    escaped_search = search.replace("'", "''") if search else None
     search_clause = ''
-    if escaped_search:
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
       search_clause = (
         'WHERE ('
-        f"c.cluster_id LIKE '%{escaped_search}%' "
-        f"OR LOWER(COALESCE(cl.cluster_name, '')) LIKE LOWER('%{escaped_search}%') "
-        f"OR LOWER(COALESCE(c.owner_user_id, '')) LIKE LOWER('%{escaped_search}%')"
+        f"c.cluster_id LIKE '%{like_pattern}%' ESCAPE '\\\\' "
+        f"OR LOWER(COALESCE(cl.cluster_name, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\' "
+        f"OR LOWER(COALESCE(c.owner_user_id, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\'"
         ')'
       )
 
@@ -2352,10 +2378,12 @@ class DatabricksService:
     clusters. `clusters` is enriched via `_get_batch_user_clusters`
     with the per-cluster drill-down expansion.
     """
-    escaped_search = search.replace("'", "''") if search else None
     search_clause = ''
-    if escaped_search:
-      search_clause = f"WHERE LOWER(COALESCE(user_id, '')) LIKE LOWER('%{escaped_search}%')"
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
+      search_clause = (
+        f"WHERE LOWER(COALESCE(user_id, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\'"
+      )
 
     wsc_agg = self._workspace_covered_agg_sql(self.all_purpose_table_name)
     data_query = f"""
@@ -3088,17 +3116,18 @@ class DatabricksService:
     API (creator enrichment lives in the modal path only — plan §4.1
     regression-guarded by CP10).
     """
-    escaped_search = search.replace("'", "''") if search else None
     search_clause = ''
-    if escaped_search:
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
+      id_literal = search.replace("'", "''")
       search_clause = (
         'WHERE ('
-        f"LOWER(COALESCE(pool_name, '')) LIKE LOWER('%{escaped_search}%') "
-        f"OR instance_pool_id = '{escaped_search}' "
+        f"LOWER(COALESCE(pool_name, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\' "
+        f"OR instance_pool_id = '{id_literal}' "
         f'OR instance_pool_id IN ('
         f'    SELECT DISTINCT instance_pool_id'
         f'    FROM filtered'
-        f"    WHERE cluster_id = '{escaped_search}'"
+        f"    WHERE cluster_id = '{id_literal}'"
         f'))'
       )
 
@@ -3816,14 +3845,15 @@ class DatabricksService:
     """
     workload_filter = self._pipeline_workload_filter(workload_type)
 
-    escaped_search = search.replace("'", "''") if search else None
     search_clause = ''
-    if escaped_search:
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
+      id_literal = search.replace("'", "''")
       search_clause = (
         'WHERE ('
-        f"LOWER(COALESCE(pl.pipeline_name, '')) LIKE LOWER('%{escaped_search}%') "
-        f"OR pl.pipeline_id = '{escaped_search}' "
-        f"OR LOWER(COALESCE(pl.created_by, '')) LIKE LOWER('%{escaped_search}%')"
+        f"LOWER(COALESCE(pl.pipeline_name, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\' "
+        f"OR pl.pipeline_id = '{id_literal}' "
+        f"OR LOWER(COALESCE(pl.created_by, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\'"
         ')'
       )
 
@@ -4673,13 +4703,14 @@ class DatabricksService:
     `warehouse_id` (exact). `total_matching` rides along via `COUNT(*) OVER()`
     so pagination needs no second count query.
     """
-    escaped_search = search.replace("'", "''") if search else None
     search_clause = ''
-    if escaped_search:
+    if search:
+      like_pattern = _escape_like_pattern(search).replace("'", "''")
+      id_literal = search.replace("'", "''")
       search_clause = (
         'WHERE ('
-        f"LOWER(COALESCE(wl.warehouse_name, '')) LIKE LOWER('%{escaped_search}%') "
-        f"OR wl.warehouse_id = '{escaped_search}'"
+        f"LOWER(COALESCE(wl.warehouse_name, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\' "
+        f"OR wl.warehouse_id = '{id_literal}'"
         ')'
       )
 
@@ -4708,15 +4739,11 @@ class DatabricksService:
       total_count = int(data_response.result.data_array[0][14] or 0)
 
       warehouse_ids = [row[0] for row in data_response.result.data_array]
-      days_by_warehouse = await self._get_batch_warehouse_days(
-        warehouse_ids, start_date, end_date
-      )
+      days_by_warehouse = await self._get_batch_warehouse_days(warehouse_ids, start_date, end_date)
 
       for row in data_response.result.data_array:
         grouped.append(
-          self._parse_grouped_sql_warehouse(
-            row, days=days_by_warehouse.get(row[0], [])
-          )
+          self._parse_grouped_sql_warehouse(row, days=days_by_warehouse.get(row[0], []))
         )
 
     total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
@@ -4926,9 +4953,7 @@ class DatabricksService:
     """
     try:
       escaped_id = warehouse_id.replace("'", "''")
-      lookback_date = (
-        date.today() - timedelta(days=SQL_WAREHOUSE_LOOKBACK_DAYS)
-      ).isoformat()
+      lookback_date = (date.today() - timedelta(days=SQL_WAREHOUSE_LOOKBACK_DAYS)).isoformat()
 
       query = f"""
             WITH filtered AS (

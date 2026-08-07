@@ -1,6 +1,8 @@
 from datetime import date, datetime
-from typing import Optional, Any
+from typing import Any, Optional
+
 from pydantic import BaseModel, Field, computed_field
+
 from server.config.cloud_platform import cloud_config
 
 
@@ -1074,7 +1076,8 @@ class SqlWarehouseDetails(BaseModel):
 
   Sourced from `system.compute.warehouses` (most-recent SCD snapshot),
   denormalized into the rollup table. `metadata_missing=True` indicates
-  no system table row was found — ~77% of warehouses (common, not exceptional).
+  no system table row was found — the majority of warehouses (common, not
+  exceptional).
   """
 
   warehouse_id: str
