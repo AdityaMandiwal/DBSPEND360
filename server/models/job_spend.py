@@ -10,7 +10,7 @@ class JobSpend(BaseModel):
   """Data model for Databricks job spending records."""
 
   cluster_id: str
-  cloud_cost: float
+  cloud_cost: Optional[float] = None
   job_id: str
   job_name: Optional[str] = None
   run_id: str
@@ -25,7 +25,7 @@ class JobSpend(BaseModel):
   @property
   def total_cost(self) -> float:
     """Calculate total cost as sum of cloud and Databricks costs."""
-    return self.cloud_cost + self.databricks_cost
+    return (self.cloud_cost or 0.0) + self.databricks_cost
 
   @computed_field
   @property
@@ -33,7 +33,7 @@ class JobSpend(BaseModel):
     """Calculate cloud cost as percentage of total."""
     if self.total_cost == 0:
       return 0.0
-    return (self.cloud_cost / self.total_cost) * 100
+    return ((self.cloud_cost or 0.0) / self.total_cost) * 100
 
   @computed_field
   @property
@@ -81,9 +81,10 @@ class CostBreakdown(BaseModel):
   job_id: str
   run_id: str
   cluster_id: str
+  cluster_ids: list[str] = Field(default_factory=list)
   usage_date: date
   end_date: Optional[date] = None
-  cloud_cost: float
+  cloud_cost: Optional[float] = None
   databricks_cost: float
   total_cost: float
   compute_cost: Optional[float] = None
@@ -120,7 +121,7 @@ class CostBreakdown(BaseModel):
       self.cost_split = split
     else:
       self.cost_split = [
-        {'name': labels['compute_cost'], 'value': self.cloud_cost, 'color': '#3b82f6'},
+        {'name': labels['compute_cost'], 'value': self.cloud_cost or 0.0, 'color': '#3b82f6'},
         {
           'name': labels['databricks_cost'],
           'value': float(data.get('databricks_cost', 0)),
@@ -134,9 +135,10 @@ class JobRun(BaseModel):
 
   run_id: str
   cluster_id: str
+  cluster_ids: list[str] = Field(default_factory=list)
   start_date: date
   end_date: date
-  cloud_cost: float
+  cloud_cost: Optional[float] = None
   databricks_cost: float
   compute_cost: Optional[float] = None
   storage_cost: Optional[float] = None
@@ -148,7 +150,7 @@ class JobRun(BaseModel):
   @property
   def total_cost(self) -> float:
     """Calculate total cost as sum of cloud and Databricks costs."""
-    return self.cloud_cost + self.databricks_cost
+    return (self.cloud_cost or 0.0) + self.databricks_cost
 
   @computed_field
   @property
@@ -156,7 +158,7 @@ class JobRun(BaseModel):
     """Calculate cloud cost as percentage of total."""
     if self.total_cost == 0:
       return 0.0
-    return (self.cloud_cost / self.total_cost) * 100
+    return ((self.cloud_cost or 0.0) / self.total_cost) * 100
 
   @computed_field
   @property
@@ -180,7 +182,7 @@ class GroupedJob(BaseModel):
   job_id: str
   job_name: Optional[str] = None
   run_count: int
-  total_cloud_cost: float
+  total_cloud_cost: Optional[float] = None
   total_databricks_cost: float
   total_compute_cost: Optional[float] = None
   total_storage_cost: Optional[float] = None
@@ -193,7 +195,7 @@ class GroupedJob(BaseModel):
   @property
   def total_cost(self) -> float:
     """Calculate total cost across all runs."""
-    return self.total_cloud_cost + self.total_databricks_cost
+    return (self.total_cloud_cost or 0.0) + self.total_databricks_cost
 
   @computed_field
   @property
@@ -201,7 +203,7 @@ class GroupedJob(BaseModel):
     """Calculate cloud cost as percentage of total."""
     if self.total_cost == 0:
       return 0.0
-    return (self.total_cloud_cost / self.total_cost) * 100
+    return ((self.total_cloud_cost or 0.0) / self.total_cost) * 100
 
   @computed_field
   @property
@@ -634,14 +636,10 @@ class InstancePoolClusterSpend(BaseModel):
   `cluster_id == '__pool_overhead__'` represents pool-level bootstrap
   charges that have no attributable cluster (plan §3.3 edge case); the UI
   renders that row as italicized "Pool overhead". `cloud_cost` is `None` on
-  real per-cluster rows even after CP7: pool EC2/EBS is pool-level, not
-  attributable to a specific attached cluster (AWS tags pool instances
-  `DatabricksInstancePoolId`, not `ClusterId`), so the UI renders "—" there.
-  The one exception is the `__pool_overhead__` row itself, which DOES carry
-  the pool EC2/EBS `cloud_cost` — that is where the pool VM cost genuinely
-  lands, so surfacing it makes the row's `total_cost` break down visibly as
-  `databricks_cost + cloud_cost` instead of a Total with no components
-  (issue #3). The pool/day-level EC2 figure is still the authoritative one.
+  real per-cluster rows: active pool-backed VM cost remains on the cluster
+  lens. The overhead row carries ClusterId-free idle/warm cloud cost, so
+  surfacing it makes `total_cost` break down visibly as
+  `databricks_cost + cloud_cost`.
   """
 
   cluster_id: str
@@ -656,12 +654,13 @@ class InstancePoolDailySpend(BaseModel):
   Drill-down sub-row inside `GroupedInstancePool.days`. `clusters` is the
   second-level expansion (plan §3.3) listing per-cluster contributions for
   that day, sorted DESC by `total_cost` (per the §5.2 SQL ORDER BY).
-  `cluster_count_on_day` equals `len(clusters)` by construction in the
-  service-layer rollup. `cloud_cost` is the pool EC2/EBS cost for the day
-  (CP7, plan §4.4) — summed from the `__pool_overhead__` row where the pool
-  VM cost lands — and is `None` when no cloud row exists for the day (UI
-  renders "—", §5); `total_cost` is plumbed straight through from the SQL
-  projection rather than computed (see module docstring rationale).
+  `cluster_count_on_day` counts only real attached clusters and therefore
+  excludes the `__pool_overhead__` entry that may still be present in
+  `clusters`. `cloud_cost` is the ClusterId-free idle/warm pool VM cost for
+  the day — summed from the `__pool_overhead__` row where that cost lands —
+  and is `None` when no cloud row exists for the day (UI renders "—", §5);
+  `total_cost` is plumbed straight through from the SQL projection rather
+  than computed (see module docstring rationale).
   """
 
   usage_date: date
@@ -711,10 +710,10 @@ class InstancePoolSummaryMetrics(BaseModel):
   day on a single pool cost on average". `orphaned_pools` is the count of
   distinct pools with `pool_snapshot_missing = TRUE`, surfaced as a KPI so
   operators can spot lost-metadata churn at a glance (plan §10 risk).
-  `total_cloud_cost` is the summed pool EC2/EBS cost over the window (CP7,
-  plan §4.4/§4.6); it stays optional and is `None` only when no pool-day in
-  the window carries a cloud row yet, so the KPI is hidden rather than
-  showing a misleading `$0` (plan §5 / decision #3).
+  `total_cloud_cost` is the summed ClusterId-free idle/warm pool VM cost over
+  the window; active pool-backed VM cost remains on its cluster lens.
+  `latest_*_date` and `cloud_data_days` make partial source coverage explicit
+  so the UI never presents landed rows as a complete selected-window total.
   """
 
   total_pools: int
@@ -728,6 +727,10 @@ class InstancePoolSummaryMetrics(BaseModel):
   total_cloud_cost: Optional[float] = None
   date_range_days: int
   dbu_in_non_covered_workspaces: float = 0.0
+  latest_data_date: Optional[date] = None
+  latest_dbu_date: Optional[date] = None
+  latest_cloud_date: Optional[date] = None
+  cloud_data_days: int = 0
 
 
 class InstancePoolDailyTrendPoint(BaseModel):
@@ -781,11 +784,10 @@ class InstancePoolDetails(BaseModel):
 class InstancePoolAnalysis(BaseModel):
   """LLM-generated configuration analysis for an instance pool.
 
-  Returned by `/api/instance-pools/{id}/analyze`. As of CP8
-  (plan_pool_pipeline_ec2_cost.md §4.4) pool EC2/EBS cost is in the
-  summary, so the analysis text now carries only the remaining
-  idle-vs-active-split caveat (plan §4.5) rather than the old DBU-only
-  caveat. The output structure mirrors `ClusterAnalysis`'s
+  Returned by `/api/instance-pools/{id}/analyze`. The summary contains
+  ClusterId-free idle/warm pool cloud cost and explicitly discloses that
+  active pool-backed VM cost remains on the Job or All-Purpose lens. The
+  output structure mirrors `ClusterAnalysis`'s
   config-shape sections (Overall Rating / Right-Sizing / Cost Savings /
   Idle Waste Risk / Configuration Gaps) rather than the run-cost trend
   structure used by `CostAnalysis`.
@@ -914,8 +916,8 @@ class PipelineSummaryMetrics(BaseModel):
   total_pipelines` — so mode-switching pipelines land in `mixed` and are
   never double-counted (plan §5.3). The `$` split is likewise three buckets
   that sum to `total_spend`: `serverless_spend` (full cost) +
-  `classic_spend` (DBU only — excludes cloud VM) + `mixed_spend` (partial),
-  so the summary footnote stays exact even when mixed rows exist.
+  `classic_spend` + `mixed_spend`, with each pipeline's full known spend
+  assigned to its collapsed compute-mode bucket.
 
   `workload_breakdown` is the per-`workload_type` `$` map (e.g.
   {"DLT Pipeline": ..., "DBSQL Materialized View": ...}); because
@@ -944,6 +946,11 @@ class PipelineSummaryMetrics(BaseModel):
   workload_breakdown: dict[str, float] = Field(default_factory=dict)
   date_range_days: int
   dbu_in_non_covered_workspaces: float = 0.0
+  latest_data_date: Optional[date] = None
+  latest_dbu_date: Optional[date] = None
+  latest_cloud_date: Optional[date] = None
+  data_days: int = 0
+  cloud_data_days: int = 0
 
 
 class PipelineDetails(BaseModel):
@@ -954,8 +961,8 @@ class PipelineDetails(BaseModel):
   No REST API and no GUID resolution: `created_by`/`run_as` are the
   human-readable values straight from the system table (plan §3.4).
   `workload_type`/`compute_mode`/`cost_basis` are joined in from the rollup
-  so the modal can render the workload badge and the DBU-only caveat
-  consistently with the list. `metadata_missing=True` indicates no
+  so the modal can render the workload and compute context consistently with
+  the list. `metadata_missing=True` indicates no
   `system.lakeflow.pipelines` row was found (normal for Vector Search /
   cross-region); in that case the config fields fall back to None and the
   modal renders the neutral §3.5 banner.
@@ -979,10 +986,8 @@ class PipelineAnalysis(BaseModel):
   """LLM-generated cost analysis for a pipeline.
 
   Returned by `/api/pipelines/{id}/analyze`. The analysis is fed
-  `workload_type` + `cost_basis` context so it never gives confidently-wrong
-  advice on incomplete numbers — it MUST state the DBU-only caveat when
-  `cost_basis != 'full'` and must not recommend cloud-VM changes on numbers
-  it knows are DBU-only (plan §4.1 / CP7).
+  workload, compute, DBU, cloud, and cloud-coverage context so it discloses
+  missing cloud VM cost only when coverage is incomplete.
   """
 
   pipeline_id: str
@@ -1008,8 +1013,9 @@ class PaginatedPipelines(BaseModel):
 # Wire-level types for the SQL Warehouses tab. Source table is
 # `dbspend360_total_sql_warehouse_spends`, keyed `(warehouse_id, usage_date)`.
 # `warehouse_id` is account-unique (validated), so no `workspace_id` in key.
-# DBU-only: SQL Warehouses run on Databricks-managed compute (Classic, Pro,
-# Serverless). DBU IS the complete cost — no cloud component.
+# Serverless SQL Warehouse DBU includes infrastructure. Classic and Pro run
+# customer-cloud VMs, so this rollup is DBU-only for those types until a
+# warehouse-to-cloud-resource attribution path is available.
 # ---------------------------------------------------------------------------
 
 
@@ -1021,6 +1027,7 @@ class SqlWarehouseDailySpend(BaseModel):
   total_cost: float
   warehouse_type: Optional[str] = None
   sku_name: Optional[str] = None
+  cost_basis: str = 'full'
 
 
 class GroupedSqlWarehouse(BaseModel):
@@ -1029,8 +1036,8 @@ class GroupedSqlWarehouse(BaseModel):
   One row per warehouse within the queried window. `days` is the per-day
   drill-down expansion. `metadata_missing` and `warehouse_deleted_at` encode
   the three-state badge: active (both falsy), "Deleted" (warehouse_deleted_at
-  populated), "Metadata unavailable" (metadata_missing=True). DBU is the
-  complete cost for managed-compute warehouses — no separate cloud cost.
+  populated), "Metadata unavailable" (metadata_missing=True). `cost_basis` is
+  `full` for Serverless and `dbu_only` for Classic/Pro.
   """
 
   warehouse_id: str
@@ -1047,15 +1054,16 @@ class GroupedSqlWarehouse(BaseModel):
   total_databricks_cost: float
   total_cost: float
   workspace_covered: bool = True
+  cost_basis: str = 'full'
   days: list[SqlWarehouseDailySpend] = Field(default_factory=list)
 
 
 class SqlWarehouseSummaryMetrics(BaseModel):
   """Summary metrics for the SQL Warehouses tab KPI strip.
 
-  DBU is the complete cost for managed-compute warehouses — no cloud cost
-  fields. The warehouse-count split is exhaustive: classic + pro + serverless
-  == total_warehouses.
+  `total_spend` is tracked DBU spend. It is complete for Serverless, but
+  Classic/Pro infrastructure cost is not attributed. The warehouse-count split
+  is exhaustive: classic + pro + serverless == total_warehouses.
   """
 
   total_warehouses: int
@@ -1068,6 +1076,8 @@ class SqlWarehouseSummaryMetrics(BaseModel):
   serverless_spend: float
   total_databricks_cost: float
   date_range_days: int
+  landed_days: int = 0
+  data_through_date: Optional[date] = None
   dbu_in_non_covered_workspaces: float = 0.0
 
 
@@ -1091,6 +1101,7 @@ class SqlWarehouseDetails(BaseModel):
   metadata_missing: bool = False
   warehouse_deleted_at: Optional[datetime] = None
   tags: Optional[dict[str, str]] = None
+  cost_basis: str = 'unknown'
 
 
 class SqlWarehouseAnalysis(BaseModel):
@@ -1099,6 +1110,9 @@ class SqlWarehouseAnalysis(BaseModel):
   warehouse_id: str
   analysis: str
   timestamp: str = Field(default_factory=lambda: date.today().isoformat())
+  start_date: date
+  end_date: date
+  cost_basis: str = 'full'
 
 
 class PaginatedSqlWarehouses(BaseModel):
@@ -1131,6 +1145,16 @@ class ExcludedDbuByTab(BaseModel):
   sql_warehouse: float = 0.0
 
 
+class ExcludedWorkspaceCountByTab(BaseModel):
+  """Per-tab count of distinct non-covered workspaces."""
+
+  job: int = 0
+  all_purpose: int = 0
+  pipeline: int = 0
+  pool: int = 0
+  sql_warehouse: int = 0
+
+
 class CoverageSummaryResponse(BaseModel):
   """Aggregate subscription-coverage map for banners and KPI segmentation."""
 
@@ -1138,4 +1162,5 @@ class CoverageSummaryResponse(BaseModel):
   covered_workspace_count: int
   excluded_workspaces: list[ExcludedWorkspace]
   excluded_dbu_by_tab: ExcludedDbuByTab
+  excluded_workspace_count_by_tab: ExcludedWorkspaceCountByTab
   currency: str = 'USD'

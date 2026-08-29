@@ -11,8 +11,8 @@
 //                               neutral three-state metadata badge sits under
 //                               the name. Pipeline name is clickable and opens
 //                               `PipelineDetailsModal`.
-//   Level 1 (pipeline → day)  — expand the pipeline row to see per-day DBU /
-//                               total rows (the rollup's product grain is
+//   Level 1 (pipeline → day)  — expand the pipeline row to see per-day DBU,
+//                               cloud, and total rows (the product grain is
 //                               summed away server-side — plan §5.2 — so the
 //                               UI sees exactly one row per pipeline-day).
 //
@@ -26,6 +26,7 @@ import {
   ChevronRight,
   ChevronRight as ChevronRightIcon,
   Info,
+  ArrowUpDown,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/error-state';
@@ -45,19 +46,24 @@ import {
   computeModeClasses,
   costBasisCaveat,
   formatCurrency,
-  MIXED_CLOUD_NOTE,
   workloadBadgeClasses,
 } from '@/lib/pipeline-display';
-import {
-  CLOUD_NOT_COVERED_LABEL,
-  CLOUD_NOT_COVERED_NOTE,
-} from '@/lib/cloud-coverage-display';
-import type { GroupedPipeline, PipelineDailySpend } from '@/types/pipeline';
+import type {
+  GroupedPipeline,
+  PipelineDailySpend,
+  PipelineSortDirection,
+  PipelineSortField,
+} from '@/types/pipeline';
 import type { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
-import { formatCalendarDate, formatLocalISODate } from '@/lib/utils';
+import {
+  formatCalendarDate,
+  formatLocalISODate,
+  HIGH_COST_USD,
+} from '@/lib/utils';
 import { PipelineDetailsModal } from './PipelineDetailsModal';
+import { CloudCostCell } from './CloudCostCell';
 
 interface PipelinesTableProps {
   dateRange: DateRange;
@@ -81,60 +87,59 @@ const PAGE_SIZE = 25;
 const pkey = (p: { workspace_id?: string | null; pipeline_id: string }) =>
   `${p.workspace_id ?? ''}:${p.pipeline_id}`;
 
-// EC2/EBS cloud cell (plan §3.4 / §5). Renders the real $ when known
-// (including a genuine `$0.00`), or "—" + a typed note when the value is NULL
-// — distinguishing "no separate VM line by design" (serverless) from "data
-// not landed yet" (classic). A `mixed` row that carries a number gets an info
-// icon flagging that the figure is the classic portion only.
-const CloudCostCell = ({
+const SortHeader = ({
+  label,
+  field,
+  current,
+  direction,
+  onSort,
+  align = 'left',
+}: {
+  label: string;
+  field: PipelineSortField;
+  current: PipelineSortField;
+  direction: PipelineSortDirection;
+  onSort: (field: PipelineSortField) => void;
+  align?: 'left' | 'right';
+}) => {
+  const active = current === field;
+  return (
+    <TableHead className={`px-4 ${align === 'right' ? 'text-right' : ''}`}>
+      <button
+        type="button"
+        className={`inline-flex items-center gap-1 hover:text-foreground ${
+          align === 'right' ? 'justify-end' : ''
+        }`}
+        onClick={() => onSort(field)}
+        aria-label={`Sort by ${label}${
+          active ? `, currently ${direction}ending` : ''
+        }`}
+      >
+        {label}
+        <ArrowUpDown
+          className={`h-3.5 w-3.5 ${active ? 'text-foreground' : 'opacity-50'}`}
+          aria-hidden="true"
+        />
+      </button>
+    </TableHead>
+  );
+};
+
+const PipelineCloudCostCell = ({
   cloudCost,
   isServerless,
-  isMixed,
   workspaceCovered = true,
 }: {
   cloudCost?: number | null;
   isServerless: boolean;
-  isMixed: boolean;
   workspaceCovered?: boolean;
-}) => {
-  if (workspaceCovered === false && cloudCost == null) {
-    return (
-      <span
-        className="cursor-help font-medium text-amber-700 dark:text-amber-300"
-        title={CLOUD_NOT_COVERED_NOTE}
-        aria-label={CLOUD_NOT_COVERED_NOTE}
-      >
-        {CLOUD_NOT_COVERED_LABEL}
-      </span>
-    );
-  }
-  if (cloudCost == null) {
-    const note = cloudMissingNote(isServerless);
-    return (
-      <span
-        className="text-muted-foreground cursor-help"
-        title={note}
-        aria-label={note}
-      >
-        —
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center justify-end gap-1">
-      {formatCurrency(cloudCost)}
-      {isMixed && (
-        <span
-          className="inline-flex text-amber-500"
-          title={MIXED_CLOUD_NOTE}
-          aria-label={MIXED_CLOUD_NOTE}
-        >
-          <Info className="h-3.5 w-3.5 shrink-0" />
-        </span>
-      )}
-    </span>
-  );
-};
+}) => (
+  <CloudCostCell
+    value={cloudCost}
+    workspaceCovered={workspaceCovered}
+    missingNote={cloudMissingNote(isServerless)}
+  />
+);
 
 export const PipelinesTable = ({
   dateRange,
@@ -152,6 +157,8 @@ export const PipelinesTable = ({
     ? AWS_CLOUD_LABEL
     : `Total ${cloudConfig?.compute_service || 'Cloud'}`;
   const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState<PipelineSortField>('total');
+  const [sortDir, setSortDir] = useState<PipelineSortDirection>('desc');
   const [expandedPipelines, setExpandedPipelines] = useState<Set<string>>(
     new Set(),
   );
@@ -161,18 +168,33 @@ export const PipelinesTable = ({
   // out-of-range page after the result set shrinks (mirrors the pool table).
   useEffect(() => {
     setPage(1);
+    setExpandedPipelines(new Set());
+    setActiveModal(null);
   }, [
     searchTerm,
     dateRange.start_date,
     dateRange.end_date,
     selectedWorkloads.join(','),
+    sortBy,
+    sortDir,
   ]);
+
+  const toggleSort = (field: PipelineSortField) => {
+    if (sortBy === field) {
+      setSortDir((current) => (current === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setSortBy(field);
+      setSortDir('desc');
+    }
+  };
 
   const { data, isLoading, isFetching, error, refetch } = usePipelines({
     start_date: dateRange.start_date,
     end_date: dateRange.end_date,
     search: searchTerm || undefined,
     workload_type: selectedWorkloads.length > 0 ? selectedWorkloads : undefined,
+    sort_by: sortBy,
+    sort_dir: sortDir,
     page,
     per_page: PAGE_SIZE,
   });
@@ -209,14 +231,66 @@ export const PipelinesTable = ({
           <TableHeader>
             <TableRow>
               <TableHead className="w-10 px-2" />
-              <TableHead className="px-4">Pipeline</TableHead>
-              <TableHead className="px-4">Workload</TableHead>
-              <TableHead className="px-4">Compute</TableHead>
-              <TableHead className="px-4">Creator</TableHead>
-              <TableHead className="px-4 text-right">Active Days</TableHead>
-              <TableHead className="px-4 text-right">{cloudLabel}</TableHead>
-              <TableHead className="px-4 text-right">DBU Cost</TableHead>
-              <TableHead className="px-4 text-right">Total Cost</TableHead>
+              <SortHeader
+                label="Pipeline"
+                field="pipeline"
+                current={sortBy}
+                direction={sortDir}
+                onSort={toggleSort}
+              />
+              <SortHeader
+                label="Workload"
+                field="workload"
+                current={sortBy}
+                direction={sortDir}
+                onSort={toggleSort}
+              />
+              <SortHeader
+                label="Compute"
+                field="compute"
+                current={sortBy}
+                direction={sortDir}
+                onSort={toggleSort}
+              />
+              <SortHeader
+                label="Creator"
+                field="creator"
+                current={sortBy}
+                direction={sortDir}
+                onSort={toggleSort}
+              />
+              <SortHeader
+                label="Active Days"
+                field="active_days"
+                current={sortBy}
+                direction={sortDir}
+                onSort={toggleSort}
+                align="right"
+              />
+              <SortHeader
+                label={cloudLabel}
+                field="cloud"
+                current={sortBy}
+                direction={sortDir}
+                onSort={toggleSort}
+                align="right"
+              />
+              <SortHeader
+                label="DBU Cost"
+                field="dbu"
+                current={sortBy}
+                direction={sortDir}
+                onSort={toggleSort}
+                align="right"
+              />
+              <SortHeader
+                label="Total Cost"
+                field="total"
+                current={sortBy}
+                direction={sortDir}
+                onSort={toggleSort}
+                align="right"
+              />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -250,7 +324,11 @@ export const PipelinesTable = ({
                 const displayName = hasName
                   ? pipeline.pipeline_name!
                   : `Pipeline ${pipeline.pipeline_id}`;
-                const caveat = costBasisCaveat(pipeline.cost_basis);
+                const caveat = costBasisCaveat(
+                  pipeline.cost_basis,
+                  pipeline.total_cloud_cost,
+                  pipeline.workspace_covered,
+                );
                 return (
                   <Fragment key={rowKey}>
                     <TableRow className="hover:bg-muted/50">
@@ -329,10 +407,9 @@ export const PipelinesTable = ({
                         {pipeline.active_days}
                       </TableCell>
                       <TableCell className="px-4 text-right font-medium text-blue-600">
-                        <CloudCostCell
+                        <PipelineCloudCostCell
                           cloudCost={pipeline.total_cloud_cost}
                           isServerless={pipeline.compute_mode === 'serverless'}
-                          isMixed={pipeline.compute_mode === 'mixed'}
                           workspaceCovered={pipeline.workspace_covered}
                         />
                       </TableCell>
@@ -354,7 +431,7 @@ export const PipelinesTable = ({
                         <div className="font-bold text-lg">
                           {formatCurrency(pipeline.total_cost)}
                         </div>
-                        {pipeline.total_cost > 1000 && (
+                        {pipeline.total_cost > HIGH_COST_USD && (
                           <Badge variant="destructive" className="text-xs">
                             High Cost
                           </Badge>
@@ -438,8 +515,8 @@ export const PipelinesTable = ({
 
       {activeModal && (
         <PipelineDetailsModal
-          pipelineId={activeModal.pipeline_id}
-          workspaceId={activeModal.workspace_id}
+          pipeline={activeModal}
+          dateRange={dateRange}
           isOpen
           onClose={() => setActiveModal(null)}
         />
@@ -513,7 +590,9 @@ const PipelineDayBreakdown = ({
               key={`${pkey(pipeline)}|${day.usage_date}`}
               day={day}
               cloudLabel={cloudLabel}
-              workspaceCovered={pipeline.workspace_covered}
+              workspaceCovered={
+                day.workspace_covered ?? pipeline.workspace_covered
+              }
             />
           ))}
       </div>
@@ -530,29 +609,42 @@ const DayRow = ({
   cloudLabel: string;
   workspaceCovered?: boolean;
 }) => {
-  const caveat = costBasisCaveat(day.cost_basis);
+  const hasCloud = day.cloud_cost != null;
+  const uncovered = workspaceCovered === false;
+  const statusLabel = uncovered
+    ? hasCloud
+      ? 'Partial cloud coverage'
+      : 'Not covered'
+    : day.cost_basis === 'partial'
+      ? 'Partial'
+      : day.cost_basis === 'dbu_only' && !hasCloud
+        ? 'Cloud unavailable'
+        : null;
   return (
     <div className="rounded-md border bg-background overflow-hidden">
       <div className="flex items-center justify-between p-3">
         <div className="flex items-center space-x-3">
           <div className="text-sm font-medium">{formatDate(day.usage_date)}</div>
-          {caveat && (
+          {statusLabel && (
             <Badge
               variant="secondary"
               className="text-[10px] bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/15"
-              title={caveat}
+              title={
+                uncovered
+                  ? 'DBU is included; cloud cost is partial or unavailable for this workspace.'
+                  : 'Cloud cost is incomplete or unavailable for this daily total.'
+              }
             >
-              DBU only
+              {statusLabel}
             </Badge>
           )}
         </div>
         <div className="flex items-center space-x-4">
           <div className="text-sm text-blue-600">
             {cloudLabel}:{' '}
-            <CloudCostCell
+            <PipelineCloudCostCell
               cloudCost={day.cloud_cost}
               isServerless={day.cost_basis === 'full'}
-              isMixed={day.cost_basis === 'partial'}
               workspaceCovered={workspaceCovered}
             />
           </div>

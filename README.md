@@ -2,13 +2,15 @@
 
 ## 1. Overview
 
-* DBSPEND360 is a Databricks-native solution that provides clear visibility into cloud and DBU spends across Databricks workloads — jobs, all-purpose clusters, instance pools, and pipelines.
+* DBSPEND360 is a Databricks-native solution that provides cost visibility across jobs, all-purpose clusters, instance pools, pipelines, and SQL warehouses.
 
 * Tracks end-to-end cost at job, run, and cluster level for Databricks jobs; all-purpose cluster spend by owner; instance pool capacity and attribution; and pipeline / serverless compute.
 * Combines cloud VM cost (AWS Cost Explorer or Azure Cost Management) with Databricks DBU cost from system billing tables.
-* Produces four rollup tables — one per app tab — with `dbspend360_total_job_spends` as the Job Clusters source of truth.
+* Produces five rollup tables — one per app tab — with `dbspend360_total_job_spends` as the Job Clusters source of truth.
 * Includes audit and error logging to support incremental loads, monitoring, and reconciliation.
-* Powers the DBSPEND360 Databricks App (four cost tabs + AI insights), which provides dashboards and AI-driven cost and performance recommendations.
+* Powers the DBSPEND360 Databricks App (five cost tabs + AI insights), which provides dashboards and AI-driven cost and performance recommendations.
+
+> **SQL Warehouse cost scope:** Serverless SQL Warehouse DBU includes infrastructure. Classic and Pro values are DBU-only until customer-cloud VM, disk, and network charges can be attributed to a warehouse; the app labels those values accordingly.
 
 > **Status:** AWS and Azure are functional end-to-end today. GCP is wired through the config, UI label, and LLM layers, but the GCP cloud cost explorer ETL (`jobs/notebooks/gcp_cloud_cost_explorer_app.ipynb`) is a stub that raises `NotImplementedError` and needs to be implemented before GCP can be selected as the active provider.
 
@@ -19,7 +21,7 @@
 
 ## 2. Architecture
 
-DBSPEND360 splits into a **Databricks Job pipeline** (nine tasks, four independent branches) and a **Databricks App** (four cost tabs + AI insights). The pipeline writes curated Unity Catalog tables; the app reads rollup tables at query time and optionally enriches rows from system tables.
+DBSPEND360 splits into a multi-branch **Databricks Job pipeline** and a **Databricks App** (five cost tabs + AI insights). The pipeline writes curated Unity Catalog tables; the app reads rollup tables at query time and optionally enriches rows from system tables.
 
 | Diagram | Best for |
 |---|---|
@@ -29,7 +31,7 @@ DBSPEND360 splits into a **Databricks Job pipeline** (nine tasks, four independe
 
 ### Pipeline Architecture
 
-Nine-task Databricks Job DAG: a shared `cloud_cost_explorer` ingest fans out into four independent branches (Job Clusters, All-Purpose, Instance Pools, Pipeline Compute). Each branch runs a DBU notebook and a rollup notebook. The Pipeline Compute DBU task reads system billing tables directly; its rollup notebook joins `cloud_cost_explorer` output. Branch failures are isolated — one branch failing does not block the others.
+Nine-task Databricks Job DAG: a shared `cloud_cost_explorer` ingest fans out into four branches (Job Clusters, All-Purpose, Instance Pools, Pipeline Compute). Each branch runs a DBU notebook and a rollup notebook. The Pipeline Compute DBU task reads system billing tables directly; its rollup notebook joins `cloud_cost_explorer` output. Downstream branch failures remain isolated, while shared cloud ingestion is a required correctness gate.
 
 ![DBSPEND360 Databricks Job DAG: cloud_cost_explorer fans out to four serverless branches — all_purpose_dbu_costs → all_purpose_spends, pool_dbu_costs → pool_spends, dbu_costs → databricks_job_spends, and pipeline_dbu_costs → pipeline_spends.](release/readme_images/architecture_pipeline.png)
 
@@ -93,10 +95,10 @@ Configure local Databricks authentication using **either**:
 
 ### Deploy the data pipeline (Databricks Job)
 
-The Databricks App reads **four rollup tables** (one per cost tab), all produced by the same multi-task Databricks Job — see [§2 Data & Consumption](#data--consumption). **Deploy and run this pipeline before deploying the app**, otherwise the dashboards render empty and the AI insights have no data to analyze.
+The Databricks App reads **five rollup tables** (one per cost tab), all produced by the same multi-task Databricks Job — see [§2 Data & Consumption](#data--consumption). **Deploy and run this pipeline before deploying the app**, otherwise the dashboards render empty and the AI insights have no data to analyze.
 
 1. Import everything under `jobs/notebooks/` and `jobs/ddls/` into your Databricks workspace.
-2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. This orchestrator notebook invokes every DDL under `jobs/ddls/` and creates: `dbspend360_audit_log`, `dbspend360_error_log`, `dbspend360_cloud_cost_explorer`, `dbspend360_pool_cloud_cost_explorer`, `dbspend360_dbu_cost`, `dbspend360_other_cost_breakdown`, `dbspend360_total_job_spends`, `dbspend360_all_purpose_dbu_cost`, `dbspend360_total_all_purpose_spends`, `dbspend360_pool_dbu_cost`, `dbspend360_total_pool_spends`, `dbspend360_pipeline_dbu_cost`, and `dbspend360_total_pipeline_spends`. These back the four cost tabs in the app — Job Clusters, All-Purpose Clusters, Instance Pools, and Pipeline Compute — each populated by its own parallel branch described in step 3 below.
+2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. The orchestrator includes the coverage table plus staging and rollup DDLs for all five tabs, including `dbspend360_sql_warehouse_dbu_cost` and `dbspend360_total_sql_warehouse_spends`.
 3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines nine tasks across four branches — three of which fan out from a shared cloud-cost-ingest task, while the Pipeline Compute branch's DBU task runs independently and joins the shared cloud-cost output at its final step:
 
    ```
@@ -109,7 +111,7 @@ The Databricks App reads **four rollup tables** (one per cost tab), all produced
    cloud_cost_explorer ─────────────┴──── pipeline_spends              (Pipeline Compute branch)
    ```
 
-   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app` — cloud-source-agnostic; feeds every branch. On **both AWS and Azure** it writes **two** explorer tables: `dbspend360_cloud_cost_explorer` (grouped by `ClusterId`/`clusterid`, feeds Job/All-Purpose/Pipeline) and `dbspend360_pool_cloud_cost_explorer` (grouped by `DatabricksInstancePoolId`, feeds Instance Pools). The pool path is an isolated `run_pool()` step that never breaks the cluster explorer or the DAG.
+   * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app` — cloud-source-agnostic; feeds every branch. On **both AWS and Azure** it writes **two** explorer tables: `dbspend360_cloud_cost_explorer` (grouped by `ClusterId`/`clusterid`, feeds Job/All-Purpose/Pipeline) and `dbspend360_pool_cloud_cost_explorer` (grouped by `DatabricksInstancePoolId`, feeds Instance Pools). Both outputs are required: a pool-path failure fails the task so downstream rollups cannot refresh from stale pool cloud data while the job reports success.
    * Job Clusters branch (writes `dbspend360_total_job_spends`):
      * `Dbspend360dbu_costs` → `dbspend360_dbu_cost_app`
      * `databricks_job_spends` → `databricks_job_spends_app`
@@ -122,12 +124,19 @@ The Databricks App reads **four rollup tables** (one per cost tab), all produced
    * Pipeline Compute branch (writes `dbspend360_total_pipeline_spends`):
      * `Dbspend360_pipeline_dbu_costs` → `dbspend360_pipeline_dbu_cost_app`
      * `pipeline_spends` → `pipeline_spends_app` (depends on both its DBU task **and** `cloud_cost_explorer`)
+   * SQL Warehouses branch (writes `dbspend360_total_sql_warehouse_spends`):
+     * `Dbspend360_sql_warehouse_dbu_costs` → `dbspend360_sql_warehouse_dbu_cost_app`
+     * `sql_warehouse_spends` → `sql_warehouse_spends_app` (DBU-only ETL; no cloud explorer dependency)
 
-   The branches are independent — failures in one do not block the others — and the app reads each branch's output table through its respective tab. Each branch applies its own attribution logic (cluster-source filter, owner-based attribution, EC2/EBS cloud-cost joins, and the cross-tab overlap model documented in section 4 below).
+   The DBU/rollup branches are independent after their declared prerequisites;
+   the shared cloud ingest is a correctness gate for its dependent branches.
+   Each branch applies its own attribution logic (cluster-source filter,
+   owner-based attribution, cloud-cost joins, and the cross-tab overlap model
+   documented in section 4 below).
 
    **Update the hard-coded `notebook_path` values** in the YAML to match where you imported the notebooks (the template currently points at a developer workspace path), and review the default `parameters` block (`catalog`, `cloud_provider`, `overlap_days`, `schema`, `workspace_ids`, `subscription_id`, `scope`) before deploying. The last two (`subscription_id` and `scope`) are Azure-only — the subscription id and the secret-scope name holding `tenant_id`/`client_id`/`client_secret`; they are inert empty defaults on AWS/GCP.
 4. Create the job either via the Databricks Workflows UI using the YAML as a reference, or by wrapping it in a Databricks Asset Bundle.
-5. Run the job at least once and confirm all four rollup tables have rows (`dbspend360_total_job_spends`, `dbspend360_total_all_purpose_spends`, `dbspend360_total_pool_spends`, `dbspend360_total_pipeline_spends`) before moving on to the app deployment steps below.
+5. Run the job at least once and confirm all five rollup tables have rows (`dbspend360_total_job_spends`, `dbspend360_total_all_purpose_spends`, `dbspend360_total_pool_spends`, `dbspend360_total_pipeline_spends`, `dbspend360_total_sql_warehouse_spends`) before moving on to the app deployment steps below.
 
 
 ### Step by step setup
@@ -138,7 +147,7 @@ The Databricks App reads **four rollup tables** (one per cost tab), all produced
     3. `table_name` — fully qualified `catalog.schema.table` for `dbspend360_total_job_spends`.
     4. `schema_name` — fully qualified `catalog.schema` used by the app.
 
-> **Note:** `config/app.dev.config` also ships `all_purpose_table_name`, `pool_table_name`, and `pipeline_table_name` — the rollup tables behind the All-Purpose Clusters, Instance Pools, and Pipeline Compute tabs. The app reads **four** rollup tables, not one. If you omit these keys, `server/config/config_loader.py` derives them from `schema_name` (e.g. `<schema_name>.dbspend360_total_pool_spends`); set them explicitly if your tables don't follow that naming.
+> **Note:** `config/app.dev.config` also ships `all_purpose_table_name`, `pool_table_name`, `pipeline_table_name`, and `sql_warehouse_table_name`. The app reads **five** rollup tables. If you omit these keys, `server/config/config_loader.py` derives them from `schema_name`; set them explicitly if your tables do not follow the standard names.
 
 
 ![app_dev_config](release/readme_images/app_dev_config.png)
@@ -267,8 +276,8 @@ The chosen `platform` value drives, end-to-end:
 
 ## 4. Cost attribution across tabs (and why they don't sum to the AWS bill)
 
-The app exposes four cost tabs — **Job Clusters**, **All-Purpose Clusters**,
-**Instance Pools**, and **Pipeline Compute**. Each one looks at the *same*
+The app exposes five cost tabs — **Job Clusters**, **All-Purpose Clusters**,
+**Instance Pools**, **Pipeline Compute**, and **SQL Warehouses**. Each one looks at the *same*
 underlying compute through a different lens, so **the tabs intentionally overlap
 and are not meant to add up to your AWS invoice.** Treat each tab as a focused
 view, not a slice of a pie. This is the same already-accepted behavior the DBU
@@ -291,12 +300,12 @@ tables are kept **disjoint** so the cloud numbers do not double-count across tab
 * `dbspend360_cloud_cost_explorer` groups EC2/EBS by the **`ClusterId`** tag and
   feeds the Job Clusters, All-Purpose Clusters, and Pipeline Compute tabs.
 * `dbspend360_pool_cloud_cost_explorer` groups EC2/EBS by the
-  **`DatabricksInstancePoolId`** tag and feeds the Instance Pools tab. On this
-  account, pooled instances carry the pool tag but **not** `ClusterId` (verified
-  empirically), and the pool explorer additionally **nets out** any cost that
-  *also* carries `ClusterId`. So **pool EC2 cost is disjoint from cluster EC2
-  cost — for cloud cost the Instance Pools tab is additive, not overlapping, with
-  the other three tabs.**
+  **`DatabricksInstancePoolId`** tag and feeds the Instance Pools tab. It nets
+  out every row that also carries `ClusterId`, so the pool tab's cloud line is
+  specifically **ClusterId-free idle/warm capacity**. Active pool-backed VM
+  cost remains on the Job or All-Purpose cluster lens. This makes the cloud
+  slices disjoint; it does not make the pool tab a complete active + idle VM
+  total.
 
 Even so, **no tab — and no sum of tabs — equals the AWS EC2 bill.** Only
 tag-attributable compute is captured; account-wide shared infrastructure (NAT
@@ -331,9 +340,9 @@ self-monitoring:
   billing tag — the explorer and rollup notebooks raise a non-silent alarm rather
   than quietly writing zeros.
 * **Audit + error logs** — `dbspend360_audit_log` records per-run row counts and
-  windows; `dbspend360_error_log` captures reconciliation mismatches and isolated
-  failures (e.g. the pool-tag CE call is wrapped in its own `try/except` so a
-  pool-tag failure never breaks the cluster explorer path or the job DAG).
+  windows; `dbspend360_error_log` captures reconciliation mismatches and
+  failures. Pool-tag ingestion records its failure and re-raises so stale pool
+  cloud data cannot be consumed under a successful job state.
 
 ### 4.4 Azure: the same model, sourced from Cost Management
 
@@ -349,8 +358,8 @@ instead of AWS Cost Explorer:
   isolated `run_pool()` path in the cloud cost explorer notebooks. It
   groups by **both** the pool and `clusterid` tags and applies the same **netting
   guard** (keep only the `clusterid`-free slice), so Azure pool cloud cost is
-  disjoint from cluster cloud cost — the Instance Pools tab is additive, not
-  overlapping, exactly as on AWS.
+  the idle/warm slice and is disjoint from active cluster cloud cost, exactly
+  as on AWS.
 
 Two Azure specifics worth knowing:
 
@@ -360,12 +369,12 @@ Two Azure specifics worth knowing:
   both slots are spent on the pool + cluster tags for the netting guard, leaving
   no slot for `MeterCategory`. We deliberately prioritize disjointness over
   segmentation (matching the AWS pool path).
-* **The pool path is fully isolated.** `run_pool()` runs after the cluster
-  explorer and never re-raises: a `DatabricksInstancePoolId` tagging lapse or a
-  Cost Management schema drift logs to `dbspend360_error_log`
-  (`POOL_COST_EXPLORER_FAILED`) and writes a FAILED pool audit row, but cannot
-  break the Azure cluster explorer or the job DAG. The same `~0 cloud while DBU>0`
-  post-write monitor fires a non-silent `POOL_COST_MONITOR_ALARM`.
+* **The pool path is a required correctness gate.** A
+  `DatabricksInstancePoolId` tagging lapse or Cost Management schema drift logs
+  `POOL_COST_EXPLORER_FAILED`, writes a FAILED pool audit row, and re-raises so
+  downstream rollups cannot consume stale pool cloud data under a successful
+  job state. The same `~0 cloud while DBU>0` post-write monitor fires a
+  non-silent `POOL_COST_MONITOR_ALARM`.
 
 Everything downstream of the explorer — the pool rollup, the service layer, the
 API, and the frontend labels — is cloud-agnostic and unchanged; only the explorer
@@ -375,9 +384,10 @@ notebook learns to source Azure pool cost.
 ## 5. Tab data lineage (system tables & key filters)
 
 Each app tab reads one precomputed rollup table (see `table_name`,
-`all_purpose_table_name`, `pool_table_name`, and `pipeline_table_name` in
+`all_purpose_table_name`, `pool_table_name`, `pipeline_table_name`, and
+`sql_warehouse_table_name` in
 `config/app.dev.config`). The Databricks Job builds those rollups from Databricks
-**system tables** plus cloud cost explorer output. The four tabs scope the same
+**system tables** plus cloud cost explorer output. The five tabs scope the same
 underlying compute differently — they overlap by design (see section 4).
 
 | Tab | Rollup table | System tables (ETL) | Key scope / join keys |

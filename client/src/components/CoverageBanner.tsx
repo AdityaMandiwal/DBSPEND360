@@ -9,6 +9,7 @@ import {
   useCoverageSummary,
   type CoverageTabKey,
 } from "@/hooks/useCoverage";
+import type { DateRange } from "@/types/job-spend";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -19,6 +20,7 @@ const currencyFormatter = new Intl.NumberFormat("en-US", {
 
 interface CoverageBannerProps {
   tab: CoverageTabKey;
+  dateRange?: DateRange;
 }
 
 // Second paragraph of the popover — describes how the current tab TREATS the
@@ -27,9 +29,8 @@ interface CoverageBannerProps {
 //
 //   1. The KPI totals actively EXCLUDE non-covered DBU (all other tabs
 //      include the DBU and only miss the cloud/VM column).
-//   2. There is no cloud (VM) cost column on the table at all — SQL
-//      Warehouses run on Databricks-managed compute — so the "Azure
-//      infrastructure cost is not shown" clause would be misleading.
+//   2. Serverless DBU is complete, while Classic/Pro customer-cloud
+//      infrastructure is not attributed by the warehouse rollup.
 const inclusionCopy = (
   tab: CoverageTabKey,
   workspaceLabel: string,
@@ -41,30 +42,30 @@ const inclusionCopy = (
         On this tab, {workspaceLabel} run outside those subscriptions. Their{" "}
         {excludedDbuLabel} in Databricks DBU spend is <strong>excluded</strong>{" "}
         from the KPI totals on this tab and shown separately on each row with a
-        “Not covered” badge. There is no separate Azure infrastructure cost on
-        this tab — SQL Warehouses run on Databricks-managed compute.
+        “Not covered” badge. Serverless DBU includes infrastructure; Classic/Pro
+        VM, disk, and network charges are not attributed on this tab.
       </>
     );
   }
   return (
     <>
       On this tab, {workspaceLabel} run outside those subscriptions. Their{" "}
-      {excludedDbuLabel} in Databricks DBU spend is included, but their Azure
+      {excludedDbuLabel} in Databricks DBU spend is included, but their cloud
       infrastructure cost is not. These rows are labeled “Not covered.”
     </>
   );
 };
 
 /** Compact per-tab disclosure for Azure cloud-cost coverage. */
-export function CoverageBanner({ tab }: CoverageBannerProps) {
-  const { data, isLoading, isError } = useCoverageSummary();
+export function CoverageBanner({ tab, dateRange }: CoverageBannerProps) {
+  const { data, isLoading, isError } = useCoverageSummary(dateRange);
 
   if (isLoading || isError || !data) {
     return null;
   }
 
   const excludedDbu = data.excluded_dbu_by_tab[tab] ?? 0;
-  const excludedCount = data.excluded_workspaces.length;
+  const excludedCount = data.excluded_workspace_count_by_tab[tab] ?? 0;
 
   if (excludedCount === 0 && excludedDbu <= 0) {
     return null;
@@ -73,12 +74,13 @@ export function CoverageBanner({ tab }: CoverageBannerProps) {
   const coveredSubCount = data.covered_subscription_ids.length;
   const exampleNames = formatExampleWorkspaceNames(data.excluded_workspaces);
   const excludedDbuLabel = currencyFormatter.format(excludedDbu);
-  const subscriptionLabel = `${coveredSubCount} connected Azure ${
-    coveredSubCount === 1 ? "subscription" : "subscriptions"
+  const subscriptionLabel = `${coveredSubCount} connected cloud billing ${
+    coveredSubCount === 1 ? "scope" : "scopes"
   }`;
-  const workspaceLabel = `${excludedCount} ${
-    excludedCount === 1 ? "workspace" : "workspaces"
-  }`;
+  const workspaceLabel =
+    excludedCount > 0
+      ? `${excludedCount} ${excludedCount === 1 ? "workspace" : "workspaces"}`
+      : "workspaces with non-covered usage";
 
   return (
     <div className="flex justify-end">
@@ -101,9 +103,12 @@ export function CoverageBanner({ tab }: CoverageBannerProps) {
           <p className="text-sm text-muted-foreground">
             {inclusionCopy(tab, workspaceLabel, excludedDbuLabel)}
           </p>
-          <p className="text-xs text-muted-foreground">
-            Examples: {exampleNames}
-          </p>
+          {data.excluded_workspaces.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Example non-covered workspaces across billing usage:{" "}
+              {exampleNames}
+            </p>
+          )}
         </PopoverContent>
       </Popover>
     </div>

@@ -10,8 +10,8 @@
  * No REST API and no GUID resolution: `created_by`/`run_as` are the
  * human-readable values straight from the system table (plan §3.4).
  * `workload_type`/`compute_mode`/`cost_basis` are joined in from the rollup
- * so the modal can render the workload badge and the DBU-only caveat
- * consistently with the list. `metadata_missing=True` indicates no
+ * so the modal can render the workload and compute context consistently with
+ * the list. `metadata_missing=True` indicates no
  * `system.lakeflow.pipelines` row was found (normal for Vector Search /
  * cross-region); in that case the config fields fall back to None and the
  * modal renders the neutral §3.5 banner.

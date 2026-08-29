@@ -20,6 +20,7 @@
 
 import {
   Activity,
+  AlertTriangle,
   Cloud,
   DollarSign,
   Info,
@@ -94,9 +95,12 @@ export const InstancePoolsSummaryCards = ({
 }: InstancePoolsSummaryCardsProps) => {
   const { config: cloudConfig } = useCloudPlatform();
   const isAws = useIsAws();
-  const cloudLabel = isAws
-    ? AWS_CLOUD_LABEL
-    : `${cloudConfig?.compute_service || 'Cloud'} Cost`;
+  const isGcp = cloudConfig?.platform === 'GCP';
+  const cloudLabel = isGcp
+    ? 'Idle/Warm Pool Cloud Cost'
+    : isAws
+      ? `Idle/Warm ${AWS_CLOUD_LABEL}`
+      : `Idle/Warm ${cloudConfig?.compute_service || 'Cloud'} Cost`;
   const {
     data: metrics,
     isLoading: isMetricsLoading,
@@ -123,8 +127,7 @@ export const InstancePoolsSummaryCards = ({
     ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
     : 0;
 
-  // CP8: pool EC2/EBS cloud cost is now joined into the rollup (plan §4.4),
-  // so the headline is total spend (DBU + cloud), not DBU alone.
+  // The headline combines DBU with ClusterId-free idle/warm cloud cost.
   // `total_cloud_cost` is NULL only when no pool-day in the window carries a
   // cloud row yet — surfaced as "—" + note, never a misleading $0 (plan §5).
   const cloudCost = metrics?.total_cloud_cost;
@@ -136,6 +139,13 @@ export const InstancePoolsSummaryCards = ({
   const trendSummary = trendPoints ? summarizeTrend(trendPoints) : null;
   const hasTrendSpend =
     !!trendPoints && trendPoints.some((p) => p.total_cost > 0);
+  const cloudDataIsPartial =
+    !!metrics &&
+    metrics.total_pools > 0 &&
+    (!metrics.latest_cloud_date ||
+      metrics.latest_cloud_date < dateRange.end_date);
+  const overallDataIsPartial =
+    !!metrics?.latest_data_date && metrics.latest_data_date < dateRange.end_date;
 
   return (
     <div className="space-y-6">
@@ -195,7 +205,8 @@ export const InstancePoolsSummaryCards = ({
                   {formatCurrency(cloudCost)}
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  {cloudPctOfTotal} of total · pool VM cost (DBU is{' '}
+                  {cloudPctOfTotal} of total · ClusterId-free idle/warm VM cost
+                  (DBU is{' '}
                   {formatCurrency(metrics.total_databricks_cost)})
                 </p>
               </>
@@ -203,12 +214,18 @@ export const InstancePoolsSummaryCards = ({
               <>
                 <div
                   className="text-2xl font-bold text-muted-foreground cursor-help"
-                  title="No pool-tag cloud row landed in this window — confirm the DatabricksInstancePoolId tag is enabled and Cost Explorer has caught up."
+                  title={
+                    isGcp
+                      ? 'Pool-tag cloud ingestion is not implemented for GCP.'
+                      : 'No pool-tag cloud row landed in this window — confirm the DatabricksInstancePoolId tag is enabled and the cloud cost report has caught up.'
+                  }
                 >
                   —
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  no pool VM cost available yet
+                  {isGcp
+                    ? 'pool cloud ingestion is not supported on GCP'
+                    : 'no idle/warm pool VM cost available yet'}
                 </p>
               </>
             )}
@@ -227,6 +244,9 @@ export const InstancePoolsSummaryCards = ({
             <p className="text-xs text-muted-foreground mt-1">
               {formatCurrency(metrics.avg_cost_per_pool_day)}/pool-day avg · max{' '}
               {formatCurrency(metrics.max_cost_per_pool_day)}
+              {metrics.orphaned_pools > 0 && (
+                <> · {formatNumber(metrics.orphaned_pools)} metadata unavailable</>
+              )}
             </p>
           </CardContent>
         </Card>
@@ -249,6 +269,28 @@ export const InstancePoolsSummaryCards = ({
         </Card>
       </div>
       )}
+
+      {!isMetricsLoading &&
+        !isMetricsError &&
+        metrics &&
+        (cloudDataIsPartial || overallDataIsPartial) && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+            <div>
+              <div className="font-semibold">Selected-window data is incomplete.</div>
+              <div className="text-xs mt-1 opacity-90">
+                {metrics.latest_cloud_date
+                  ? `Idle/warm cloud cost is available through ${formatTrendDate(metrics.latest_cloud_date)} (${metrics.cloud_data_days} of ${metrics.date_range_days} calendar days contain cloud data).`
+                  : 'No idle/warm pool cloud cost has landed in this window.'}{' '}
+                {metrics.latest_data_date &&
+                  metrics.latest_data_date < dateRange.end_date &&
+                  `The newest pool spend row is ${formatTrendDate(metrics.latest_data_date)}.`}{' '}
+                Totals cover landed rows only and should not be treated as complete
+                for the full date range.
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* DBU overlap disclosure (issue #4): pool DBU is an alternate lens on
           usage keyed by instance_pool_id, with NO cluster_source filter — a
@@ -440,7 +482,7 @@ export const InstancePoolsSummaryCards = ({
                         <div className="text-xs text-muted-foreground">
                           {pool.cluster_count} cluster
                           {pool.cluster_count === 1 ? '' : 's'} ·{' '}
-                          {pool.active_days} day
+                          {pool.active_days} cost day
                           {pool.active_days === 1 ? '' : 's'}
                         </div>
                       </div>

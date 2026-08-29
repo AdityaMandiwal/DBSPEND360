@@ -193,25 +193,29 @@ export class InstancePoolsService {
      * question closer to `analyze_cluster_configuration` than to a
      * per-run trend analysis.
      *
-     * As of CP8 (plan_pool_pipeline_ec2_cost.md §4.4) pool EC2/EBS cost is
-     * joined into the cost summary, so the prompt MANDATES only the remaining
-     * idle-vs-active-split caveat ("the idle-vs-active VM cost split is not
-     * available yet" — §4.5) rather than the old DBU-only caveat; the response
-     * must include that string and the structured fallback
-     * (`_build_pool_fallback`) carries it too so the invariant holds on LLM
-     * failure.
+     * The cloud line contains only ClusterId-free idle/warm pool capacity;
+     * active pool-backed VM cost remains on the Job or All-Purpose tab. The
+     * prompt and structured fallback both carry that scope disclosure.
      * @param poolId
+     * @param startDate Optional analysis-window start (YYYY-MM-DD)
+     * @param endDate Optional analysis-window end (YYYY-MM-DD)
      * @returns InstancePoolAnalysis Successful Response
      * @throws ApiError
      */
     public static analyzeInstancePoolApiInstancePoolsPoolIdAnalyzeGet(
         poolId: string,
+        startDate?: (string | null),
+        endDate?: (string | null),
     ): CancelablePromise<InstancePoolAnalysis> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/instance-pools/{pool_id}/analyze',
             path: {
                 'pool_id': poolId,
+            },
+            query: {
+                'start_date': startDate,
+                'end_date': endDate,
             },
             errors: {
                 422: `Validation Error`,

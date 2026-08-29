@@ -48,17 +48,23 @@ const COMPUTE_MODE_CLASSES: Record<string, string> = {
 export const computeModeClasses = (mode: string): string =>
   COMPUTE_MODE_CLASSES[mode] ?? COMPUTE_MODE_CLASSES.mixed;
 
-// Per plan §3.2 the `$` carries a caveat only when the number excludes cloud
-// VM cost (classic) — `full` (all serverless) is the complete cost and gets
-// no icon. Returns null for `full` so callers can branch on truthiness.
-export const costBasisCaveat = (costBasis?: string | null): string | null => {
+// The aggregate total needs a caveat only when a classic/mixed cloud line is
+// unavailable. `cost_basis` describes the compute composition, while the
+// observed cloud value + workspace coverage describe completeness.
+export const costBasisCaveat = (
+  costBasis?: string | null,
+  cloudCost?: number | null,
+  workspaceCovered = true,
+): string | null => {
+  if (costBasis === 'full') return null;
+  if (workspaceCovered && cloudCost != null) return null;
+
   switch (costBasis) {
     case 'dbu_only':
-      return 'Databricks DBU only — excludes cloud VM cost';
+      return 'Cloud coverage is incomplete — Total excludes unavailable cloud VM cost';
     case 'partial':
-      return 'Partly DBU-only — classic portion excludes cloud VM cost';
+      return 'Cloud coverage is incomplete — Total excludes unavailable classic VM cost';
     default:
-      // 'full' (or any unexpected value) → complete cost, no caveat.
       return null;
   }
 };

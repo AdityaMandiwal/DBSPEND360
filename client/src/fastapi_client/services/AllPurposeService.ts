@@ -53,6 +53,8 @@ export class AllPurposeService {
      * @param search Optional free-text filter matched against cluster_name, cluster_id, and owner_user_id
      * @param page Page number
      * @param perPage Items per page
+     * @param sortBy Column to sort by
+     * @param sortDir Sort direction
      * @returns PaginatedAllPurposeClusters Successful Response
      * @throws ApiError
      */
@@ -62,6 +64,8 @@ export class AllPurposeService {
         search?: (string | null),
         page: number = 1,
         perPage: number = 50,
+        sortBy: string = 'total_cost',
+        sortDir: 'asc' | 'desc' = 'desc',
     ): CancelablePromise<PaginatedAllPurposeClusters> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -72,6 +76,8 @@ export class AllPurposeService {
                 'search': search,
                 'page': page,
                 'per_page': perPage,
+                'sort_by': sortBy,
+                'sort_dir': sortDir,
             },
             errors: {
                 422: `Validation Error`,
@@ -91,6 +97,8 @@ export class AllPurposeService {
      * @param search Optional free-text filter matched against user_id (case-insensitive)
      * @param page Page number
      * @param perPage Items per page
+     * @param sortBy Column to sort by
+     * @param sortDir Sort direction
      * @returns PaginatedAllPurposeUsers Successful Response
      * @throws ApiError
      */
@@ -100,6 +108,8 @@ export class AllPurposeService {
         search?: (string | null),
         page: number = 1,
         perPage: number = 50,
+        sortBy: string = 'total_cost',
+        sortDir: 'asc' | 'desc' = 'desc',
     ): CancelablePromise<PaginatedAllPurposeUsers> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -110,6 +120,8 @@ export class AllPurposeService {
                 'search': search,
                 'page': page,
                 'per_page': perPage,
+                'sort_by': sortBy,
+                'sort_dir': sortDir,
             },
             errors: {
                 422: `Validation Error`,

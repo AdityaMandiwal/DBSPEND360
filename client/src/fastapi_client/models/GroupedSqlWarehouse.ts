@@ -9,8 +9,8 @@ import type { SqlWarehouseDailySpend } from './SqlWarehouseDailySpend';
  * One row per warehouse within the queried window. `days` is the per-day
  * drill-down expansion. `metadata_missing` and `warehouse_deleted_at` encode
  * the three-state badge: active (both falsy), "Deleted" (warehouse_deleted_at
- * populated), "Metadata unavailable" (metadata_missing=True). DBU is the
- * complete cost for managed-compute warehouses — no separate cloud cost.
+ * populated), "Metadata unavailable" (metadata_missing=True). `cost_basis` is
+ * `full` for Serverless and `dbu_only` for Classic/Pro.
  */
 export type GroupedSqlWarehouse = {
     warehouse_id: string;
@@ -27,6 +27,7 @@ export type GroupedSqlWarehouse = {
     total_databricks_cost: number;
     total_cost: number;
     workspace_covered?: boolean;
+    cost_basis?: string;
     days?: Array<SqlWarehouseDailySpend>;
 };
 

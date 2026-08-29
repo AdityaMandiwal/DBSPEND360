@@ -1,6 +1,6 @@
 export interface JobSpend {
   cluster_id: string;
-  cloud_cost: number;
+  cloud_cost: number | null;
   job_id: string;
   job_name?: string;
   run_id: string;
@@ -38,9 +38,10 @@ export interface CostBreakdown {
   job_id: string;
   run_id: string;
   cluster_id: string;
+  cluster_ids: string[];
   usage_date: string;
   end_date?: string | null;
-  cloud_cost: number;
+  cloud_cost: number | null;
   databricks_cost: number;
   total_cost: number;
   compute_cost?: number | null;
@@ -57,9 +58,10 @@ export interface CostBreakdown {
 export interface JobRun {
   run_id: string;
   cluster_id: string;
+  cluster_ids: string[];
   start_date: string; // ISO date string
   end_date: string; // ISO date string
-  cloud_cost: number;
+  cloud_cost: number | null;
   databricks_cost: number;
   total_cost: number;
   cloud_percentage: number;
@@ -75,7 +77,7 @@ export interface GroupedJob {
   job_id: string;
   job_name?: string;
   run_count: number;
-  total_cloud_cost: number;
+  total_cloud_cost: number | null;
   total_databricks_cost: number;
   total_compute_cost?: number | null;
   total_storage_cost?: number | null;

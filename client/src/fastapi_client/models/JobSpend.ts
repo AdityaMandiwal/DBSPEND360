@@ -7,7 +7,7 @@
  */
 export type JobSpend = {
     cluster_id: string;
-    cloud_cost: number;
+    cloud_cost?: (number | null);
     job_id: string;
     job_name?: (string | null);
     run_id: string;

@@ -10,8 +10,8 @@
  * total_pipelines` — so mode-switching pipelines land in `mixed` and are
  * never double-counted (plan §5.3). The `$` split is likewise three buckets
  * that sum to `total_spend`: `serverless_spend` (full cost) +
- * `classic_spend` (DBU only — excludes cloud VM) + `mixed_spend` (partial),
- * so the summary footnote stays exact even when mixed rows exist.
+ * `classic_spend` + `mixed_spend`, with each pipeline's full known spend
+ * assigned to its collapsed compute-mode bucket.
  *
  * `workload_breakdown` is the per-`workload_type` `$` map (e.g.
  * {"DLT Pipeline": ..., "DBSQL Materialized View": ...}); because
@@ -40,5 +40,10 @@ export type PipelineSummaryMetrics = {
     workload_breakdown?: Record<string, number>;
     date_range_days: number;
     dbu_in_non_covered_workspaces?: number;
+    latest_data_date?: (string | null);
+    latest_dbu_date?: (string | null);
+    latest_cloud_date?: (string | null);
+    data_days?: number;
+    cloud_data_days?: number;
 };
 

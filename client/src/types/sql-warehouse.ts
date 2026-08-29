@@ -8,9 +8,8 @@
 //
 // Two structural differences vs. the Pipeline Compute tab
 // (`docs/plans/sql-warehouse-costs.md`):
-//   - DBU IS the complete cost. All three warehouse types (CLASSIC, PRO,
-//     SERVERLESS) run on Databricks-managed compute, so there are no customer
-//     VMs to attribute cloud cost to and no cloud-cost field exists anywhere.
+//   - Serverless DBU includes infrastructure; Classic/Pro values are DBU-only
+//     because customer-cloud charges are not attributed to warehouse_id.
 //   - `warehouse_id` is account-unique, so nothing is keyed by workspace and
 //     there is no cross-workspace disambiguation (no 409 path).
 
@@ -23,6 +22,7 @@ export interface SqlWarehouseDailySpend {
   total_cost: number;
   warehouse_type?: string | null;
   sku_name?: string | null;
+  cost_basis: "full" | "dbu_only" | "unknown" | string;
 }
 
 // Top-level warehouse row in the By-Warehouse table.
@@ -49,6 +49,7 @@ export interface GroupedSqlWarehouse {
   total_databricks_cost: number;
   total_cost: number;
   workspace_covered?: boolean;
+  cost_basis: "full" | "dbu_only" | "unknown" | string;
   // Drill-down expansion. Populated on `/grouped`, empty on
   // `/top-warehouses` (which skips the per-day query for cost).
   days: SqlWarehouseDailySpend[];
@@ -73,6 +74,8 @@ export interface SqlWarehouseSummaryMetrics {
   serverless_spend: number;
   total_databricks_cost: number;
   date_range_days: number;
+  landed_days: number;
+  data_through_date?: string | null;
   dbu_in_non_covered_workspaces?: number;
 }
 
@@ -91,6 +94,7 @@ export interface SqlWarehouseDetails {
   metadata_missing: boolean;
   warehouse_deleted_at?: string | null;
   tags?: Record<string, string> | null;
+  cost_basis: "full" | "dbu_only" | "unknown" | string;
 }
 
 // LLM-generated cost analysis for a single warehouse.
@@ -98,6 +102,9 @@ export interface SqlWarehouseAnalysis {
   warehouse_id: string;
   analysis: string;
   timestamp: string;
+  start_date: string;
+  end_date: string;
+  cost_basis: "full" | "dbu_only" | "unknown" | string;
 }
 
 export interface PaginatedSqlWarehouses {
@@ -118,6 +125,12 @@ export interface SqlWarehouseFilter {
   start_date: string;
   end_date: string;
   search?: string;
+  sort_by:
+    | "total_cost"
+    | "total_databricks_cost"
+    | "active_days"
+    | "warehouse_name";
+  sort_dir: "asc" | "desc";
   page: number;
   per_page: number;
 }

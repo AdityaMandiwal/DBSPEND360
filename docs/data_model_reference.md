@@ -25,14 +25,15 @@ These are the **only tables the FastAPI service queries** for tab data.
 | `job_id` | STRING | Job ID |
 | `run_id` | STRING | Job run ID |
 | `usage_date` | DATE | Day of usage |
-| `cloud_cost` | DOUBLE | Total cloud VM cost |
+| `cloud_cost` | DOUBLE | Total cloud VM cost; NULL when cloud cost is unavailable or unattributable |
 | `compute_cost` | DOUBLE | Cloud compute segment (EC2 / Azure Compute) |
 | `storage_cost` | DOUBLE | Cloud storage segment (EBS / managed disks) |
 | `network_cost` | DOUBLE | Cloud network segment |
 | `other_cost` | DOUBLE | Other cloud services |
 | `databricks_cost` | DOUBLE | DBU cost |
 | `currency` | STRING | Currency code |
-| `total_cost` | DOUBLE | `cloud_cost + databricks_cost` |
+| `workspace_covered` | BOOLEAN | Whether the workspace is inside the configured cloud-billing scope |
+| `total_cost` | DOUBLE | `COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)` |
 | `created_at` | TIMESTAMP | Row creation time |
 | `updated_at` | TIMESTAMP | Last update time |
 
@@ -79,10 +80,11 @@ These are the **only tables the FastAPI service queries** for tab data.
 | `pool_snapshot_missing` | BOOLEAN | True if pool metadata unavailable at ETL time |
 | `pool_deleted_at` | TIMESTAMP | When pool was deleted (if applicable) |
 | `databricks_cost` | DOUBLE | DBU cost |
-| `cloud_cost` | DOUBLE | Cloud VM cost (from pool explorer) |
+| `cloud_cost` | DOUBLE | ClusterId-free idle/warm VM cost from the pool explorer; active pool-backed VM cost stays on the cluster lens |
 | `total_cost` | DOUBLE | `cloud_cost + databricks_cost` |
 | `currency` | STRING | Currency code |
 | `sku_name` | STRING | DBU SKU |
+| `workspace_covered` | BOOLEAN | Whether the workspace is inside the configured cloud-billing scope |
 | `created_at` | TIMESTAMP | Row creation time |
 | `updated_at` | TIMESTAMP | Last update time |
 
@@ -110,14 +112,38 @@ These are the **only tables the FastAPI service queries** for tab data.
 | `update_cost` | DOUBLE | DBU cost for pipeline updates |
 | `maintenance_cost` | DOUBLE | DBU cost for pipeline maintenance |
 | `cloud_cost` | DOUBLE | Cloud VM cost (classic only; NULL for serverless) |
-| `total_cost` | DOUBLE | `cloud_cost + databricks_cost` |
+| `total_cost` | DOUBLE | `COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)` |
 | `currency` | STRING | Currency code |
 | `sku_name` | STRING | DBU SKU |
 | `billing_origin_product` | STRING | Billing product origin (workload split) |
+| `workspace_covered` | BOOLEAN | Whether cloud billing covers this workspace; uncovered rows keep known DBU spend and have no attributable cloud cost |
 | `created_at` | TIMESTAMP | Row creation time |
 | `updated_at` | TIMESTAMP | Last update time |
 
 **Primary grain:** `(workspace_id, pipeline_id, usage_date, billing_origin_product)`
+
+---
+
+#### `dbspend360_total_sql_warehouse_spends`
+
+| Column | Type | Description |
+|---|---|---|
+| `warehouse_id` | STRING | Account-unique SQL warehouse ID |
+| `usage_date` | DATE | Day of SQL warehouse usage |
+| `warehouse_name` | STRING | Latest known name, with ID fallback |
+| `warehouse_type` | STRING | `SERVERLESS`, `PRO`, `CLASSIC`, or system-table type |
+| `warehouse_size` | STRING | Latest known warehouse size |
+| `metadata_missing` | BOOLEAN | No system warehouse snapshot was available |
+| `databricks_cost` | DOUBLE | List-price DBU spend |
+| `total_cost` | DOUBLE | Stored DBU amount; economically complete only for Serverless |
+| `workspace_id` | STRING | Workspace used for coverage classification |
+| `workspace_covered` | BOOLEAN | Whether the workspace is in cloud-billing scope |
+
+**Primary grain:** `(warehouse_id, usage_date)`
+
+Classic/Pro customer-cloud VM, disk, and network charges are not currently
+attributed to `warehouse_id`; API/UI cost basis must therefore label those rows
+DBU-only. Serverless DBU includes infrastructure.
 
 ---
 
@@ -129,6 +155,7 @@ These are the **only tables the FastAPI service queries** for tab data.
 | `dbspend360_all_purpose_dbu_cost` | `(cluster_id, user_id, usage_date)` | `dbspend360_all_purpose_dbu_cost_app` |
 | `dbspend360_pool_dbu_cost` | `(instance_pool_id, cluster_id, usage_date)` | `dbspend360_pool_dbu_cost_app` |
 | `dbspend360_pipeline_dbu_cost` | `(workspace_id, pipeline_id, usage_date, cluster_id, billing_origin_product)` | `dbspend360_pipeline_dbu_cost_app` |
+| `dbspend360_sql_warehouse_dbu_cost` | `(warehouse_id, usage_date)` | `dbspend360_sql_warehouse_dbu_cost_app` |
 | `dbspend360_cloud_cost_explorer` | `(cluster_id, cost_incurred_date)` | `{aws,azure,gcp}_cloud_cost_explorer_app` |
 | `dbspend360_pool_cloud_cost_explorer` | `(instance_pool_id, cost_incurred_date)` | Same explorer (pool `run_pool()` path) |
 | `dbspend360_other_cost_breakdown` | `(cost_incurred_date, cluster_id, service_name)` | Cloud cost explorer |
@@ -144,22 +171,30 @@ These are the **only tables the FastAPI service queries** for tab data.
 
 ## 2. ETL pipeline DAG
 
-The Databricks Job (`jobs/resource_templates/DBSPEND360.yaml`) runs 9 tasks:
+The Databricks Job (`jobs/resource_templates/DBSPEND360.yaml`) declares table
+creation as explicit prerequisites instead of assuming the pipeline tables
+already exist:
 
 ```mermaid
 flowchart TD
+    DDL_PL["create_pipeline_dbu_cost_table"]
+    DDL_ROLL_PL["create_total_pipeline_spends_table"]
+    CW["covered_workspaces"]
     CCE["cloud_cost_explorer<br/>(aws/azure/gcp notebook)"]
 
     CCE --> DBU_J["Dbspend360dbu_costs"]
     CCE --> DBU_AP["Dbspend360_all_purpose_dbu_costs"]
     CCE --> DBU_P["Dbspend360_pool_dbu_costs"]
-    CCE --> ROLL_PL["pipeline_spends"]
+    DDL_PL --> DBU_PL["Dbspend360_pipeline_dbu_costs"]
+    CW --> DBU_PL
+    DDL_ROLL_PL --> ROLL_PL["pipeline_spends"]
+    CCE --> ROLL_PL
 
     DBU_J --> ROLL_J["databricks_job_spends"]
     DBU_AP --> ROLL_AP["all_purpose_spends"]
     DBU_P --> ROLL_P["pool_spends"]
 
-    DBU_PL["Dbspend360_pipeline_dbu_costs"] --> ROLL_PL
+    DBU_PL --> ROLL_PL
 
     style CCE fill:#e0f2fe
     style ROLL_J fill:#dcfce7
@@ -322,7 +357,7 @@ flowchart TB
     CL -->|"cluster_source = 'JOB'"| F1
     F1 -->|"INNER JOIN on cluster_id<br/>SUM(qty × price)"| DBU["dbspend360_dbu_cost<br/>━━━━━━━━━━━━━━<br/>cluster_id · job_id · run_id · usage_date<br/>databricks_cost · currency"]
 
-    DBU -->|"INNER JOIN<br/>cluster_id + usage_date = cost_incurred_date"| ROLL["dbspend360_total_job_spends<br/>━━━━━━━━━━━━━━<br/>+ cloud_cost, compute/storage/network/other_cost<br/>+ total_cost = cloud + dbu"]
+    DBU -->|"LEFT JOIN<br/>cluster_id + date + currency"| ROLL["dbspend360_total_job_spends<br/>━━━━━━━━━━━━━━<br/>+ nullable cloud cost and segments<br/>+ DBU-preserving total_cost"]
 
     CC --> ROLL
 
@@ -343,9 +378,15 @@ flowchart TB
 |---|---|---|
 | **Keys** `cluster_id`, `job_id`, `run_id`, `usage_date` | `usage.usage_metadata.*` | `groupBy` after job-cluster filter |
 | **DBU** `databricks_cost` | `usage` × `list_prices` | `SUM(qty × price)` |
-| **Cloud** `cloud_cost`, segments | `cloud_cost_explorer` | INNER JOIN on `cluster_id` + date; no match → dropped + error log |
+| **Cloud** `cloud_cost`, segments | `cloud_cost_explorer` | LEFT JOIN on `cluster_id` + date + currency; no match stays NULL |
 | **Derived** `total_cost` | `cloud_cost` + `databricks_cost` | `COALESCE(cloud,0) + COALESCE(dbu,0)` |
+| **Coverage** `workspace_covered` | DBU staging table | DBU remains in totals; UI labels unavailable cloud cost as “Not covered” |
 | **App only** `job_name` | `system.lakeflow.jobs.name` | Cached map at request time |
+
+The Job tab aggregates runs by `(job_id, run_id)` across all participating
+clusters and returns the full `cluster_ids` list. Drill-down and AI requests
+carry the selected inclusive date window so a run crossing the boundary cannot
+silently reintroduce out-of-window spend.
 
 ---
 
@@ -385,6 +426,13 @@ flowchart TB
 | **Metadata** `data_security_mode` | `system.compute.clusters` | SCD-collapse per `cluster_id` |
 | **Cloud** `cloud_cost` | `cloud_cost_explorer` | **LEFT JOIN** — NULL when pool-backed (no ClusterId tag) |
 | **Derived** `total_cost` | cloud + dbu | Null-safe sum; cloud NULL still adds DBU |
+| **Coverage** `workspace_covered` | DBU staging table | Known DBU remains in totals; unavailable cloud cost is labeled “Not covered” |
+
+Both all-purpose ETL MERGEs retain the stored
+`(cluster_id, user_id, usage_date)` key. Because an `owned_by` correction
+changes that key, each MERGE also deletes target keys unmatched by its source
+inside the recomputed overlap window (and inside the selected workspace scope
+for the DBU stage). Rows outside that bounded slice are untouched.
 
 ---
 
@@ -402,7 +450,7 @@ flowchart TB
     U -->|"instance_pool_id IS NOT NULL<br/>COALESCE(cluster_id, __pool_overhead__)"| DBU["dbspend360_pool_dbu_cost<br/>━━━━━━━━━━━━━━<br/>instance_pool_id · cluster_id · usage_date<br/>databricks_cost"]
 
     PC -->|"LEFT JOIN on pool_id + date"| ALLOC{{"Cloud allocation"}}
-    ALLOC -->|"ALL cloud_cost → __pool_overhead__ row only<br/>cluster rows: cloud = NULL"| MERGE
+    ALLOC -->|"ClusterId-free idle/warm cloud → __pool_overhead__ only<br/>cluster rows: cloud = NULL"| MERGE
 
     DBU --> MERGE["pool_spends_app merge"]
     MERGE -->|"synthetic overhead rows for cloud-only days"| ROLL
@@ -440,11 +488,11 @@ flowchart TB
         PL["system.lakeflow.pipelines<br/>name · type · created_by · run_as"]
     end
 
-    U -->|"dlt_pipeline_id IS NOT NULL"| DBU["dbspend360_pipeline_dbu_cost<br/>━━━━━━━━━━━━━━<br/>workspace_id · pipeline_id · usage_date<br/>cluster_id · billing_origin_product<br/>databricks/update/maintenance_cost · compute_mode"]
+    U -->|"dlt_pipeline_id IS NOT NULL<br/>INNER JOIN SKU + price-time window<br/>(cardinality must remain 1:1)"| DBU["dbspend360_pipeline_dbu_cost<br/>━━━━━━━━━━━━━━<br/>workspace_id · pipeline_id · usage_date<br/>cluster_id · billing_origin_product<br/>databricks/update/maintenance_cost · compute_mode<br/>workspace_covered"]
 
     DBU -->|"Collapse cluster_id<br/>SUM costs per product"| DAY["Day grain<br/>workspace · pipeline · date · product"]
 
-    CC -->|"Classic only: cluster_id NOT NULL<br/>compute_mode = classic"| ATTR{{"Cloud attribution"}}
+    CC -->|"Classic only: cluster_id + date + currency<br/>workspace must be covered"| ATTR{{"Cloud attribution"}}
     ATTR -->|"Step 1: cloud × pipe_dbu / cluster_dbu<br/>Step 2: spread by product DBU share"| DAY
 
     DAY -->|"LEFT JOIN SCD snapshot"| ROLL["dbspend360_total_pipeline_spends<br/>━━━━━━━━━━━━━━<br/>pipeline metadata · workload_type<br/>cloud_cost (NULL serverless) · total_cost"]
@@ -465,14 +513,23 @@ flowchart TB
 |---|---|---|
 | **Keys** `workspace_id`, `pipeline_id`, `usage_date`, `billing_origin_product` | `usage` metadata + `billing_origin_product` | Staging grain collapses `cluster_id` |
 | **DBU** `databricks_cost`, `update_cost`, `maintenance_cost` | `usage` × `list_prices` | Split by `dlt_update_id` / `dlt_maintenance_id` |
-| **Mode** `compute_mode` | `cluster_id`, `sku_name`, product | `serverless` if NULL cluster, SERVERLESS SKU, or MS/VS/AI product |
-| **Mode** `cost_basis` | `compute_mode` | `full` / `dbu_only` / `partial` |
+| **Mode** `compute_mode` | `cluster_id`, `sku_name`, `billing_origin_product` | A staging group is `serverless` when `cluster_id IS NULL`, the SKU contains `SERVERLESS`, or the product is `MODEL_SERVING`, `VECTOR_SEARCH`, or `AI_FUNCTIONS`; otherwise `classic`. The rollup is `mixed` when both modes occur at its day/product grain. |
+| **Mode** `cost_basis` | `compute_mode` + cloud availability | `full` for serverless, `dbu_only` where classic cloud is unavailable, and `partial` when a mixed group has only partial cloud attribution |
 | **Label** `workload_type` | `billing_origin_product` | `WORKLOAD_MAP` (DLT→DLT Pipeline, SQL→DBSQL MV, …) |
-| **Cloud** `cloud_cost` | `cloud_cost_explorer` | Proportional DBU-weighted split; **NULL** for serverless |
+| **Cloud** `cloud_cost` | `cloud_cost_explorer` | LEFT JOIN classic cluster-day rows on `cluster_id + usage_date + currency`; allocate cluster cloud first by pipeline DBU share, then by product DBU share. **NULL** for serverless or unavailable/uncovered cloud data. |
+| **Coverage** `workspace_covered` | `dbspend360_covered_workspaces` via DBU staging | All-workspace DBU rows remain in rollups, APIs, mode buckets, workload denominators, and totals. The flag discloses where cloud cost is unavailable; it does not exclude known DBU spend. |
 | **Metadata** `pipeline_name`, `pipeline_type`, `created_by`, `run_as` | `system.lakeflow.pipelines` | SCD latest row; `metadata_missing` if absent |
 | **Derived** `total_cost` | cloud + dbu | Null-safe sum |
 
 **`WORKLOAD_MAP`:** `DLT`→DLT Pipeline · `SQL`→DBSQL MV · `DATABASE`→Online Table · `VECTOR_SEARCH` · `MODEL_SERVING` · `AI_FUNCTIONS`
+
+The staging grain is `(workspace_id, pipeline_id, usage_date, cluster_id,
+billing_origin_product)`. The rollup removes `cluster_id` after cloud
+allocation and persists
+`(workspace_id, pipeline_id, usage_date, billing_origin_product)`. At request
+time, list and summary queries collapse product rows to pipeline or
+pipeline-day grain. Workload filters are applied to both row totals and nested
+day queries so the two reconcile.
 
 ---
 
@@ -504,7 +561,7 @@ flowchart TB
 
 | Source system | Consumed by |
 |---|---|
-| `system.billing.usage` + `list_prices` | All four tabs (different metadata filters) |
+| `system.billing.usage` + `list_prices` | All five tabs (different metadata filters) |
 | `system.compute.clusters` | Job (filter), All-Purpose (filter + denorm), app drill-down |
 | `system.compute.instance_pools` | Instance Pools rollup metadata |
 | `system.lakeflow.pipelines` | Pipeline rollup metadata |
@@ -534,9 +591,9 @@ flowchart TB
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/all-purpose/grouped-by-cluster` | Cluster-centric view |
-| `GET /api/all-purpose/grouped-by-user` | User-centric view |
-| `GET /api/all-purpose/summary` | Summary cards |
+| `GET /api/all-purpose/grouped-by-cluster` | Cluster-centric view; paginated, searchable, allowlisted server-side sorting |
+| `GET /api/all-purpose/grouped-by-user` | User-centric view; paginated, searchable, allowlisted server-side sorting |
+| `GET /api/all-purpose/summary` | Summary cards; all known DBU plus available cloud cost, with uncovered DBU disclosed separately |
 | `GET /api/cluster/{cluster_id}/details` | Cluster config drill-down (shared) |
 
 ### 5.3 Instance Pools
@@ -545,13 +602,15 @@ flowchart TB
 |---|---|
 | `GET /api/instance-pools/grouped` | Paginated pool list with daily breakdown |
 | `GET /api/instance-pools/summary` | Summary cards |
-| `GET /api/instance-pools/{pool_id}/details` | Pool config + cluster attribution |
+| `GET /api/instance-pools/{pool_id}/details` | Pool config, tags, and creator metadata |
 | `GET /api/instance-pools/{pool_id}/analyze` | AI recommendations |
 
 **System table enrichment:**
 
-- `system.compute.instance_pools` — live pool metadata
-- `system.compute.clusters` — cluster names in pool expansion
+- `system.compute.instance_pools` — SCD pool metadata for the modal and
+  denormalized rollup metadata for the list
+- Pool expansion currently displays cluster IDs; cluster-name enrichment is
+  not performed in the pool endpoint
 
 ### 5.4 Pipeline Compute
 
@@ -565,6 +624,10 @@ flowchart TB
 **System table enrichment:**
 
 - `system.lakeflow.pipelines` — pipeline names and configuration
+
+Pipeline summary, workload, mode, and Top-N scopes include every workspace's
+known DBU spend. `workspace_covered` is projected on grouped/day/Top-N rows so
+the UI can distinguish complete cloud attribution from DBU-only coverage.
 
 ---
 

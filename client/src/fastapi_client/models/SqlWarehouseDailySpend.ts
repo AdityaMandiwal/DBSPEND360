@@ -11,5 +11,6 @@ export type SqlWarehouseDailySpend = {
     total_cost: number;
     warehouse_type?: (string | null);
     sku_name?: (string | null);
+    cost_basis?: string;
 };
 

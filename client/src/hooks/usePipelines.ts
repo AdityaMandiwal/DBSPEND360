@@ -77,6 +77,8 @@ export const usePipelines = (params: PipelineFilter) => {
     params.end_date,
     params.per_page,
     params.search,
+    params.sort_by,
+    params.sort_dir,
     // Re-key the prefetch when the chip selection changes. Joined to a
     // stable string so the dep array compares by value, not reference.
     params.workload_type?.join(','),
@@ -137,8 +139,8 @@ export const usePipelineDetails = (
 
 // Hook: LLM-powered pipeline cost analysis
 // (`/api/pipelines/{id}/analyze`). Mirrors `useInstancePoolAnalysis`. The
-// analysis text is expected to include the DBU-only caveat iff
-// `cost_basis != 'full'` (plan §3.2 / §9 acceptance criterion #14).
+// The analysis endpoint intentionally uses its own fixed 180-day lookback;
+// it does not analyze the selected table window.
 //
 // `enabled` lets the caller defer the (LLM-charging) analysis request until
 // details resolve successfully — so an ambiguous (409) or failed pipeline

@@ -3,16 +3,15 @@
 //
 // Distinct from `ClusterDetailsModal` / `InstancePoolDetailsModal` because the
 // upstream source is `system.lakeflow.pipelines` (not clusters/pools) and the
-// LLM prompt is fed `workload_type` + `cost_basis` so the analysis carries the
-// DBU-only caveat iff the number excludes cloud VM cost (plan §3.2 / §9 /
-// CP7).
+// LLM prompt is fed workload and cost context. Its fixed 180-day lookback is
+// disclosed separately from the selected table window.
 //
 // Renders the §3.5 three-state info banner at the top:
 //   - Active                  : no banner.
 //   - Deleted (visible)       : yellow "Pipeline deleted on YYYY-MM-DD."
 //   - Metadata not available  : NEUTRAL grey banner (not alarming) — the
 //                               expected state for Vector Search / cross-region
-//                               (plan §3.5). Cost stays accurate; config
+//                               (plan §3.5). DBU stays available; config
 //                               analysis is degraded.
 //
 // `created_by` / `run_as` are human-readable values straight from the system
@@ -22,6 +21,8 @@
 import {
   AlertTriangle,
   Brain,
+  Cloud,
+  DollarSign,
   FileQuestion,
   Info,
   User,
@@ -44,16 +45,20 @@ import {
   computeModeClasses,
   costBasisCaveat,
   workloadBadgeClasses,
+  cloudMissingNote,
+  formatCurrency,
 } from '@/lib/pipeline-display';
 import { useAiModelLabel } from '@/hooks/useJobSpends';
 import { ApiError } from '@/lib/api-client';
 import { closeOnly, formatCalendarDate } from '@/lib/utils';
 import { AnalysisMarkdown } from './AnalysisMarkdown';
+import { CloudCostCell } from './CloudCostCell';
+import type { DateRange } from '@/types/job-spend';
+import type { GroupedPipeline } from '@/types/pipeline';
 
 interface PipelineDetailsModalProps {
-  pipelineId: string;
-  // Disambiguates a pipeline_id that spans >1 workspace (plan §3.3/§6).
-  workspaceId?: string;
+  pipeline: GroupedPipeline;
+  dateRange: DateRange;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -70,11 +75,12 @@ const formatDeleteDate = (dateStr?: string | null): string | null =>
     : null;
 
 export const PipelineDetailsModal = ({
-  pipelineId,
-  workspaceId,
+  pipeline,
+  dateRange,
   isOpen,
   onClose,
 }: PipelineDetailsModalProps) => {
+  const { pipeline_id: pipelineId, workspace_id: workspaceId } = pipeline;
   const {
     data: details,
     isLoading: detailsLoading,
@@ -101,7 +107,11 @@ export const PipelineDetailsModal = ({
     detailsError instanceof ApiError && detailsError.status === 409;
 
   const deletedDateLabel = formatDeleteDate(details?.pipeline_deleted_at);
-  const caveat = costBasisCaveat(details?.cost_basis);
+  const caveat = costBasisCaveat(
+    details?.cost_basis ?? pipeline.cost_basis,
+    pipeline.total_cloud_cost,
+    pipeline.workspace_covered,
+  );
 
   return (
     <Dialog open={isOpen} onOpenChange={closeOnly(onClose)}>
@@ -112,6 +122,62 @@ export const PipelineDetailsModal = ({
             Pipeline Configuration & Analysis
           </DialogTitle>
         </DialogHeader>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <DollarSign className="h-5 w-5" />
+              Selected Window Spend
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              {formatCalendarDate(dateRange.start_date)} to{' '}
+              {formatCalendarDate(dateRange.end_date)}
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div>
+                <div className="text-xs text-muted-foreground">DBU</div>
+                <div className="font-semibold text-red-600">
+                  {formatCurrency(pipeline.total_databricks_cost)}
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Cloud className="h-3.5 w-3.5" /> Cloud
+                </div>
+                <div className="font-semibold text-blue-600">
+                  <CloudCostCell
+                    value={pipeline.total_cloud_cost}
+                    workspaceCovered={pipeline.workspace_covered}
+                    missingNote={cloudMissingNote(
+                      pipeline.compute_mode === 'serverless',
+                    )}
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Total</div>
+                <div className="font-bold">
+                  {formatCurrency(pipeline.total_cost)}
+                </div>
+              </div>
+            </div>
+            <div
+              className={`mt-3 text-xs ${
+                pipeline.workspace_covered === false
+                  ? 'text-amber-700 dark:text-amber-300'
+                  : 'text-muted-foreground'
+              }`}
+            >
+              {pipeline.workspace_covered === false
+                ? pipeline.total_cloud_cost != null
+                  ? 'Cloud billing coverage is partial. DBU is included; treat the available cloud amount and Total as partial.'
+                  : 'Not covered for cloud billing. DBU is included, but cloud cost is unavailable and Total excludes it.'
+                : 'Cloud billing coverage is available; “—” means no separate cloud line was returned.'}
+            </div>
+          </CardContent>
+        </Card>
 
         {detailsError ? (
           isAmbiguous ? (
@@ -167,8 +233,8 @@ export const PipelineDetailsModal = ({
                     Pipeline deleted on {deletedDateLabel}.
                   </div>
                   <div className="text-xs mt-1 opacity-90">
-                    Configuration shown is as of the delete time. Cost figures
-                    remain accurate.
+                    Configuration shown is as of the delete time. DBU remains
+                    included; cloud completeness is disclosed above.
                   </div>
                 </div>
               </div>
@@ -188,8 +254,9 @@ export const PipelineDetailsModal = ({
                       system.lakeflow.pipelines
                     </span>{' '}
                     — normal for Vector Search, cross-region pipelines, or
-                    retention edges. Cost figures remain accurate; the
-                    configuration below is unavailable.
+                    retention edges. DBU remains included and cloud
+                    completeness is disclosed above; configuration is
+                    unavailable.
                   </div>
                 </div>
               </div>
@@ -239,6 +306,18 @@ export const PipelineDetailsModal = ({
                           </span>
                         )}
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-start">
+                    <span className="text-sm font-medium text-muted-foreground">
+                      Workspace ID
+                    </span>
+                    <div
+                      className="max-w-[260px] truncate text-right font-mono text-xs"
+                      title={details.workspace_id}
+                    >
+                      {details.workspace_id}
                     </div>
                   </div>
 
@@ -392,6 +471,10 @@ export const PipelineDetailsModal = ({
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
+                    <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+                      AI analysis uses a fixed 180-day lookback. It does not use
+                      the selected table window shown above.
+                    </div>
                     {analysisError ? (
                       <div className="text-center py-4">
                         <div className="text-red-600 font-medium mb-2">

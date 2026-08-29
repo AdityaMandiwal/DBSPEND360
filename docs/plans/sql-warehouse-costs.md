@@ -3,6 +3,13 @@
 > Status: **validated** · Scope: new "SQL Warehouses" tab (parallel to the four
 > existing cost tabs) · All clouds
 
+> **Post-implementation correction (2026-08-26):** the plan's original claim
+> that DBU is complete cost for all warehouse types is incorrect. Serverless DBU
+> includes infrastructure, but Classic/Pro also incur customer-cloud VM, disk,
+> and network charges. The current rollup does not have a defensible
+> `warehouse_id` attribution key for those charges, so the deployed API/UI labels
+> Classic/Pro values DBU-only and never presents them as complete total cost.
+
 ## Intent
 
 DBSpend360 covers four compute-cost lenses today — Job Clusters, All-Purpose

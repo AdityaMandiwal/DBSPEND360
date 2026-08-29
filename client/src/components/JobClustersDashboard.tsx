@@ -11,7 +11,7 @@ import { DateRange, JobRun } from '@/types/job-spend';
 const JobClustersDashboard = () => {
   // Default to last 30 days as specified in requirements
   const defaultDateRange: DateRange = {
-    start_date: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
+    start_date: format(subDays(new Date(), 29), 'yyyy-MM-dd'),
     end_date: format(new Date(), 'yyyy-MM-dd'),
   };
 
@@ -36,7 +36,7 @@ const JobClustersDashboard = () => {
 
   return (
     <div className="space-y-6">
-      <CoverageBanner tab="job" />
+      <CoverageBanner tab="job" dateRange={dateRange} />
 
       {/* Summary Cards */}
       <SummaryCards dateRange={dateRange} />
@@ -86,6 +86,7 @@ const JobClustersDashboard = () => {
         <JobBreakdownModal
           jobId={selectedJobId}
           runId={selectedRun.run_id}
+          dateRange={dateRange}
           isOpen={isBreakdownModalOpen}
           onClose={handleModalClose}
         />

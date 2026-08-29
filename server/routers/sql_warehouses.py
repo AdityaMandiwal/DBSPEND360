@@ -26,8 +26,8 @@ disambiguate and no 409 path.
 
 import asyncio
 import logging
-from datetime import date
-from typing import Optional
+from datetime import date, timedelta
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -92,9 +92,8 @@ async def get_sql_warehouse_summary(
     Returns the exhaustive three-bucket warehouse-count split (classic + pro +
     serverless == `total_warehouses`) and the matching `$` split
     (`classic_spend` + `pro_spend` + `serverless_spend` == `total_spend`).
-    `total_spend` equals `total_databricks_cost` by construction — DBU is the
-    complete cost for managed compute, so there is no cloud component and no
-    Cloud-vs-DBU KPI.
+    `total_spend` equals tracked DBU. This is complete for Serverless and
+    DBU-only for Classic/Pro until cloud infrastructure can be attributed.
     """
     try:
         _validate_date_range(start_date, end_date)
@@ -126,6 +125,10 @@ async def get_sql_warehouses_grouped(
     ),
     page: int = Query(1, ge=1, description='Page number'),
     per_page: int = Query(50, ge=1, le=1000, description='Items per page'),
+    sort_by: Literal[
+        'total_cost', 'total_databricks_cost', 'active_days', 'warehouse_name'
+    ] = Query('total_cost'),
+    sort_dir: Literal['asc', 'desc'] = Query('desc'),
 ):
     """Get paginated By-Warehouse rollup with a per-day drill-down.
 
@@ -143,6 +146,8 @@ async def get_sql_warehouses_grouped(
             search=search,
             limit=per_page,
             offset=offset,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
         )
     except HTTPException:
         raise
@@ -204,9 +209,7 @@ async def get_sql_warehouse_details(warehouse_id: str):
     except HTTPException:
         raise
     except Exception:
-        logger.exception(
-            'Error retrieving SQL warehouse details for %s', warehouse_id
-        )
+        logger.exception('Error retrieving SQL warehouse details for %s', warehouse_id)
         raise HTTPException(
             status_code=500,
             detail='Failed to retrieve SQL warehouse details',
@@ -214,7 +217,11 @@ async def get_sql_warehouse_details(warehouse_id: str):
 
 
 @router.get('/{warehouse_id}/analyze', response_model=SqlWarehouseAnalysis)
-async def analyze_sql_warehouse(warehouse_id: str):
+async def analyze_sql_warehouse(
+    warehouse_id: str,
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+):
     """Get LLM-powered cost analysis for a SQL warehouse.
 
     Fetches `SqlWarehouseDetails` and the warehouse's cost summary in parallel,
@@ -222,19 +229,29 @@ async def analyze_sql_warehouse(warehouse_id: str):
     prompt (`server.services.llm_service.SQL_WAREHOUSE_ANALYSIS_PROMPT`)
     tailors itself off the `warehouse_type` field with no per-type branching.
 
-    The analysis MUST NOT carry a cloud-cost caveat: DBU is the complete cost
-    for managed-compute warehouses (plan Q4), unlike the Pipeline and Instance
-    Pool tabs. Auto-stop tuning is the warehouse-specific cost signal
-    (`auto_stop_mins > 30` is flagged as idle DBU waste). A cost-summary
-    failure degrades to a config-only analysis rather than a 500; the
-    structured fallback covers LLM failure.
+    The requested window matches the table/modal. When dates are omitted for
+    backward compatibility, the latest 30 inclusive calendar days are used.
+    Classic/Pro analysis must disclose that tracked spend excludes customer
+    cloud infrastructure.
     """
     try:
+        if (start_date is None) != (end_date is None):
+            raise HTTPException(
+                status_code=400,
+                detail='start_date and end_date must be provided together',
+            )
+        resolved_end = end_date or date.today()
+        resolved_start = start_date or (resolved_end - timedelta(days=29))
+        _validate_date_range(resolved_start, resolved_end)
         service = get_databricks_service()
 
         warehouse_details, cost_summary = await asyncio.gather(
             service.get_sql_warehouse_details(warehouse_id),
-            service.get_sql_warehouse_cost_summary(warehouse_id),
+            service.get_sql_warehouse_cost_summary(
+                warehouse_id,
+                start_date=resolved_start,
+                end_date=resolved_end,
+            ),
             return_exceptions=True,
         )
 
@@ -265,14 +282,19 @@ async def analyze_sql_warehouse(warehouse_id: str):
         return SqlWarehouseAnalysis(
             warehouse_id=warehouse_id,
             analysis=analysis,
+            start_date=resolved_start,
+            end_date=resolved_end,
+            cost_basis=(
+                cost_summary.get('cost_basis', warehouse_details.cost_basis)
+                if cost_summary
+                else warehouse_details.cost_basis
+            ),
         )
 
     except HTTPException:
         raise
     except Exception:
-        logger.exception(
-            'Error generating SQL warehouse analysis for %s', warehouse_id
-        )
+        logger.exception('Error generating SQL warehouse analysis for %s', warehouse_id)
         raise HTTPException(
             status_code=500,
             detail='Failed to generate SQL warehouse analysis',

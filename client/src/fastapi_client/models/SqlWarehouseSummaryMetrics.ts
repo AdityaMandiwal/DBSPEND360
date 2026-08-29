@@ -5,9 +5,9 @@
 /**
  * Summary metrics for the SQL Warehouses tab KPI strip.
  *
- * DBU is the complete cost for managed-compute warehouses — no cloud cost
- * fields. The warehouse-count split is exhaustive: classic + pro + serverless
- * == total_warehouses.
+ * `total_spend` is tracked DBU spend. It is complete for Serverless, but
+ * Classic/Pro infrastructure cost is not attributed. The warehouse-count split
+ * is exhaustive: classic + pro + serverless == total_warehouses.
  */
 export type SqlWarehouseSummaryMetrics = {
     total_warehouses: number;
@@ -20,6 +20,8 @@ export type SqlWarehouseSummaryMetrics = {
     serverless_spend: number;
     total_databricks_cost: number;
     date_range_days: number;
+    landed_days?: number;
+    data_through_date?: (string | null);
     dbu_in_non_covered_workspaces?: number;
 };
 

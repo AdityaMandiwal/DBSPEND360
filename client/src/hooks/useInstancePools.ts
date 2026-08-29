@@ -142,14 +142,18 @@ export const useInstancePoolDetails = (poolId: string) => {
 
 // Hook: LLM-powered pool configuration analysis
 // (`/api/instance-pools/{id}/analyze`). Mirrors `useClusterAnalysis`.
-// As of CP8 the analysis includes real pool EC2/EBS cost; the only caveat
-// it carries is that the idle-vs-active VM cost split is not available yet
-// (plan_pool_pipeline_ec2_cost.md §4.5).
-export const useInstancePoolAnalysis = (poolId: string) => {
+// The analysis receives ClusterId-free idle/warm pool cloud cost and must
+// disclose that active pool-backed VM cost remains on the Job or All-Purpose
+// tab.
+export const useInstancePoolAnalysis = (
+  poolId: string,
+  dateRange: DateRange,
+) => {
   return useQuery({
-    queryKey: ['instance-pool-analysis', poolId],
-    queryFn: () => apiClient.getInstancePoolAnalysis(poolId),
+    queryKey: ['instance-pool-analysis', poolId, dateRange],
+    queryFn: () => apiClient.getInstancePoolAnalysis(poolId, dateRange),
     staleTime: ANALYSIS_STALE_TIME_MS,
-    enabled: !!poolId,
+    enabled:
+      !!poolId && canQueryRange(dateRange.start_date, dateRange.end_date),
   });
 };

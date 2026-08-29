@@ -1,8 +1,11 @@
-import { CLOUD_NOT_COVERED_LABEL, resolveCloudCostDisplay } from '@/lib/cloud-coverage-display';
+import {
+  CLOUD_NOT_COVERED_LABEL,
+  resolveCloudCostDisplay,
+} from "@/lib/cloud-coverage-display";
 
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
+const currencyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
@@ -23,14 +26,27 @@ export function CloudCostCell({
 }: CloudCostCellProps) {
   const display = resolveCloudCostDisplay(value, workspaceCovered, missingNote);
 
-  if (display.kind === 'value') {
-    return <span className={className}>{currencyFormatter.format(display.amount)}</span>;
-  }
-
-  if (display.kind === 'not-covered') {
+  if (display.kind === "value") {
     return (
       <span
-        className={`cursor-help font-medium text-amber-700 dark:text-amber-300 ${className ?? ''}`}
+        className={`${display.partial ? "cursor-help text-amber-700 dark:text-amber-300" : ""} ${className ?? ""}`}
+        title={display.note}
+        aria-label={
+          display.note
+            ? `${currencyFormatter.format(display.amount)}. ${display.note}`
+            : undefined
+        }
+      >
+        {currencyFormatter.format(display.amount)}
+        {display.partial ? "*" : ""}
+      </span>
+    );
+  }
+
+  if (display.kind === "not-covered") {
+    return (
+      <span
+        className={`cursor-help font-medium text-amber-700 dark:text-amber-300 ${className ?? ""}`}
         title={display.note}
         aria-label={display.note}
       >
@@ -41,7 +57,7 @@ export function CloudCostCell({
 
   return (
     <span
-      className={`cursor-help text-muted-foreground ${className ?? ''}`}
+      className={`cursor-help text-muted-foreground ${className ?? ""}`}
       title={display.note}
       aria-label={display.note}
     >

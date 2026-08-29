@@ -8,7 +8,7 @@
 // across ALL clusters (not summed across clusters) — see plan §5.2 for
 // why summing would double-count.
 
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -16,10 +16,11 @@ import {
   ChevronRight as ChevronRightIcon,
   Eye,
   Search,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { ErrorState } from '@/components/ui/error-state';
-import { Skeleton } from '@/components/ui/skeleton';
+  ArrowUpDown,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -27,38 +28,48 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { useAllPurposeClustersByUser } from '@/hooks/useAllPurposeClusters';
-import { useDatabricksHost } from '@/hooks/useDatabricksHost';
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { useAllPurposeClustersByUser } from "@/hooks/useAllPurposeClusters";
+import { useDatabricksHost } from "@/hooks/useDatabricksHost";
 import type {
   AllPurposeClusterSpend,
   GroupedAllPurposeUser,
-} from '@/types/all-purpose';
-import type { DateRange } from '@/types/job-spend';
-import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+} from "@/types/all-purpose";
+import type { DateRange } from "@/types/job-spend";
+import { useCloudPlatform } from "@/contexts/CloudPlatformContext";
 import {
   useIsAws,
   useIsSegmentedPlatform,
   AWS_CLOUD_LABEL,
-} from '@/hooks/useCloudGate';
-import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from '@/lib/all-purpose-display';
-import { CloudCostCell } from '@/components/CloudCostCell';
-import { ClusterDetailsModal } from './JobBreakdownModal';
-import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
+} from "@/hooks/useCloudGate";
+import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from "@/lib/all-purpose-display";
+import { HIGH_COST_USD } from "@/lib/utils";
+import { CloudCostCell } from "@/components/CloudCostCell";
+import { ClusterDetailsModal } from "./JobBreakdownModal";
+import { OtherCostBreakdownModal } from "./OtherCostBreakdownModal";
 
 interface AllPurposeUsersTableProps {
   dateRange: DateRange;
   searchTerm: string;
 }
 
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
+const currencyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
 const formatCurrency = (n: number) => currencyFormatter.format(n);
+const formatSegmentCost = (
+  value: number | null | undefined,
+  workspaceCovered: boolean | undefined,
+) => {
+  if (value != null) {
+    return `${formatCurrency(value)}${workspaceCovered === false ? " (partial)" : ""}`;
+  }
+  return workspaceCovered === false ? "Not covered" : "—";
+};
 
 // EC2/EBS cloud cost cell. NULL = unknown / not attributable to this cluster
 // (ran on a pool, or Cost Explorer lag) — render "—" + tooltip, never "$0.00".
@@ -87,23 +98,39 @@ export const AllPurposeUsersTable = ({
   const isSegmentedPlatform = useIsSegmentedPlatform();
   const { data: databricksHost } = useDatabricksHost();
   const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState("total_cost");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-  const [activeClusterModal, setActiveClusterModal] = useState<string | null>(null);
-  const [otherBreakdownCluster, setOtherBreakdownCluster] = useState<string | null>(
+  const [activeClusterModal, setActiveClusterModal] = useState<string | null>(
     null,
   );
+  const [otherBreakdownCluster, setOtherBreakdownCluster] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     setPage(1);
-  }, [searchTerm, dateRange.start_date, dateRange.end_date]);
+  }, [searchTerm, dateRange.start_date, dateRange.end_date, sortBy, sortDir]);
 
-  const { data, isLoading, isFetching, error, refetch } = useAllPurposeClustersByUser({
-    start_date: dateRange.start_date,
-    end_date: dateRange.end_date,
-    search: searchTerm || undefined,
-    page,
-    per_page: PAGE_SIZE,
-  });
+  const toggleSort = (field: string) => {
+    if (sortBy === field) {
+      setSortDir((current) => (current === "desc" ? "asc" : "desc"));
+    } else {
+      setSortBy(field);
+      setSortDir("desc");
+    }
+  };
+
+  const { data, isLoading, isFetching, error, refetch } =
+    useAllPurposeClustersByUser({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+      search: searchTerm || undefined,
+      page,
+      per_page: PAGE_SIZE,
+      sort_by: sortBy,
+      sort_dir: sortDir,
+    });
 
   const isInitialLoading = isLoading && !data;
   const isBackgroundFetching = isFetching && !!data;
@@ -123,7 +150,7 @@ export const AllPurposeUsersTable = ({
 
   const workspaceHost = useMemo(() => {
     if (!databricksHost) return null;
-    return databricksHost.replace(/\/apps\/[^\/]+$/, '');
+    return databricksHost.replace(/\/apps\/[^\/]+$/, "");
   }, [databricksHost]);
 
   // Column count for colspan calcs in skeleton / empty / expanded rows.
@@ -145,29 +172,104 @@ export const AllPurposeUsersTable = ({
           <TableHeader>
             <TableRow>
               <TableHead className="w-10 px-2" />
-              <TableHead className="px-4">User (Owner)</TableHead>
-              <TableHead className="px-4 text-right">Clusters</TableHead>
-              <TableHead className="px-4 text-right">Active Days</TableHead>
+              <TableHead className="px-4">
+                <SortHeader
+                  label="User (Owner)"
+                  field="user_id"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
+              <TableHead className="px-4 text-right">
+                <SortHeader
+                  label="Clusters"
+                  field="cluster_count"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
+              <TableHead className="px-4 text-right">
+                <SortHeader
+                  label="Active Days"
+                  field="user_active_days"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
               {isSegmentedPlatform && (
                 <>
-                  <TableHead className="px-4 text-right">Compute</TableHead>
-                  <TableHead className="px-4 text-right">Storage</TableHead>
-                  <TableHead className="px-4 text-right">Network</TableHead>
+                  <TableHead className="px-4 text-right">
+                    <SortHeader
+                      label="Compute"
+                      field="total_compute_cost"
+                      current={sortBy}
+                      direction={sortDir}
+                      onSort={toggleSort}
+                    />
+                  </TableHead>
+                  <TableHead className="px-4 text-right">
+                    <SortHeader
+                      label="Storage"
+                      field="total_storage_cost"
+                      current={sortBy}
+                      direction={sortDir}
+                      onSort={toggleSort}
+                    />
+                  </TableHead>
+                  <TableHead className="px-4 text-right">
+                    <SortHeader
+                      label="Network"
+                      field="total_network_cost"
+                      current={sortBy}
+                      direction={sortDir}
+                      onSort={toggleSort}
+                    />
+                  </TableHead>
                 </>
               )}
               <TableHead className="px-4 text-right">
-                {isAws
-                  ? AWS_CLOUD_LABEL
-                  : `Total ${cloudConfig?.compute_service || 'Cloud'}`}
+                <SortHeader
+                  label={
+                    isAws
+                      ? AWS_CLOUD_LABEL
+                      : cloudConfig?.compute_display_name || "Cloud Cost"
+                  }
+                  field="total_cloud_cost"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
               </TableHead>
-              <TableHead className="px-4 text-right">DBU</TableHead>
-              <TableHead className="px-4 text-right">Total Cost</TableHead>
+              <TableHead className="px-4 text-right">
+                <SortHeader
+                  label="DBU"
+                  field="total_databricks_cost"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
+              <TableHead className="px-4 text-right">
+                <SortHeader
+                  label="Total Cost"
+                  field="total_cost"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {error ? (
               <TableRow>
-                <TableCell colSpan={columnCount + 1} className="h-24 text-center">
+                <TableCell
+                  colSpan={columnCount + 1}
+                  className="h-24 text-center"
+                >
                   <ErrorState
                     compact
                     message={`Error loading by-user data: ${error.message}`}
@@ -188,7 +290,7 @@ export const AllPurposeUsersTable = ({
             ) : rows.length > 0 ? (
               rows.map((user) => {
                 const isExpanded = expandedRows.has(user.user_id);
-                const isUnknown = user.user_id === '__unknown__';
+                const isUnknown = user.user_id === "__unknown__";
                 return (
                   <Fragment key={user.user_id}>
                     <TableRow className="hover:bg-muted/50">
@@ -199,27 +301,37 @@ export const AllPurposeUsersTable = ({
                           onClick={() => toggleRow(user.user_id)}
                           className="h-8 w-8 p-0"
                           aria-expanded={isExpanded}
-                          aria-label={isExpanded ? 'Collapse row' : 'Expand row'}
+                          aria-label={
+                            isExpanded ? "Collapse row" : "Expand row"
+                          }
                         >
                           {isExpanded ? (
-                            <ChevronDown className="h-4 w-4" aria-hidden="true" />
+                            <ChevronDown
+                              className="h-4 w-4"
+                              aria-hidden="true"
+                            />
                           ) : (
-                            <ChevronRightIcon className="h-4 w-4" aria-hidden="true" />
+                            <ChevronRightIcon
+                              className="h-4 w-4"
+                              aria-hidden="true"
+                            />
                           )}
                         </Button>
                       </TableCell>
                       <TableCell className="px-4 max-w-[280px]">
                         <div
                           className={`text-sm truncate ${
-                            isUnknown ? 'italic text-muted-foreground' : 'font-medium'
+                            isUnknown
+                              ? "italic text-muted-foreground"
+                              : "font-medium"
                           }`}
                           title={
                             isUnknown
-                              ? 'Owner could not be resolved (cluster snapshot missing)'
+                              ? "Owner could not be resolved (cluster snapshot missing)"
                               : user.user_id
                           }
                         >
-                          {isUnknown ? 'Unknown' : user.user_id}
+                          {isUnknown ? "Unknown" : user.user_id}
                         </div>
                       </TableCell>
                       <TableCell className="px-4 text-right">
@@ -235,17 +347,17 @@ export const AllPurposeUsersTable = ({
                           <TableCell className="px-4 text-right font-medium text-blue-600">
                             {user.total_compute_cost != null
                               ? formatCurrency(user.total_compute_cost)
-                              : '—'}
+                              : "—"}
                           </TableCell>
                           <TableCell className="px-4 text-right font-medium text-green-600">
                             {user.total_storage_cost != null
                               ? formatCurrency(user.total_storage_cost)
-                              : '—'}
+                              : "—"}
                           </TableCell>
                           <TableCell className="px-4 text-right font-medium text-amber-600">
                             {user.total_network_cost != null
                               ? formatCurrency(user.total_network_cost)
-                              : '—'}
+                              : "—"}
                           </TableCell>
                         </>
                       )}
@@ -262,7 +374,7 @@ export const AllPurposeUsersTable = ({
                         <div className="font-bold text-lg">
                           {formatCurrency(user.total_cost)}
                         </div>
-                        {user.total_cost > 1000 && (
+                        {user.total_cost > HIGH_COST_USD && (
                           <Badge variant="destructive" className="text-xs">
                             High Cost
                           </Badge>
@@ -282,7 +394,7 @@ export const AllPurposeUsersTable = ({
                             computeLabel={
                               isAws
                                 ? AWS_CLOUD_LABEL
-                                : cloudConfig?.compute_service || 'Cloud'
+                                : cloudConfig?.compute_service || "Cloud"
                             }
                             onSelectCluster={setActiveClusterModal}
                             onSelectOther={setOtherBreakdownCluster}
@@ -295,7 +407,10 @@ export const AllPurposeUsersTable = ({
               })
             ) : (
               <TableRow>
-                <TableCell colSpan={columnCount + 1} className="h-24 text-center">
+                <TableCell
+                  colSpan={columnCount + 1}
+                  className="h-24 text-center"
+                >
                   <div className="text-muted-foreground">
                     No users found for the selected filters.
                   </div>
@@ -309,8 +424,8 @@ export const AllPurposeUsersTable = ({
       {totalCount > 0 && (
         <div className="flex items-center justify-between">
           <div className="text-sm text-muted-foreground">
-            Showing {rows.length} user{rows.length === 1 ? '' : 's'} of {totalCount}{' '}
-            total
+            Showing {rows.length} user{rows.length === 1 ? "" : "s"} of{" "}
+            {totalCount} total
             {searchTerm && ` (filtered by "${searchTerm}")`}
           </div>
 
@@ -328,7 +443,10 @@ export const AllPurposeUsersTable = ({
                 Page {page} of {Math.max(totalPages, 1)}
               </span>
               {isBackgroundFetching && (
-                <span className="text-xs text-muted-foreground" aria-live="polite">
+                <span
+                  className="text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
                   Updating…
                 </span>
               )}
@@ -361,6 +479,7 @@ export const AllPurposeUsersTable = ({
         <OtherCostBreakdownModal
           dateRange={dateRange}
           clusterId={otherBreakdownCluster}
+          clusterKind="all_purpose"
           isOpen
           onClose={() => setOtherBreakdownCluster(null)}
         />
@@ -416,8 +535,7 @@ const UserClusterBreakdown = ({
           .sort((a, b) => b.total_cost - a.total_cost)
           .map((cluster: AllPurposeClusterSpend) => {
             const hasName =
-              !!cluster.cluster_name &&
-              cluster.cluster_name.trim().length > 0;
+              !!cluster.cluster_name && cluster.cluster_name.trim().length > 0;
             const displayName = hasName
               ? cluster.cluster_name!
               : `Cluster ${cluster.cluster_id}`;
@@ -433,7 +551,9 @@ const UserClusterBreakdown = ({
                     className="text-left text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline truncate max-w-[260px]"
                     title={`View details for ${cluster.cluster_id}`}
                   >
-                    <span className={hasName ? '' : 'font-mono'}>{displayName}</span>
+                    <span className={hasName ? "" : "font-mono"}>
+                      {displayName}
+                    </span>
                   </button>
                   <div className="text-xs text-muted-foreground font-mono truncate max-w-[200px]">
                     {workspaceHost ? (
@@ -452,7 +572,7 @@ const UserClusterBreakdown = ({
                   </div>
                   <div className="text-xs text-muted-foreground">
                     {cluster.cluster_active_days} day
-                    {cluster.cluster_active_days === 1 ? '' : 's'}
+                    {cluster.cluster_active_days === 1 ? "" : "s"}
                   </div>
                 </div>
                 <div className="flex items-center space-x-4 shrink-0">
@@ -463,13 +583,25 @@ const UserClusterBreakdown = ({
                   {isSegmentedPlatform ? (
                     <>
                       <div className="text-sm text-blue-600">
-                        Compute: {formatCurrency(cluster.compute_cost ?? 0)}
+                        Compute:{" "}
+                        {formatSegmentCost(
+                          cluster.compute_cost,
+                          cluster.workspace_covered,
+                        )}
                       </div>
                       <div className="text-sm text-green-600">
-                        Storage: {formatCurrency(cluster.storage_cost ?? 0)}
+                        Storage:{" "}
+                        {formatSegmentCost(
+                          cluster.storage_cost,
+                          cluster.workspace_covered,
+                        )}
                       </div>
                       <div className="text-sm text-amber-600">
-                        Network: {formatCurrency(cluster.network_cost ?? 0)}
+                        Network:{" "}
+                        {formatSegmentCost(
+                          cluster.network_cost,
+                          cluster.workspace_covered,
+                        )}
                       </div>
                       {(cluster.other_cost ?? 0) > 0 && (
                         <button
@@ -479,14 +611,14 @@ const UserClusterBreakdown = ({
                           title="Click to view breakdown of unclassified costs"
                           aria-label="View breakdown of unclassified costs"
                         >
-                          Other: {formatCurrency(cluster.other_cost ?? 0)}{' '}
+                          Other: {formatCurrency(cluster.other_cost ?? 0)}{" "}
                           <Search className="h-2.5 w-2.5" aria-hidden="true" />
                         </button>
                       )}
                     </>
                   ) : (
                     <div className="text-sm text-blue-600">
-                      {computeLabel}:{' '}
+                      {computeLabel}:{" "}
                       <CloudCostValue
                         value={cluster.cloud_cost}
                         workspaceCovered={cluster.workspace_covered}
@@ -515,3 +647,30 @@ const UserClusterBreakdown = ({
     </div>
   );
 };
+
+const SortHeader = ({
+  label,
+  field,
+  current,
+  direction,
+  onSort,
+}: {
+  label: string;
+  field: string;
+  current: string;
+  direction: "asc" | "desc";
+  onSort: (field: string) => void;
+}) => (
+  <button
+    type="button"
+    onClick={() => onSort(field)}
+    className="inline-flex items-center gap-1 font-medium hover:text-foreground"
+    aria-label={`Sort by ${label}${current === field ? `, currently ${direction}ending` : ""}`}
+  >
+    {label}
+    <ArrowUpDown
+      className={`h-3.5 w-3.5 ${current === field ? "text-foreground" : "text-muted-foreground"}`}
+      aria-hidden="true"
+    />
+  </button>
+);

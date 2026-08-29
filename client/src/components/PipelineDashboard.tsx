@@ -25,7 +25,7 @@ const PipelineDashboard = () => {
   // Match the other three tabs' default window (last 30 days) so users
   // pivoting between tabs see consistent scope until they pick a preset.
   const defaultDateRange: DateRange = {
-    start_date: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
+    start_date: format(subDays(new Date(), 29), 'yyyy-MM-dd'),
     end_date: format(new Date(), 'yyyy-MM-dd'),
   };
 
@@ -45,7 +45,7 @@ const PipelineDashboard = () => {
 
   return (
     <div className="space-y-6">
-      <CoverageBanner tab="pipeline" />
+      <CoverageBanner tab="pipeline" dateRange={dateRange} />
       <PipelineSummaryCards
         dateRange={dateRange}
         selectedWorkloads={selectedWorkloads}
@@ -78,20 +78,18 @@ const PipelineDashboard = () => {
           </p>
           <p className="text-xs text-muted-foreground mt-2">
             Databricks DBU is list price — it excludes account-level discounts
-            (list ≠ your invoice). Classic pipelines also show their EC2/EBS VM
-            cost (from AWS Cost Explorer, keyed by ClusterId), included in Total
-            Cost; serverless DBU already bundles infrastructure, so it has no
-            separate VM line and shows "—". Classic pipelines on instance pools
-            may also appear under the Instance Pools tab — the same compute is
-            shown through different lenses, so the tabs are not meant to sum.
+            (list ≠ your invoice). Total Cost always includes known DBU,
+            including DBU from workspaces outside cloud billing coverage, plus
+            cloud infrastructure cost where available. Cloud cost can be
+            unavailable or partial for non-covered workspaces. Serverless DBU
+            already bundles infrastructure, so it has no separate VM line and
+            shows "—". Classic pipelines on instance pools may also appear
+            under the Instance Pools tab — the same compute is shown through
+            different lenses, so the tabs are not meant to sum.
           </p>
         </CardHeader>
         <CardContent>
-          {/* Remount the table on any filter change (date range / committed
-              search / workload chip selection) so pagination + expansion reset
-              cleanly in one render pass (plan §3.2 / §3.3). */}
           <PipelinesTable
-            key={`${dateRange.start_date}|${dateRange.end_date}|${searchTerm}|${selectedWorkloads.join(',')}`}
             dateRange={dateRange}
             searchTerm={searchTerm}
             selectedWorkloads={selectedWorkloads}

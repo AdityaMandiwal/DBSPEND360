@@ -23,7 +23,6 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useGroupedJobSpends } from '@/hooks/useGroupedJobSpends';
 import { CloudCostCell } from '@/components/CloudCostCell';
-import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from '@/lib/all-purpose-display';
 import { useJobRuns } from '@/hooks/useJobRuns';
 import { useFeatures } from '@/hooks/useFeatures';
 import { useDatabricksHost } from '@/hooks/useDatabricksHost';
@@ -41,6 +40,18 @@ const formatRunCurrency = (amount: number) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(amount);
+
+const JOB_CLOUD_MISSING_NOTE =
+  'Cloud cost is not attributed to this job cluster. The cluster may be pool-backed, ' +
+  "or its cloud billing data may not have landed yet.";
+
+const formatSegmentCost = (
+  value: number | null | undefined,
+  workspaceCovered: boolean | undefined,
+) => {
+  if (workspaceCovered === false) return 'Not covered';
+  return value == null ? '—' : formatRunCurrency(value);
+};
 
 // Run start/end are calendar dates; `formatCalendarDate` anchors them to local
 // midnight so display never rolls back a day on negative-UTC zones (plan §3.4).
@@ -64,9 +75,10 @@ interface ExpandedJobRunsProps {
 // grouped list query no longer embeds them), so this row shows its own loading
 // and error states while the request is in flight.
 // Initial number of runs fetched on expand; can be raised on demand via the
-// "Show all" control below. The /api/job/{id}/runs endpoint caps at 100.
+// "Show all" control below. The endpoint's defensive cap is high enough for
+// normal operational histories while preventing an unbounded response.
 const RUNS_INITIAL_LIMIT = 10;
-const RUNS_MAX_LIMIT = 100;
+const RUNS_MAX_LIMIT = 5000;
 
 const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, isSegmentedPlatform, onRunClick }: ExpandedJobRunsProps) => {
   const [limit, setLimit] = useState(RUNS_INITIAL_LIMIT);
@@ -126,25 +138,30 @@ const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, isSegmentedPla
                       <div className="text-sm text-muted-foreground">
                         {formatRunRange(run.start_date, run.end_date)}
                       </div>
-                      <div className="text-sm text-muted-foreground max-w-[150px] truncate">
-                        {run.cluster_id}
+                      <div
+                        className="text-sm text-muted-foreground max-w-[220px] truncate"
+                        title={(run.cluster_ids?.length ? run.cluster_ids : [run.cluster_id]).join(', ')}
+                      >
+                        {(run.cluster_ids?.length ?? 0) > 1
+                          ? `${run.cluster_ids.length} clusters`
+                          : run.cluster_id}
                       </div>
                     </div>
                     <div className="flex items-center space-x-4">
                       {isSegmentedPlatform ? (
                         <>
                           <div className="text-sm text-blue-600">
-                            Compute: {formatRunCurrency(run.compute_cost ?? 0)}
+                            Compute: {formatSegmentCost(run.compute_cost, run.workspace_covered)}
                           </div>
                           <div className="text-sm text-green-600">
-                            Storage: {formatRunCurrency(run.storage_cost ?? 0)}
+                            Storage: {formatSegmentCost(run.storage_cost, run.workspace_covered)}
                           </div>
                           <div className="text-sm text-amber-600">
-                            Network: {formatRunCurrency(run.network_cost ?? 0)}
+                            Network: {formatSegmentCost(run.network_cost, run.workspace_covered)}
                           </div>
-                          {(run.other_cost ?? 0) > 0 && (
+                          {run.other_cost != null && run.other_cost > 0 && (
                             <div className="text-sm text-muted-foreground">
-                              Other: {formatRunCurrency(run.other_cost ?? 0)}
+                              Other: {formatSegmentCost(run.other_cost, run.workspace_covered)}
                             </div>
                           )}
                         </>
@@ -154,6 +171,7 @@ const ExpandedJobRuns = ({ job, dateRange, colSpan, computeLabel, isSegmentedPla
                           <CloudCostCell
                             value={run.cloud_cost}
                             workspaceCovered={run.workspace_covered}
+                            missingNote={JOB_CLOUD_MISSING_NOTE}
                           />
                         </div>
                       )}
@@ -485,7 +503,7 @@ export const GroupedJobTable = ({ dateRange, jobFilter, onRunClick, onFetchingCh
           <CloudCostCell
             value={row.original.total_cloud_cost}
             workspaceCovered={row.original.workspace_covered}
-            missingNote={ALL_PURPOSE_CLOUD_MISSING_NOTE}
+            missingNote={JOB_CLOUD_MISSING_NOTE}
           />
         </div>
       ),

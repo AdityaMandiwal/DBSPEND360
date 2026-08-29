@@ -51,6 +51,21 @@ export const warehouseTypeLabel = (type?: string | null): string => {
   }
 };
 
+export const warehouseCostBasis = (
+  type?: string | null,
+): "full" | "dbu_only" | "unknown" => {
+  const normalized = type?.trim().toUpperCase();
+  if (!normalized) return "unknown";
+  if (normalized === "CLASSIC" || normalized.includes("PRO")) return "dbu_only";
+  return "full";
+};
+
+export const warehouseCostBasisLabel = (basis: string): string => {
+  if (basis === "full") return "Complete cost";
+  if (basis === "dbu_only") return "DBU only";
+  return "Cost basis unknown";
+};
+
 // NaN-safe USD formatter. A missing/undefined numeric field would otherwise
 // render "$NaN"; guard so non-finite values fall back to $0.00.
 const usdFormatter = new Intl.NumberFormat("en-US", {

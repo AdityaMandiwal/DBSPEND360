@@ -1,6 +1,6 @@
 # DBSpend360 Data Model
 
-The entities, grain, keys, and relationships behind DBSpend360's four cost tabs — the map you need to understand the data in five minutes.
+The entities, grain, keys, and relationships behind DBSpend360's five cost tabs — the map you need to understand the data in five minutes.
 
 > **Need the deep detail?** Full column catalog, ETL DAG, request flow, and column-level lineage live in [`data_model_reference.md`](./data_model_reference.md).
 
@@ -8,7 +8,7 @@ The entities, grain, keys, and relationships behind DBSpend360's four cost tabs 
 
 ## 1. What the model represents
 
-DBSpend360 answers one question four ways: **how much did our Databricks compute cost, and where did the money go?**
+DBSpend360 answers one question five ways: **how much did our Databricks compute cost, and where did the money go?**
 
 Each tab is a **cost lens** on the same underlying compute — one rollup table per lens:
 
@@ -18,13 +18,18 @@ Each tab is a **cost lens** on the same underlying compute — one rollup table 
 | **All-Purpose Clusters** | How much do interactive clusters cost, and who used them? | Cluster → User | `dbspend360_total_all_purpose_spends` |
 | **Instance Pools** | How much do shared VM pools cost, including idle capacity? | Pool → Cluster | `dbspend360_total_pool_spends` |
 | **Pipeline Compute** | How much do DLT / pipeline workloads cost? | Pipeline → Day | `dbspend360_total_pipeline_spends` |
+| **SQL Warehouses** | How much DBU spend is associated with each SQL warehouse? | Warehouse → Day | `dbspend360_total_sql_warehouse_spends` |
 
-Every tab combines two cost types:
+The model tracks:
 
 - **Cloud cost** — VM infrastructure billed by AWS, Azure, or GCP
 - **Databricks cost** — DBU charges from `system.billing.usage`
 
-> **Read this once:** The four tabs **overlap by design** (see [§4](#4-cross-tab-cost-model)). The same compute can appear in multiple tabs. Tab totals do **not** sum to your cloud bill.
+SQL Warehouse Serverless DBU includes infrastructure. Classic/Pro warehouse
+rows are DBU-only because customer-cloud infrastructure is not yet attributable
+to `warehouse_id`.
+
+> **Read this once:** The five tabs **overlap by design** (see [§4](#4-cross-tab-cost-model)). The same compute can appear in multiple tabs. Tab totals do **not** sum to your cloud bill.
 
 **Schema location:** `{catalog}.{schema}` — e.g. `dbspend360.03apr` (set in `config/app.dev.config`).
 
@@ -32,7 +37,7 @@ Every tab combines two cost types:
 
 ## 2. How the pieces fit together
 
-The app reads **only the four green rollup tables**. Everything upstream is ETL plumbing (detailed in the [reference](./data_model_reference.md#2-etl-pipeline-dag)).
+The app reads **only the five green rollup tables**. Everything upstream is ETL plumbing (detailed in the [reference](./data_model_reference.md#2-etl-pipeline-dag)).
 
 ```mermaid
 flowchart LR
@@ -51,22 +56,25 @@ flowchart LR
         T_AP["total_all_purpose_spends"]
         T_POOL["total_pool_spends"]
         T_PL["total_pipeline_spends"]
+        T_WH["total_sql_warehouse_spends"]
     end
 
     subgraph App["DBSpend360 App"]
         API["FastAPI"]
-        UI["React (4 tabs)"]
+        UI["React (5 tabs)"]
     end
 
     SYS --> DBU
     CLOUD --> CCE
     DBU & CCE --> T_JOB & T_AP & T_POOL & T_PL
-    T_JOB & T_AP & T_POOL & T_PL --> API --> UI
+    DBU --> T_WH
+    T_JOB & T_AP & T_POOL & T_PL & T_WH --> API --> UI
 
     style T_JOB fill:#dcfce7
     style T_AP fill:#dcfce7
     style T_POOL fill:#dcfce7
     style T_PL fill:#dcfce7
+    style T_WH fill:#dcfce7
 ```
 
 ### Tab → table → API mapping
@@ -77,10 +85,11 @@ flowchart LR
 | All-Purpose Clusters | `all_purpose_table_name` | `dbspend360_total_all_purpose_spends` | `server/routers/all_purpose.py` | `AllPurposeDashboard.tsx` |
 | Instance Pools | `pool_table_name` | `dbspend360_total_pool_spends` | `server/routers/instance_pools.py` | `InstancePoolsDashboard.tsx` |
 | Pipeline Compute | `pipeline_table_name` | `dbspend360_total_pipeline_spends` | `server/routers/pipelines.py` | `PipelineDashboard.tsx` |
+| SQL Warehouses | `sql_warehouse_table_name` | `dbspend360_total_sql_warehouse_spends` | `server/routers/sql_warehouses.py` | `SqlWarehousesDashboard.tsx` |
 
 ---
 
-## 3. The four entities
+## 3. The five entities
 
 Each tab has one rollup table with a distinct **grain** (the unique key). The ER diagrams below show the *conceptual* entities and how they relate — physically, each tab is a **single denormalized rollup table**, one row per grain, not the multiple joined tables the diagram might suggest. Full column lists are in the [reference catalog](./data_model_reference.md#1-complete-table-catalog).
 
@@ -171,8 +180,11 @@ erDiagram
         string pipeline_id PK
         date usage_date PK
         string billing_origin_product PK
+        float databricks_cost
+        float cloud_cost "nullable"
         float total_cost
         string compute_mode
+        boolean workspace_covered
     }
     PIPELINE {
         string pipeline_id PK
@@ -182,13 +194,34 @@ erDiagram
     }
 ```
 
-DLT pipelines and related workloads (`dlt_pipeline_id IS NOT NULL`). `compute_mode` is `serverless` (DBU only), `classic` (has cloud cost), or `mixed`. **UI:** Pipeline → daily spend breakdown.
+DLT pipelines and related workloads (`dlt_pipeline_id IS NOT NULL`). The DBU
+staging grain also includes `cluster_id`; the rollup removes it after joining
+classic cloud cost on cluster, date, and currency and allocating that cloud
+cost by pipeline/product DBU share. `compute_mode` is `serverless`, `classic`,
+or `mixed`. Serverless is detected from any of three signals: a NULL cluster,
+a `SERVERLESS` SKU, or a serverless-only product (`MODEL_SERVING`,
+`VECTOR_SEARCH`, `AI_FUNCTIONS`). **UI:** Pipeline → daily spend breakdown.
+
+Pipeline totals include known DBU spend from every workspace. For a workspace
+outside the configured cloud-billing scope, `workspace_covered=false`,
+`cloud_cost` remains unavailable, and `total_cost` still includes the DBU
+amount. Coverage is therefore a completeness disclosure, not a filter on
+pipeline counts, workload breakdowns, mode buckets, Top-N rows, or totals.
+
+### 3.5 SQL Warehouses — grain `(warehouse_id, usage_date)`
+
+SQL-origin billing rows with a non-null `usage_metadata.warehouse_id` are
+list-priced and aggregated per warehouse-day. Metadata is denormalized from the
+latest `system.compute.warehouses` snapshot. `workspace_covered` controls the
+headline DBU population. Serverless rows have `cost_basis=full`; Classic/Pro are
+presented as `dbu_only` because their separate customer-cloud infrastructure is
+not attributed by the current rollup.
 
 ---
 
 ## 4. Cross-tab cost model
 
-The four tabs are **intentionally overlapping lenses**, not disjoint slices of your bill.
+The five tabs are **intentionally overlapping lenses**, not disjoint slices of your bill.
 
 ```mermaid
 flowchart LR
@@ -227,6 +260,11 @@ Every rollup table shares a common cost vocabulary:
 | `currency` | ISO currency code | All tabs |
 
 **Pool note:** `compute/storage/network/other_cost` are `NULL` for pool cloud cost — the pool explorer writes a single `cloud_cost` bucket to keep pool and cluster cloud costs disjoint.
+
+**Pipeline note:** classic pipeline `cloud_cost` comes from the cluster cloud
+explorer and is DBU-share allocated; serverless and uncovered/unattributable
+rows keep it `NULL`. `workspace_covered` states whether that cloud component is
+expected to be available, while DBU spend remains included regardless.
 
 ---
 

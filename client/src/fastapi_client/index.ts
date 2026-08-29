@@ -18,6 +18,7 @@ export type { CostBreakdown } from './models/CostBreakdown';
 export type { CoverageSummaryResponse } from './models/CoverageSummaryResponse';
 export type { ExcludedDbuByTab } from './models/ExcludedDbuByTab';
 export type { ExcludedWorkspace } from './models/ExcludedWorkspace';
+export type { ExcludedWorkspaceCountByTab } from './models/ExcludedWorkspaceCountByTab';
 export type { FeatureFlagsResponse } from './models/FeatureFlagsResponse';
 export type { GroupedAllPurposeCluster } from './models/GroupedAllPurposeCluster';
 export type { GroupedAllPurposeUser } from './models/GroupedAllPurposeUser';

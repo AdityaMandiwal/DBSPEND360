@@ -14,7 +14,7 @@
 //
 // See plan §4.1 / CP10 (`docs/plan_all_purpose_clusters_tab.md`).
 
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -22,10 +22,11 @@ import {
   ChevronRight as ChevronRightIcon,
   Eye,
   Search,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { ErrorState } from '@/components/ui/error-state';
-import { Skeleton } from '@/components/ui/skeleton';
+  ArrowUpDown,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -33,26 +34,26 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { useAllPurposeClustersByCluster } from '@/hooks/useAllPurposeClusters';
-import { useDatabricksHost } from '@/hooks/useDatabricksHost';
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { useAllPurposeClustersByCluster } from "@/hooks/useAllPurposeClusters";
+import { useDatabricksHost } from "@/hooks/useDatabricksHost";
 import type {
   AllPurposeUserSpend,
   GroupedAllPurposeCluster,
-} from '@/types/all-purpose';
-import type { DateRange } from '@/types/job-spend';
-import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+} from "@/types/all-purpose";
+import type { DateRange } from "@/types/job-spend";
+import { useCloudPlatform } from "@/contexts/CloudPlatformContext";
 import {
   useIsAws,
   useIsSegmentedPlatform,
   AWS_CLOUD_LABEL,
-} from '@/hooks/useCloudGate';
-import { formatCalendarDate } from '@/lib/utils';
-import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from '@/lib/all-purpose-display';
-import { CloudCostCell } from '@/components/CloudCostCell';
-import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
-import { ClusterDetailsModal } from './JobBreakdownModal';
+} from "@/hooks/useCloudGate";
+import { formatCalendarDate, HIGH_COST_USD } from "@/lib/utils";
+import { ALL_PURPOSE_CLOUD_MISSING_NOTE } from "@/lib/all-purpose-display";
+import { CloudCostCell } from "@/components/CloudCostCell";
+import { OtherCostBreakdownModal } from "./OtherCostBreakdownModal";
+import { ClusterDetailsModal } from "./JobBreakdownModal";
 
 interface AllPurposeClustersTableProps {
   dateRange: DateRange;
@@ -70,60 +71,69 @@ type AttributionBadge = {
 
 const ATTRIBUTION_BADGES: Record<string, AttributionBadge> = {
   SINGLE_USER: {
-    label: 'Dedicated',
+    label: "Dedicated",
     className:
-      'bg-green-100 text-green-700 hover:bg-green-100 dark:bg-green-500/15 dark:text-green-300 dark:hover:bg-green-500/15',
+      "bg-green-100 text-green-700 hover:bg-green-100 dark:bg-green-500/15 dark:text-green-300 dark:hover:bg-green-500/15",
     tooltip:
-      'Single-user cluster — only the owner runs workloads here, so cost attribution is exact.',
+      "Single-user cluster — only the owner runs workloads here, so cost attribution is exact.",
   },
   USER_ISOLATION: {
-    label: 'Shared',
+    label: "Shared",
     className:
-      'bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/15',
+      "bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/15",
     tooltip:
-      'Shared cluster — multiple users may run on it, but cost rolls up to the owner. Attribution is approximate.',
+      "Shared cluster — multiple users may run on it, but cost rolls up to the owner. Attribution is approximate.",
   },
   LEGACY_PASSTHROUGH: {
-    label: 'Legacy',
+    label: "Legacy",
     className:
-      'bg-gray-100 text-gray-700 hover:bg-gray-100 dark:bg-gray-500/15 dark:text-gray-300 dark:hover:bg-gray-500/15',
-    tooltip: 'Legacy access mode. Attribution is approximate.',
+      "bg-gray-100 text-gray-700 hover:bg-gray-100 dark:bg-gray-500/15 dark:text-gray-300 dark:hover:bg-gray-500/15",
+    tooltip: "Legacy access mode. Attribution is approximate.",
   },
   LEGACY_SINGLE_USER: {
-    label: 'Legacy',
+    label: "Legacy",
     className:
-      'bg-gray-100 text-gray-700 hover:bg-gray-100 dark:bg-gray-500/15 dark:text-gray-300 dark:hover:bg-gray-500/15',
-    tooltip: 'Legacy single-user access mode. Attribution is approximate.',
+      "bg-gray-100 text-gray-700 hover:bg-gray-100 dark:bg-gray-500/15 dark:text-gray-300 dark:hover:bg-gray-500/15",
+    tooltip: "Legacy single-user access mode. Attribution is approximate.",
   },
   LEGACY_TABLE_ACL: {
-    label: 'Legacy',
+    label: "Legacy",
     className:
-      'bg-gray-100 text-gray-700 hover:bg-gray-100 dark:bg-gray-500/15 dark:text-gray-300 dark:hover:bg-gray-500/15',
-    tooltip: 'Legacy table ACL access mode. Attribution is approximate.',
+      "bg-gray-100 text-gray-700 hover:bg-gray-100 dark:bg-gray-500/15 dark:text-gray-300 dark:hover:bg-gray-500/15",
+    tooltip: "Legacy table ACL access mode. Attribution is approximate.",
   },
   NONE: {
-    label: 'Legacy',
+    label: "Legacy",
     className:
-      'bg-gray-100 text-gray-700 hover:bg-gray-100 dark:bg-gray-500/15 dark:text-gray-300 dark:hover:bg-gray-500/15',
-    tooltip: 'No security mode set. Attribution is approximate.',
+      "bg-gray-100 text-gray-700 hover:bg-gray-100 dark:bg-gray-500/15 dark:text-gray-300 dark:hover:bg-gray-500/15",
+    tooltip: "No security mode set. Attribution is approximate.",
   },
 };
 
 const UNKNOWN_BADGE: AttributionBadge = {
-  label: 'Unknown',
+  label: "Unknown",
   className:
-    'bg-muted text-muted-foreground hover:bg-muted dark:bg-muted/40 dark:text-muted-foreground',
+    "bg-muted text-muted-foreground hover:bg-muted dark:bg-muted/40 dark:text-muted-foreground",
   tooltip:
-    'Security mode unknown — cluster snapshot may be missing. Attribution is approximate.',
+    "Security mode unknown — cluster snapshot may be missing. Attribution is approximate.",
 };
 
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
+const currencyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
 const formatCurrency = (amount: number) => currencyFormatter.format(amount);
+const formatSegmentCost = (
+  value: number | null | undefined,
+  workspaceCovered: boolean | undefined,
+) => {
+  if (value != null) {
+    return `${formatCurrency(value)}${workspaceCovered === false ? " (partial)" : ""}`;
+  }
+  return workspaceCovered === false ? "Not covered" : "—";
+};
 
 // EC2/EBS cloud cost cell — delegates to shared CloudCostCell.
 const CloudCostValue = ({
@@ -155,26 +165,42 @@ export const AllPurposeClustersTable = ({
   const isSegmentedPlatform = useIsSegmentedPlatform();
   const { data: databricksHost } = useDatabricksHost();
   const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState("total_cost");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-  const [otherBreakdownCluster, setOtherBreakdownCluster] = useState<string | null>(
+  const [otherBreakdownCluster, setOtherBreakdownCluster] = useState<
+    string | null
+  >(null);
+  const [activeClusterModal, setActiveClusterModal] = useState<string | null>(
     null,
   );
-  const [activeClusterModal, setActiveClusterModal] = useState<string | null>(null);
 
   // Reset to page 1 when the user changes filters so they don't land on an
   // out-of-range page after the result set shrinks. Same guard
   // `GroupedJobTable` uses for jobFilter / date range.
   useEffect(() => {
     setPage(1);
-  }, [searchTerm, dateRange.start_date, dateRange.end_date]);
+  }, [searchTerm, dateRange.start_date, dateRange.end_date, sortBy, sortDir]);
 
-  const { data, isLoading, isFetching, error, refetch } = useAllPurposeClustersByCluster({
-    start_date: dateRange.start_date,
-    end_date: dateRange.end_date,
-    search: searchTerm || undefined,
-    page,
-    per_page: PAGE_SIZE,
-  });
+  const toggleSort = (field: string) => {
+    if (sortBy === field) {
+      setSortDir((current) => (current === "desc" ? "asc" : "desc"));
+    } else {
+      setSortBy(field);
+      setSortDir("desc");
+    }
+  };
+
+  const { data, isLoading, isFetching, error, refetch } =
+    useAllPurposeClustersByCluster({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+      search: searchTerm || undefined,
+      page,
+      per_page: PAGE_SIZE,
+      sort_by: sortBy,
+      sort_dir: sortDir,
+    });
 
   const isInitialLoading = isLoading && !data;
   const isBackgroundFetching = isFetching && !!data;
@@ -196,11 +222,11 @@ export const AllPurposeClustersTable = ({
     if (!databricksHost) return null;
     // Strip any `/apps/<name>` suffix that's present in deployed
     // environments — the cluster URL lives at the workspace root.
-    return databricksHost.replace(/\/apps\/[^\/]+$/, '');
+    return databricksHost.replace(/\/apps\/[^\/]+$/, "");
   }, [databricksHost]);
 
   const clusterUrl = (clusterId: string) =>
-    workspaceHost ? `${workspaceHost}/compute/clusters/${clusterId}` : '#';
+    workspaceHost ? `${workspaceHost}/compute/clusters/${clusterId}` : "#";
 
   // Column count for colspan calcs in skeleton / empty / expanded rows.
   // The segmented Compute/Storage/Network trio renders only for Azure/GCP
@@ -221,29 +247,104 @@ export const AllPurposeClustersTable = ({
           <TableHeader>
             <TableRow>
               <TableHead className="w-10 px-2" />
-              <TableHead className="px-4">Cluster</TableHead>
-              <TableHead className="px-4">Owner</TableHead>
-              <TableHead className="px-4 text-right">Active Days</TableHead>
+              <TableHead className="px-4">
+                <SortHeader
+                  label="Cluster"
+                  field="cluster_id"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
+              <TableHead className="px-4">
+                <SortHeader
+                  label="Owner"
+                  field="owner_user_id"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
+              <TableHead className="px-4 text-right">
+                <SortHeader
+                  label="Active Days"
+                  field="active_days"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
               {isSegmentedPlatform && (
                 <>
-                  <TableHead className="px-4 text-right">Compute</TableHead>
-                  <TableHead className="px-4 text-right">Storage</TableHead>
-                  <TableHead className="px-4 text-right">Network</TableHead>
+                  <TableHead className="px-4 text-right">
+                    <SortHeader
+                      label="Compute"
+                      field="total_compute_cost"
+                      current={sortBy}
+                      direction={sortDir}
+                      onSort={toggleSort}
+                    />
+                  </TableHead>
+                  <TableHead className="px-4 text-right">
+                    <SortHeader
+                      label="Storage"
+                      field="total_storage_cost"
+                      current={sortBy}
+                      direction={sortDir}
+                      onSort={toggleSort}
+                    />
+                  </TableHead>
+                  <TableHead className="px-4 text-right">
+                    <SortHeader
+                      label="Network"
+                      field="total_network_cost"
+                      current={sortBy}
+                      direction={sortDir}
+                      onSort={toggleSort}
+                    />
+                  </TableHead>
                 </>
               )}
               <TableHead className="px-4 text-right">
-                {isAws
-                  ? AWS_CLOUD_LABEL
-                  : `Total ${cloudConfig?.compute_service || 'Cloud'}`}
+                <SortHeader
+                  label={
+                    isAws
+                      ? AWS_CLOUD_LABEL
+                      : cloudConfig?.compute_display_name || "Cloud Cost"
+                  }
+                  field="total_cloud_cost"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
               </TableHead>
-              <TableHead className="px-4 text-right">DBU</TableHead>
-              <TableHead className="px-4 text-right">Total Cost</TableHead>
+              <TableHead className="px-4 text-right">
+                <SortHeader
+                  label="DBU"
+                  field="total_databricks_cost"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
+              <TableHead className="px-4 text-right">
+                <SortHeader
+                  label="Total Cost"
+                  field="total_cost"
+                  current={sortBy}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                />
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {error ? (
               <TableRow>
-                <TableCell colSpan={columnCount + 1} className="h-24 text-center">
+                <TableCell
+                  colSpan={columnCount + 1}
+                  className="h-24 text-center"
+                >
                   <ErrorState
                     compact
                     message={`Error loading all-purpose cluster data: ${error.message}`}
@@ -266,11 +367,12 @@ export const AllPurposeClustersTable = ({
                 const isExpanded = expandedRows.has(cluster.cluster_id);
                 const badge = pickAttributionBadge(cluster.data_security_mode);
                 const hasName =
-                  !!cluster.cluster_name && cluster.cluster_name.trim().length > 0;
+                  !!cluster.cluster_name &&
+                  cluster.cluster_name.trim().length > 0;
                 const displayName = hasName
                   ? cluster.cluster_name!
                   : `Cluster ${cluster.cluster_id}`;
-                const isUnknownOwner = cluster.owner_user_id === '__unknown__';
+                const isUnknownOwner = cluster.owner_user_id === "__unknown__";
                 return (
                   <Fragment key={cluster.cluster_id}>
                     <TableRow className="hover:bg-muted/50">
@@ -281,23 +383,33 @@ export const AllPurposeClustersTable = ({
                           onClick={() => toggleRow(cluster.cluster_id)}
                           className="h-8 w-8 p-0"
                           aria-expanded={isExpanded}
-                          aria-label={isExpanded ? 'Collapse row' : 'Expand row'}
+                          aria-label={
+                            isExpanded ? "Collapse row" : "Expand row"
+                          }
                         >
                           {isExpanded ? (
-                            <ChevronDown className="h-4 w-4" aria-hidden="true" />
+                            <ChevronDown
+                              className="h-4 w-4"
+                              aria-hidden="true"
+                            />
                           ) : (
-                            <ChevronRightIcon className="h-4 w-4" aria-hidden="true" />
+                            <ChevronRightIcon
+                              className="h-4 w-4"
+                              aria-hidden="true"
+                            />
                           )}
                         </Button>
                       </TableCell>
                       <TableCell className="px-4 max-w-[260px]">
                         <button
                           type="button"
-                          onClick={() => setActiveClusterModal(cluster.cluster_id)}
+                          onClick={() =>
+                            setActiveClusterModal(cluster.cluster_id)
+                          }
                           className="text-left truncate font-medium text-blue-600 hover:text-blue-800 hover:underline"
                           title={`View details for ${cluster.cluster_id}`}
                         >
-                          <span className={hasName ? '' : 'font-mono'}>
+                          <span className={hasName ? "" : "font-mono"}>
                             {displayName}
                           </span>
                         </button>
@@ -320,15 +432,15 @@ export const AllPurposeClustersTable = ({
                       <TableCell className="px-4 max-w-[220px]">
                         <div
                           className={`text-sm truncate ${
-                            isUnknownOwner ? 'italic text-muted-foreground' : ''
+                            isUnknownOwner ? "italic text-muted-foreground" : ""
                           }`}
                           title={
                             isUnknownOwner
-                              ? 'Owner could not be resolved (snapshot row missing)'
+                              ? "Owner could not be resolved (snapshot row missing)"
                               : cluster.owner_user_id
                           }
                         >
-                          {isUnknownOwner ? 'Unknown' : cluster.owner_user_id}
+                          {isUnknownOwner ? "Unknown" : cluster.owner_user_id}
                         </div>
                         <div className="mt-1">
                           <Badge
@@ -348,17 +460,17 @@ export const AllPurposeClustersTable = ({
                           <TableCell className="px-4 text-right font-medium text-blue-600">
                             {cluster.total_compute_cost != null
                               ? formatCurrency(cluster.total_compute_cost)
-                              : '—'}
+                              : "—"}
                           </TableCell>
                           <TableCell className="px-4 text-right font-medium text-green-600">
                             {cluster.total_storage_cost != null
                               ? formatCurrency(cluster.total_storage_cost)
-                              : '—'}
+                              : "—"}
                           </TableCell>
                           <TableCell className="px-4 text-right font-medium text-amber-600">
                             {cluster.total_network_cost != null
                               ? formatCurrency(cluster.total_network_cost)
-                              : '—'}
+                              : "—"}
                           </TableCell>
                         </>
                       )}
@@ -381,8 +493,13 @@ export const AllPurposeClustersTable = ({
                               title="Click to view breakdown of unclassified costs"
                               aria-label="View breakdown of unclassified costs"
                             >
-                              (+{formatCurrency(cluster.total_other_cost ?? 0)}{' '}
-                              other <Search className="h-2.5 w-2.5" aria-hidden="true" />)
+                              (+{formatCurrency(cluster.total_other_cost ?? 0)}{" "}
+                              other{" "}
+                              <Search
+                                className="h-2.5 w-2.5"
+                                aria-hidden="true"
+                              />
+                              )
                             </button>
                           )}
                       </TableCell>
@@ -393,7 +510,7 @@ export const AllPurposeClustersTable = ({
                         <div className="font-bold text-lg">
                           {formatCurrency(cluster.total_cost)}
                         </div>
-                        {cluster.total_cost > 1000 && (
+                        {cluster.total_cost > HIGH_COST_USD && (
                           <Badge variant="destructive" className="text-xs">
                             High Cost
                           </Badge>
@@ -412,7 +529,7 @@ export const AllPurposeClustersTable = ({
                             computeLabel={
                               isAws
                                 ? AWS_CLOUD_LABEL
-                                : cloudConfig?.compute_service || 'Cloud'
+                                : cloudConfig?.compute_service || "Cloud"
                             }
                             onOpenDetails={() =>
                               setActiveClusterModal(cluster.cluster_id)
@@ -426,7 +543,10 @@ export const AllPurposeClustersTable = ({
               })
             ) : (
               <TableRow>
-                <TableCell colSpan={columnCount + 1} className="h-24 text-center">
+                <TableCell
+                  colSpan={columnCount + 1}
+                  className="h-24 text-center"
+                >
                   <div className="text-muted-foreground">
                     No all-purpose clusters found for the selected filters.
                   </div>
@@ -440,7 +560,7 @@ export const AllPurposeClustersTable = ({
       {totalCount > 0 && (
         <div className="flex items-center justify-between">
           <div className="text-sm text-muted-foreground">
-            Showing {rows.length} cluster{rows.length === 1 ? '' : 's'} of{' '}
+            Showing {rows.length} cluster{rows.length === 1 ? "" : "s"} of{" "}
             {totalCount} total
             {searchTerm && ` (filtered by "${searchTerm}")`}
           </div>
@@ -459,7 +579,10 @@ export const AllPurposeClustersTable = ({
                 Page {page} of {Math.max(totalPages, 1)}
               </span>
               {isBackgroundFetching && (
-                <span className="text-xs text-muted-foreground" aria-live="polite">
+                <span
+                  className="text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
                   Updating…
                 </span>
               )}
@@ -493,6 +616,7 @@ export const AllPurposeClustersTable = ({
         <OtherCostBreakdownModal
           dateRange={dateRange}
           clusterId={otherBreakdownCluster}
+          clusterKind="all_purpose"
           isOpen
           onClose={() => setOtherBreakdownCluster(null)}
         />
@@ -529,12 +653,23 @@ const ClusterDayBreakdown = ({
       <div className="flex items-center justify-between mb-3">
         <h4 className="font-semibold text-sm text-muted-foreground">
           Daily breakdown ({cluster.users.length} day
-          {cluster.users.length === 1 ? '' : 's'})
+          {cluster.users.length === 1 ? "" : "s"})
         </h4>
-        <Button size="sm" variant="outline" className="h-7" onClick={onOpenDetails}>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7"
+          onClick={onOpenDetails}
+        >
           <Eye className="h-3 w-3 mr-1" /> Cluster details & analysis
         </Button>
       </div>
+      {cluster.users.length < cluster.active_days && (
+        <p className="mb-3 text-xs text-muted-foreground italic">
+          Showing the most recent {cluster.users.length} of{" "}
+          {cluster.active_days} active days
+        </p>
+      )}
       <div className="space-y-2">
         {[...cluster.users]
           .sort((a, b) => a.usage_date.localeCompare(b.usage_date))
@@ -544,9 +679,11 @@ const ClusterDayBreakdown = ({
               className="flex items-center justify-between p-3 bg-background rounded-md border"
             >
               <div className="flex items-center space-x-4">
-                <div className="text-sm font-medium">{formatDate(day.usage_date)}</div>
+                <div className="text-sm font-medium">
+                  {formatDate(day.usage_date)}
+                </div>
                 <div className="text-xs text-muted-foreground truncate max-w-[200px]">
-                  {day.user_id === '__unknown__' ? (
+                  {day.user_id === "__unknown__" ? (
                     <span className="italic">Unknown owner</span>
                   ) : (
                     day.user_id
@@ -560,13 +697,25 @@ const ClusterDayBreakdown = ({
                 {isSegmentedPlatform ? (
                   <>
                     <div className="text-sm text-blue-600">
-                      Compute: {formatCurrency(day.compute_cost ?? 0)}
+                      Compute:{" "}
+                      {formatSegmentCost(
+                        day.compute_cost,
+                        day.workspace_covered,
+                      )}
                     </div>
                     <div className="text-sm text-green-600">
-                      Storage: {formatCurrency(day.storage_cost ?? 0)}
+                      Storage:{" "}
+                      {formatSegmentCost(
+                        day.storage_cost,
+                        day.workspace_covered,
+                      )}
                     </div>
                     <div className="text-sm text-amber-600">
-                      Network: {formatCurrency(day.network_cost ?? 0)}
+                      Network:{" "}
+                      {formatSegmentCost(
+                        day.network_cost,
+                        day.workspace_covered,
+                      )}
                     </div>
                     {(day.other_cost ?? 0) > 0 && (
                       <div className="text-sm text-muted-foreground">
@@ -576,7 +725,7 @@ const ClusterDayBreakdown = ({
                   </>
                 ) : (
                   <div className="text-sm text-blue-600">
-                    {computeLabel}:{' '}
+                    {computeLabel}:{" "}
                     <CloudCostValue
                       value={day.cloud_cost}
                       workspaceCovered={day.workspace_covered}
@@ -596,6 +745,33 @@ const ClusterDayBreakdown = ({
     </div>
   );
 };
+
+const SortHeader = ({
+  label,
+  field,
+  current,
+  direction,
+  onSort,
+}: {
+  label: string;
+  field: string;
+  current: string;
+  direction: "asc" | "desc";
+  onSort: (field: string) => void;
+}) => (
+  <button
+    type="button"
+    onClick={() => onSort(field)}
+    className="inline-flex items-center gap-1 font-medium hover:text-foreground"
+    aria-label={`Sort by ${label}${current === field ? `, currently ${direction}ending` : ""}`}
+  >
+    {label}
+    <ArrowUpDown
+      className={`h-3.5 w-3.5 ${current === field ? "text-foreground" : "text-muted-foreground"}`}
+      aria-hidden="true"
+    />
+  </button>
+);
 
 const pickAttributionBadge = (
   mode: string | null | undefined,

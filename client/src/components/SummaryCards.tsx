@@ -104,8 +104,8 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
               {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
                 <>
                   {' '}
-                  · {formatCurrency(metrics.dbu_in_non_covered_workspaces ?? 0)}{' '}
-                  DBU in non-covered workspaces
+                  · includes {formatCurrency(metrics.dbu_in_non_covered_workspaces ?? 0)}{' '}
+                  DBU from non-covered workspaces
                 </>
               )}
             </p>

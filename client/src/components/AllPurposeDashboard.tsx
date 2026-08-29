@@ -9,55 +9,55 @@
 //
 // See plan §4.1 / CP10 (`docs/plan_all_purpose_clusters_tab.md`).
 
-import { useEffect, useState } from 'react';
-import { format, subDays } from 'date-fns';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { AllPurposeSummaryCards } from './AllPurposeSummaryCards';
-import { CoverageBanner } from './CoverageBanner';
-import { AllPurposeClusterFilterControls } from './AllPurposeClusterFilterControls';
-import { AllPurposeClustersTable } from './AllPurposeClustersTable';
-import { AllPurposeUsersTable } from './AllPurposeUsersTable';
-import type { DateRange } from '@/types/job-spend';
+import { useEffect, useState } from "react";
+import { format, subDays } from "date-fns";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AllPurposeSummaryCards } from "./AllPurposeSummaryCards";
+import { CoverageBanner } from "./CoverageBanner";
+import { AllPurposeClusterFilterControls } from "./AllPurposeClusterFilterControls";
+import { AllPurposeClustersTable } from "./AllPurposeClustersTable";
+import { AllPurposeUsersTable } from "./AllPurposeUsersTable";
+import type { DateRange } from "@/types/job-spend";
 
-const VALID_SUBTABS = ['by-cluster', 'by-user'] as const;
+const VALID_SUBTABS = ["by-cluster", "by-user"] as const;
 type SubTab = (typeof VALID_SUBTABS)[number];
-const DEFAULT_SUBTAB: SubTab = 'by-cluster';
+const DEFAULT_SUBTAB: SubTab = "by-cluster";
 
 const readSubTabFromUrl = (): SubTab => {
-  if (typeof window === 'undefined') return DEFAULT_SUBTAB;
+  if (typeof window === "undefined") return DEFAULT_SUBTAB;
   const params = new URLSearchParams(window.location.search);
-  const candidate = params.get('subtab');
-  return (VALID_SUBTABS as readonly string[]).includes(candidate ?? '')
+  const candidate = params.get("subtab");
+  return (VALID_SUBTABS as readonly string[]).includes(candidate ?? "")
     ? (candidate as SubTab)
     : DEFAULT_SUBTAB;
 };
 
 const writeSubTabToUrl = (next: SubTab) => {
-  if (typeof window === 'undefined') return;
+  if (typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
   if (next === DEFAULT_SUBTAB) {
-    params.delete('subtab');
+    params.delete("subtab");
   } else {
-    params.set('subtab', next);
+    params.set("subtab", next);
   }
   const query = params.toString();
-  const url = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
-  window.history.replaceState(null, '', url);
+  const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+  window.history.replaceState(null, "", url);
 };
 
 const AllPurposeDashboard = () => {
   // Match the job-cluster default window (last 30 days).
   const defaultDateRange: DateRange = {
-    start_date: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
-    end_date: format(new Date(), 'yyyy-MM-dd'),
+    start_date: format(subDays(new Date(), 29), "yyyy-MM-dd"),
+    end_date: format(new Date(), "yyyy-MM-dd"),
   };
 
   const [dateRange, setDateRange] = useState<DateRange>(defaultDateRange);
   // The two sub-tabs search different fields server-side, so each gets its
   // own state slot — switching sub-tabs preserves the right search box.
-  const [clusterSearch, setClusterSearch] = useState<string>('');
-  const [userSearch, setUserSearch] = useState<string>('');
+  const [clusterSearch, setClusterSearch] = useState<string>("");
+  const [userSearch, setUserSearch] = useState<string>("");
   // Lazy-initialize from the URL so a deep link / refresh lands on the right
   // sub-tab without first flashing the default (plan §5.3).
   const [subTab, setSubTab] = useState<SubTab>(readSubTabFromUrl);
@@ -66,8 +66,8 @@ const AllPurposeDashboard = () => {
   // URL is the source of truth, so re-read it whenever history changes.
   useEffect(() => {
     const onPopState = () => setSubTab(readSubTabFromUrl());
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   const handleSubTabChange = (value: string) => {
@@ -77,13 +77,13 @@ const AllPurposeDashboard = () => {
     writeSubTabToUrl(next);
   };
 
-  const activeSearch = subTab === 'by-cluster' ? clusterSearch : userSearch;
+  const activeSearch = subTab === "by-cluster" ? clusterSearch : userSearch;
   const setActiveSearch =
-    subTab === 'by-cluster' ? setClusterSearch : setUserSearch;
+    subTab === "by-cluster" ? setClusterSearch : setUserSearch;
 
   return (
     <div className="space-y-6">
-      <CoverageBanner tab="all_purpose" />
+      <CoverageBanner tab="all_purpose" dateRange={dateRange} />
       <AllPurposeSummaryCards dateRange={dateRange} />
 
       <Card>
@@ -116,9 +116,9 @@ const AllPurposeDashboard = () => {
               <div>
                 <CardTitle>All-Purpose Cluster Spending</CardTitle>
                 <p className="text-sm text-muted-foreground mt-1">
-                  {subTab === 'by-cluster'
-                    ? 'One row per cluster. Click the arrow to expand and see daily cost. Click a cluster name to see config + AI analysis.'
-                    : 'One row per cluster owner (user). Click the arrow to expand and see the clusters they own; click a cluster name to see config + AI analysis.'}
+                  {subTab === "by-cluster"
+                    ? "One row per cluster. Click the arrow to expand and see daily cost. Click a cluster name to see config + AI analysis."
+                    : "One row per cluster owner (user). Click the arrow to expand and see the clusters they own; click a cluster name to see config + AI analysis."}
                 </p>
               </div>
               <TabsList>

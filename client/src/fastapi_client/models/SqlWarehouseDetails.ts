@@ -22,5 +22,6 @@ export type SqlWarehouseDetails = {
     metadata_missing?: boolean;
     warehouse_deleted_at?: (string | null);
     tags?: (Record<string, string> | null);
+    cost_basis?: string;
 };
 

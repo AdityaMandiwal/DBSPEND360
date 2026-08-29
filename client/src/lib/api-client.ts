@@ -1,4 +1,17 @@
-import { SummaryMetrics, CostBreakdown, PaginatedJobSpends, DateRange, JobSpendFilter, DatePreset, CostAnalysis, ClusterDetails, ClusterAnalysis, CloudPlatformConfig, OtherCostBreakdownResponse, GroupedJob } from '@/types/job-spend';
+import {
+  SummaryMetrics,
+  CostBreakdown,
+  PaginatedJobSpends,
+  DateRange,
+  JobSpendFilter,
+  DatePreset,
+  CostAnalysis,
+  ClusterDetails,
+  ClusterAnalysis,
+  CloudPlatformConfig,
+  OtherCostBreakdownResponse,
+  GroupedJob,
+} from "@/types/job-spend";
 import {
   AllPurposeFilter,
   AllPurposeSummaryMetrics,
@@ -6,8 +19,8 @@ import {
   GroupedAllPurposeUser,
   PaginatedAllPurposeClusters,
   PaginatedAllPurposeUsers,
-} from '@/types/all-purpose';
-import type { CoverageSummary } from '@/types/coverage';
+} from "@/types/all-purpose";
+import type { CoverageSummary } from "@/types/coverage";
 import {
   GroupedInstancePool,
   InstancePoolAnalysis,
@@ -16,7 +29,7 @@ import {
   InstancePoolFilter,
   InstancePoolSummaryMetrics,
   PaginatedInstancePools,
-} from '@/types/instance-pool';
+} from "@/types/instance-pool";
 import {
   GroupedPipeline,
   PaginatedPipelines,
@@ -24,7 +37,7 @@ import {
   PipelineDetails,
   PipelineFilter,
   PipelineSummaryMetrics,
-} from '@/types/pipeline';
+} from "@/types/pipeline";
 import {
   GroupedSqlWarehouse,
   PaginatedSqlWarehouses,
@@ -32,8 +45,8 @@ import {
   SqlWarehouseDetails,
   SqlWarehouseFilter,
   SqlWarehouseSummaryMetrics,
-} from '@/types/sql-warehouse';
-import { API_BASE_URL } from '@/lib/api-config';
+} from "@/types/sql-warehouse";
+import { API_BASE_URL } from "@/lib/api-config";
 
 // Error thrown by `fetchApi` for any non-2xx response. Subclasses `Error`
 // (so existing `error.message` rendering keeps working) but also carries the
@@ -45,16 +58,19 @@ export class ApiError extends Error {
 
   constructor(status: number, message: string) {
     super(message);
-    this.name = 'ApiError';
+    this.name = "ApiError";
     this.status = status;
   }
 }
 
 class ApiClient {
-  private async fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  private async fetchApi<T>(
+    endpoint: string,
+    options?: RequestInit,
+  ): Promise<T> {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         ...options?.headers,
       },
       ...options,
@@ -80,7 +96,7 @@ class ApiClient {
     });
 
     if (filter.job_name) {
-      params.append('job_name', filter.job_name);
+      params.append("job_name", filter.job_name);
     }
 
     return this.fetchApi<PaginatedJobSpends>(`/job-spends?${params}`);
@@ -95,13 +111,29 @@ class ApiClient {
     return this.fetchApi<SummaryMetrics>(`/summary?${params}`);
   }
 
-  async getJobCostBreakdown(jobId: string, runId: string): Promise<CostBreakdown> {
+  async getJobCostBreakdown(
+    jobId: string,
+    runId: string,
+    dateRange?: DateRange,
+  ): Promise<CostBreakdown> {
     const params = new URLSearchParams({ run_id: runId });
+    if (dateRange) {
+      params.set("start_date", dateRange.start_date);
+      params.set("end_date", dateRange.end_date);
+    }
     return this.fetchApi<CostBreakdown>(`/job/${jobId}/breakdown?${params}`);
   }
 
-  async getJobCostAnalysis(jobId: string, runId: string): Promise<CostAnalysis> {
+  async getJobCostAnalysis(
+    jobId: string,
+    runId: string,
+    dateRange?: DateRange,
+  ): Promise<CostAnalysis> {
     const params = new URLSearchParams({ run_id: runId });
+    if (dateRange) {
+      params.set("start_date", dateRange.start_date);
+      params.set("end_date", dateRange.end_date);
+    }
     return this.fetchApi<CostAnalysis>(`/job/${jobId}/analyze?${params}`);
   }
 
@@ -111,7 +143,7 @@ class ApiClient {
 
   async getClusterAnalysis(
     clusterId: string,
-    clusterKind?: 'job' | 'all_purpose',
+    clusterKind?: "job" | "all_purpose",
   ): Promise<ClusterAnalysis> {
     // Pass `clusterKind` explicitly from a tab that knows the source
     // (Job-tab / All-Purpose tab). Leave it undefined from the Instance
@@ -120,14 +152,17 @@ class ApiClient {
     // `system.compute.clusters.cluster_source` to pick the right rollup
     // (see plan CP10 review #2).
     const params = new URLSearchParams();
-    if (clusterKind) params.set('cluster_kind', clusterKind);
+    if (clusterKind) params.set("cluster_kind", clusterKind);
     const qs = params.toString();
     return this.fetchApi<ClusterAnalysis>(
-      `/cluster/${clusterId}/analyze${qs ? `?${qs}` : ''}`,
+      `/cluster/${clusterId}/analyze${qs ? `?${qs}` : ""}`,
     );
   }
 
-  async getTopJobs(dateRange: DateRange, limit: number = 5): Promise<GroupedJob[]> {
+  async getTopJobs(
+    dateRange: DateRange,
+    limit: number = 5,
+  ): Promise<GroupedJob[]> {
     const params = new URLSearchParams({
       start_date: dateRange.start_date,
       end_date: dateRange.end_date,
@@ -138,39 +173,63 @@ class ApiClient {
   }
 
   async getDatePresets(): Promise<Record<string, DatePreset>> {
-    return this.fetchApi<Record<string, DatePreset>>('/date-presets');
+    return this.fetchApi<Record<string, DatePreset>>("/date-presets");
   }
 
   async getCloudPlatformConfig(): Promise<CloudPlatformConfig> {
-    return this.fetchApi<CloudPlatformConfig>('/cloud-platform');
+    return this.fetchApi<CloudPlatformConfig>("/cloud-platform");
   }
 
   // Active AI model, so the "Powered by ..." badges aren't hard-coded.
   // `model_label` is a human-readable name (e.g. "Claude Sonnet 4").
   async getAiInfo(): Promise<{ model_name: string; model_label: string }> {
-    return this.fetchApi<{ model_name: string; model_label: string }>('/ai-info');
+    return this.fetchApi<{ model_name: string; model_label: string }>(
+      "/ai-info",
+    );
   }
 
   async getOtherCostBreakdown(
     dateRange: DateRange,
     clusterId?: string,
+    jobId?: string,
+    runId?: string,
+    clusterKind?: "job" | "all_purpose",
   ): Promise<OtherCostBreakdownResponse> {
     const params = new URLSearchParams({
       start_date: dateRange.start_date,
       end_date: dateRange.end_date,
     });
     if (clusterId) {
-      params.append('cluster_id', clusterId);
+      params.append("cluster_id", clusterId);
     }
-    return this.fetchApi<OtherCostBreakdownResponse>(`/other-cost-breakdown?${params}`);
+    if (jobId) {
+      params.append("job_id", jobId);
+    }
+    if (runId) {
+      params.append("run_id", runId);
+    }
+    if (clusterKind) {
+      params.append("cluster_kind", clusterKind);
+    }
+    return this.fetchApi<OtherCostBreakdownResponse>(
+      `/other-cost-breakdown?${params}`,
+    );
   }
 
   async healthCheck(): Promise<{ status: string; service: string }> {
-    return this.fetchApi<{ status: string; service: string }>('/health');
+    return this.fetchApi<{ status: string; service: string }>("/health");
   }
 
-  async getCoverageSummary(): Promise<CoverageSummary> {
-    return this.fetchApi<CoverageSummary>('/coverage');
+  async getCoverageSummary(dateRange?: DateRange): Promise<CoverageSummary> {
+    const params = new URLSearchParams();
+    if (dateRange) {
+      params.set("start_date", dateRange.start_date);
+      params.set("end_date", dateRange.end_date);
+    }
+    const query = params.toString();
+    return this.fetchApi<CoverageSummary>(
+      `/coverage${query ? `?${query}` : ""}`,
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -204,7 +263,13 @@ class ApiClient {
     });
 
     if (filter.search) {
-      params.append('search', filter.search);
+      params.append("search", filter.search);
+    }
+    if (filter.sort_by) {
+      params.append("sort_by", filter.sort_by);
+    }
+    if (filter.sort_dir) {
+      params.append("sort_dir", filter.sort_dir);
     }
 
     return this.fetchApi<PaginatedAllPurposeClusters>(
@@ -223,7 +288,13 @@ class ApiClient {
     });
 
     if (filter.search) {
-      params.append('search', filter.search);
+      params.append("search", filter.search);
+    }
+    if (filter.sort_by) {
+      params.append("sort_by", filter.sort_by);
+    }
+    if (filter.sort_dir) {
+      params.append("sort_dir", filter.sort_dir);
     }
 
     return this.fetchApi<PaginatedAllPurposeUsers>(
@@ -309,7 +380,7 @@ class ApiClient {
     });
 
     if (filter.search) {
-      params.append('search', filter.search);
+      params.append("search", filter.search);
     }
 
     return this.fetchApi<PaginatedInstancePools>(
@@ -331,9 +402,7 @@ class ApiClient {
     );
   }
 
-  async getInstancePoolDetails(
-    poolId: string,
-  ): Promise<InstancePoolDetails> {
+  async getInstancePoolDetails(poolId: string): Promise<InstancePoolDetails> {
     return this.fetchApi<InstancePoolDetails>(
       `/instance-pools/${encodeURIComponent(poolId)}/details`,
     );
@@ -341,9 +410,14 @@ class ApiClient {
 
   async getInstancePoolAnalysis(
     poolId: string,
+    dateRange: DateRange,
   ): Promise<InstancePoolAnalysis> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+    });
     return this.fetchApi<InstancePoolAnalysis>(
-      `/instance-pools/${encodeURIComponent(poolId)}/analyze`,
+      `/instance-pools/${encodeURIComponent(poolId)}/analyze?${params}`,
     );
   }
 
@@ -374,8 +448,10 @@ class ApiClient {
       start_date: dateRange.start_date,
       end_date: dateRange.end_date,
     });
-    workloadType?.forEach((wt) => params.append('workload_type', wt));
-    return this.fetchApi<PipelineSummaryMetrics>(`/pipelines/summary?${params}`);
+    workloadType?.forEach((wt) => params.append("workload_type", wt));
+    return this.fetchApi<PipelineSummaryMetrics>(
+      `/pipelines/summary?${params}`,
+    );
   }
 
   async getPipelines(filter: PipelineFilter): Promise<PaginatedPipelines> {
@@ -387,9 +463,15 @@ class ApiClient {
     });
 
     if (filter.search) {
-      params.append('search', filter.search);
+      params.append("search", filter.search);
     }
-    filter.workload_type?.forEach((wt) => params.append('workload_type', wt));
+    filter.workload_type?.forEach((wt) => params.append("workload_type", wt));
+    if (filter.sort_by) {
+      params.append("sort_by", filter.sort_by);
+    }
+    if (filter.sort_dir) {
+      params.append("sort_dir", filter.sort_dir);
+    }
 
     return this.fetchApi<PaginatedPipelines>(`/pipelines/grouped?${params}`);
   }
@@ -404,8 +486,10 @@ class ApiClient {
       end_date: dateRange.end_date,
       limit: limit.toString(),
     });
-    workloadType?.forEach((wt) => params.append('workload_type', wt));
-    return this.fetchApi<GroupedPipeline[]>(`/pipelines/top-pipelines?${params}`);
+    workloadType?.forEach((wt) => params.append("workload_type", wt));
+    return this.fetchApi<GroupedPipeline[]>(
+      `/pipelines/top-pipelines?${params}`,
+    );
   }
 
   async getPipelineDetails(
@@ -413,10 +497,10 @@ class ApiClient {
     workspaceId?: string,
   ): Promise<PipelineDetails> {
     const params = new URLSearchParams();
-    if (workspaceId) params.set('workspace_id', workspaceId);
+    if (workspaceId) params.set("workspace_id", workspaceId);
     const qs = params.toString();
     return this.fetchApi<PipelineDetails>(
-      `/pipelines/${encodeURIComponent(pipelineId)}/details${qs ? `?${qs}` : ''}`,
+      `/pipelines/${encodeURIComponent(pipelineId)}/details${qs ? `?${qs}` : ""}`,
     );
   }
 
@@ -425,10 +509,10 @@ class ApiClient {
     workspaceId?: string,
   ): Promise<PipelineAnalysis> {
     const params = new URLSearchParams();
-    if (workspaceId) params.set('workspace_id', workspaceId);
+    if (workspaceId) params.set("workspace_id", workspaceId);
     const qs = params.toString();
     return this.fetchApi<PipelineAnalysis>(
-      `/pipelines/${encodeURIComponent(pipelineId)}/analyze${qs ? `?${qs}` : ''}`,
+      `/pipelines/${encodeURIComponent(pipelineId)}/analyze${qs ? `?${qs}` : ""}`,
     );
   }
 
@@ -464,10 +548,12 @@ class ApiClient {
       end_date: filter.end_date,
       page: filter.page.toString(),
       per_page: filter.per_page.toString(),
+      sort_by: filter.sort_by,
+      sort_dir: filter.sort_dir,
     });
 
     if (filter.search) {
-      params.append('search', filter.search);
+      params.append("search", filter.search);
     }
 
     return this.fetchApi<PaginatedSqlWarehouses>(
@@ -499,9 +585,14 @@ class ApiClient {
 
   async getSqlWarehouseAnalysis(
     warehouseId: string,
+    dateRange: DateRange,
   ): Promise<SqlWarehouseAnalysis> {
+    const params = new URLSearchParams({
+      start_date: dateRange.start_date,
+      end_date: dateRange.end_date,
+    });
     return this.fetchApi<SqlWarehouseAnalysis>(
-      `/warehouses/${encodeURIComponent(warehouseId)}/analyze`,
+      `/warehouses/${encodeURIComponent(warehouseId)}/analyze?${params}`,
     );
   }
 }

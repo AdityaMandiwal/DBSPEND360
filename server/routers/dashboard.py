@@ -162,7 +162,7 @@ async def get_job_runs(
     job_id: str,
     start_date: date = Query(..., description='Start date for filtering (YYYY-MM-DD)'),
     end_date: date = Query(..., description='End date for filtering (YYYY-MM-DD)'),
-    limit: int = Query(10, ge=1, le=100, description='Max runs to return'),
+    limit: int = Query(10, ge=1, le=5000, description='Max runs to return'),
 ):
     """Get recent runs for a single job within a date range.
 
@@ -286,7 +286,9 @@ async def get_summary_metrics(
 @router.get('/job/{job_id}/breakdown', response_model=CostBreakdown)
 async def get_job_cost_breakdown(
     job_id: str,
-    run_id: str = Query(..., description='Run ID for the specific job execution')
+    run_id: str = Query(..., description='Run ID for the specific job execution'),
+    start_date: Optional[date] = Query(None, description='Optional selected-window start date'),
+    end_date: Optional[date] = Query(None, description='Optional selected-window end date'),
 ):
     """Get detailed cost breakdown for a specific job run.
 
@@ -296,9 +298,16 @@ async def get_job_cost_breakdown(
     try:
         # Get breakdown data from Databricks service
         service = get_databricks_service()
+        if start_date and end_date and start_date > end_date:
+            raise HTTPException(
+                status_code=400,
+                detail='Start date must be before or equal to end date',
+            )
         result = await service.get_job_cost_breakdown(
             job_id=job_id,
-            run_id=run_id
+            run_id=run_id,
+            start_date=start_date,
+            end_date=end_date,
         )
 
         if not result:
@@ -398,17 +407,17 @@ async def get_date_presets():
         },
         'last_7_days': {
             'label': 'Last 7 Days',
-            'start_date': today - timedelta(days=7),
+            'start_date': today - timedelta(days=6),
             'end_date': today
         },
         'last_30_days': {
             'label': 'Last 30 Days',
-            'start_date': today - timedelta(days=30),
+            'start_date': today - timedelta(days=29),
             'end_date': today
         },
         'last_90_days': {
             'label': 'Last 90 Days',
-            'start_date': today - timedelta(days=90),
+            'start_date': today - timedelta(days=89),
             'end_date': today
         }
     }
@@ -476,6 +485,8 @@ async def get_databricks_host():
 async def analyze_job_costs(
     job_id: str,
     run_id: str = Query(..., description='Run ID for the specific job execution'),
+    start_date: Optional[date] = Query(None, description='Optional selected-window start date'),
+    end_date: Optional[date] = Query(None, description='Optional selected-window end date'),
 ):
     """Get LLM-powered cost analysis for a specific job run.
 
@@ -483,10 +494,20 @@ async def analyze_job_costs(
     then passes all context to the LLM for grounded analysis.
     """
     try:
+        if start_date and end_date and start_date > end_date:
+            raise HTTPException(
+                status_code=400,
+                detail='Start date must be before or equal to end date',
+            )
         service = get_databricks_service()
 
         breakdown, historical_stats, job_name = await asyncio.gather(
-            service.get_job_cost_breakdown(job_id=job_id, run_id=run_id),
+            service.get_job_cost_breakdown(
+                job_id=job_id,
+                run_id=run_id,
+                start_date=start_date,
+                end_date=end_date,
+            ),
             service.get_job_historical_stats(
                 job_id=job_id, current_run_id=run_id
             ),
@@ -622,6 +643,7 @@ async def analyze_cluster_configuration(
         analysis = await llm.analyze_cluster_configuration(
             cluster_details=cluster_details,
             cost_summary=cost_summary,
+            cluster_kind=cluster_kind,
         )
 
         return ClusterAnalysis(
@@ -644,6 +666,12 @@ async def get_other_cost_breakdown(
     start_date: date = Query(..., description='Start date (YYYY-MM-DD)'),
     end_date: date = Query(..., description='End date (YYYY-MM-DD)'),
     cluster_id: Optional[str] = Query(None, description='Optional cluster ID filter'),
+    job_id: Optional[str] = Query(None, description='Optional job ID filter'),
+    run_id: Optional[str] = Query(None, description='Optional run ID filter'),
+    cluster_kind: Optional[Literal['job', 'all_purpose']] = Query(
+        None,
+        description='Rollup table used to scope the selected cluster',
+    ),
 ):
     """Get breakdown of 'other' (unclassified) costs by service name.
 
@@ -662,6 +690,9 @@ async def get_other_cost_breakdown(
             start_date=start_date,
             end_date=end_date,
             cluster_id=cluster_id,
+            job_id=job_id,
+            run_id=run_id,
+            cluster_kind=cluster_kind,
         )
 
     except HTTPException:

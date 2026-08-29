@@ -3,42 +3,49 @@
 //
 // Mirrors `PipelineDetailsModal.tsx` with two simplifications: there is no
 // `workspace_id` to disambiguate (`warehouse_id` is account-unique, so no 409
-// path exists) and no cost-basis caveat — DBU is the complete cost for
-// Databricks-managed compute, so nothing is missing from the number.
+// path exists). Cost basis is explicit because Classic/Pro infrastructure is
+// not in the DBU-only rollup.
 //
 // The metadata banner is deliberately NEUTRAL: roughly three quarters of
 // warehouses carry no `system.compute.warehouses` snapshot, so a missing
 // config is the common case, not an error. Cost figures stay accurate either
 // way, which is what the banner says.
 
-import { AlertTriangle, Brain, Database, FileQuestion, Info, User } from 'lucide-react';
+import {
+  AlertTriangle,
+  Brain,
+  Database,
+  FileQuestion,
+  Info,
+  User,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog';
-import { Badge } from '@/components/ui/badge';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+} from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   useSqlWarehouseAnalysis,
   useSqlWarehouseDetails,
-} from '@/hooks/useSqlWarehouses';
+} from "@/hooks/useSqlWarehouses";
 import {
   formatCurrency,
+  warehouseCostBasisLabel,
   warehouseTypeBadgeClasses,
   warehouseTypeLabel,
-} from '@/lib/sql-warehouse-display';
-import { useAiModelLabel } from '@/hooks/useJobSpends';
-import { closeOnly, formatCalendarDate } from '@/lib/utils';
-import { AnalysisMarkdown } from './AnalysisMarkdown';
+} from "@/lib/sql-warehouse-display";
+import { useAiModelLabel } from "@/hooks/useJobSpends";
+import { closeOnly, formatCalendarDate } from "@/lib/utils";
+import { AnalysisMarkdown } from "./AnalysisMarkdown";
 
 // Cost figures for the currently selected window, passed down from the table
 // row. `/details` is config-only, so the modal reuses the row it was opened
 // from rather than issuing a second cost query.
 export interface SqlWarehouseCostSummary {
-  totalCost: number;
   databricksCost: number;
   activeDays: number;
   startDate: string;
@@ -58,17 +65,17 @@ interface SqlWarehouseDetailsModalProps {
 const formatDeleteDate = (dateStr?: string | null): string | null =>
   dateStr
     ? formatCalendarDate(dateStr, {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
+        year: "numeric",
+        month: "long",
+        day: "numeric",
       })
     : null;
 
 // `auto_stop_mins = 0` means the warehouse never auto-stops — a real cost
 // signal, so it reads as words rather than "0".
 const formatAutoStop = (mins?: number | null): string => {
-  if (mins == null) return 'N/A';
-  if (mins === 0) return 'Never';
+  if (mins == null) return "N/A";
+  if (mins === 0) return "Never";
   return `${mins} min`;
 };
 
@@ -76,8 +83,8 @@ const formatClusterRange = (
   min?: number | null,
   max?: number | null,
 ): string => {
-  if (min == null && max == null) return 'N/A';
-  return `${min ?? '?'} – ${max ?? '?'}`;
+  if (min == null && max == null) return "N/A";
+  return `${min ?? "?"} – ${max ?? "?"}`;
 };
 
 export const SqlWarehouseDetailsModal = ({
@@ -98,7 +105,14 @@ export const SqlWarehouseDetailsModal = ({
     data: analysis,
     isLoading: analysisLoading,
     error: analysisError,
-  } = useSqlWarehouseAnalysis(warehouseId, { enabled: detailsResolved });
+  } = useSqlWarehouseAnalysis(
+    warehouseId,
+    {
+      start_date: costSummary?.startDate ?? "",
+      end_date: costSummary?.endDate ?? "",
+    },
+    { enabled: detailsResolved && !!costSummary },
+  );
 
   const deletedDateLabel = formatDeleteDate(details?.warehouse_deleted_at);
 
@@ -164,8 +178,8 @@ export const SqlWarehouseDetailsModal = ({
                     Metadata unavailable.
                   </div>
                   <div className="text-xs mt-1">
-                    No row found in{' '}
-                    <span className="font-mono">system.compute.warehouses</span>{' '}
+                    No row found in{" "}
+                    <span className="font-mono">system.compute.warehouses</span>{" "}
                     — common for warehouses created before the system table
                     began recording, or outside its retention window. Cost
                     figures remain accurate; the configuration below is
@@ -244,7 +258,7 @@ export const SqlWarehouseDetailsModal = ({
                     </span>
                     <div className="text-right">
                       <div className="text-sm font-mono">
-                        {details.warehouse_size ?? 'N/A'}
+                        {details.warehouse_size ?? "N/A"}
                       </div>
                     </div>
                   </div>
@@ -305,33 +319,29 @@ export const SqlWarehouseDetailsModal = ({
                   <div className="p-4 border rounded-lg space-y-3">
                     <h4 className="font-semibold">Cost for Selected Period</h4>
                     <div className="text-xs text-muted-foreground">
-                      {formatCalendarDate(costSummary.startDate)} to{' '}
-                      {formatCalendarDate(costSummary.endDate)} ·{' '}
+                      {formatCalendarDate(costSummary.startDate)} to{" "}
+                      {formatCalendarDate(costSummary.endDate)} ·{" "}
                       {costSummary.activeDays} active day
-                      {costSummary.activeDays === 1 ? '' : 's'}
+                      {costSummary.activeDays === 1 ? "" : "s"}
                     </div>
                     <div className="flex justify-between items-start">
                       <span className="text-sm font-medium text-muted-foreground">
-                        DBU Cost
+                        Tracked DBU Spend
                       </span>
                       <div className="text-sm font-medium text-red-600">
                         {formatCurrency(costSummary.databricksCost)}
                       </div>
                     </div>
-                    <div className="flex justify-between items-start">
-                      <span className="text-sm font-medium text-muted-foreground">
-                        Total Cost
-                      </span>
-                      <div className="text-sm font-bold">
-                        {formatCurrency(costSummary.totalCost)}
-                      </div>
-                    </div>
                     <p className="text-xs text-muted-foreground">
-                      SQL Warehouses run on Databricks-managed compute, so DBU
-                      is the complete cost — there is no separate VM line.
+                      {details.cost_basis === "full"
+                        ? "Serverless DBU includes infrastructure and is the complete tracked cost."
+                        : "Classic/Pro spend is DBU-only; customer-cloud VM, disk, and network charges are excluded."}{" "}
                       Figures are list price and exclude account-level
                       discounts.
                     </p>
+                    <Badge variant="outline" className="text-xs">
+                      {warehouseCostBasisLabel(details.cost_basis)}
+                    </Badge>
                   </div>
                 )}
 
@@ -395,13 +405,18 @@ export const SqlWarehouseDetailsModal = ({
                       <div className="space-y-4">
                         <AnalysisMarkdown>{analysis.analysis}</AnalysisMarkdown>
                         <div className="text-xs text-muted-foreground border-t pt-2">
-                          Generated on{' '}
+                          Analysis window:{" "}
+                          {formatCalendarDate(analysis.start_date)} to{" "}
+                          {formatCalendarDate(analysis.end_date)} ·{" "}
+                          {warehouseCostBasisLabel(analysis.cost_basis)}
+                          <br />
+                          Generated on{" "}
                           {new Date(analysis.timestamp).toLocaleDateString(
-                            'en-US',
+                            "en-US",
                             {
-                              year: 'numeric',
-                              month: 'long',
-                              day: 'numeric',
+                              year: "numeric",
+                              month: "long",
+                              day: "numeric",
                             },
                           )}
                         </div>

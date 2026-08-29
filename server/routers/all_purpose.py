@@ -17,7 +17,7 @@ are already cluster-source-agnostic.
 
 import logging
 from datetime import date
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -104,6 +104,8 @@ async def get_all_purpose_grouped_by_cluster(
     ),
     page: int = Query(1, ge=1, description='Page number'),
     per_page: int = Query(50, ge=1, le=1000, description='Items per page'),
+    sort_by: str = Query('total_cost', description='Column to sort by'),
+    sort_dir: Literal['asc', 'desc'] = Query('desc', description='Sort direction'),
 ):
     """Get paginated By-Cluster all-purpose spend, with per-day drill-down.
 
@@ -122,6 +124,8 @@ async def get_all_purpose_grouped_by_cluster(
             search=search,
             limit=per_page,
             offset=offset,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
         )
     except HTTPException:
         raise
@@ -143,6 +147,8 @@ async def get_all_purpose_grouped_by_user(
     ),
     page: int = Query(1, ge=1, description='Page number'),
     per_page: int = Query(50, ge=1, le=1000, description='Items per page'),
+    sort_by: str = Query('total_cost', description='Column to sort by'),
+    sort_dir: Literal['asc', 'desc'] = Query('desc', description='Sort direction'),
 ):
     """Get paginated By-User all-purpose spend (chargeback view).
 
@@ -161,6 +167,8 @@ async def get_all_purpose_grouped_by_user(
             search=search,
             limit=per_page,
             offset=offset,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
         )
     except HTTPException:
         raise

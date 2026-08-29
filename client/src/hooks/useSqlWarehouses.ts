@@ -8,20 +8,20 @@
 //
 // See plan §3d (`docs/plans/sql-warehouse-costs.md`).
 
-import { useEffect } from 'react';
+import { useEffect } from "react";
 import {
   useQuery,
   useQueryClient,
   keepPreviousData,
   type QueryKey,
-} from '@tanstack/react-query';
-import { apiClient } from '@/lib/api-client';
-import { canQueryRange } from '@/lib/utils';
-import type { DateRange } from '@/types/job-spend';
+} from "@tanstack/react-query";
+import { apiClient } from "@/lib/api-client";
+import { canQueryRange } from "@/lib/utils";
+import type { DateRange } from "@/types/job-spend";
 import type {
   PaginatedSqlWarehouses,
   SqlWarehouseFilter,
-} from '@/types/sql-warehouse';
+} from "@/types/sql-warehouse";
 
 // Match the staleness window used by the other four tabs so all five behave
 // identically when the user pivots between them.
@@ -34,7 +34,7 @@ const DETAILS_STALE_TIME_MS = 30 * 60 * 1000;
 const ANALYSIS_STALE_TIME_MS = 60 * 60 * 1000;
 
 const groupedQueryKey = (params: SqlWarehouseFilter): QueryKey => [
-  'sql-warehouses-grouped',
+  "sql-warehouses-grouped",
   params,
 ];
 
@@ -88,7 +88,7 @@ export const useSqlWarehouses = (params: SqlWarehouseFilter) => {
 // Hook: KPI strip (`/api/warehouses/summary`).
 export const useSqlWarehouseSummary = (dateRange: DateRange) => {
   return useQuery({
-    queryKey: ['sql-warehouses-summary', dateRange],
+    queryKey: ["sql-warehouses-summary", dateRange],
     queryFn: () => apiClient.getSqlWarehouseSummary(dateRange),
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
@@ -103,7 +103,7 @@ export const useTopSqlWarehouses = (
   limit: number = 5,
 ) => {
   return useQuery({
-    queryKey: ['sql-warehouses-top-warehouses', dateRange, limit],
+    queryKey: ["sql-warehouses-top-warehouses", dateRange, limit],
     queryFn: () => apiClient.getTopSqlWarehouses(dateRange, limit),
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
@@ -117,7 +117,7 @@ export const useTopSqlWarehouses = (
 // exists, so an unknown id renders the neutral banner instead of an error.
 export const useSqlWarehouseDetails = (warehouseId: string | null) => {
   return useQuery({
-    queryKey: ['sql-warehouse-details', warehouseId],
+    queryKey: ["sql-warehouse-details", warehouseId],
     queryFn: () => apiClient.getSqlWarehouseDetails(warehouseId!),
     staleTime: DETAILS_STALE_TIME_MS,
     enabled: !!warehouseId,
@@ -130,11 +130,12 @@ export const useSqlWarehouseDetails = (warehouseId: string | null) => {
 // lookup never fires analysis.
 export const useSqlWarehouseAnalysis = (
   warehouseId: string | null,
+  dateRange: DateRange,
   options?: { enabled?: boolean },
 ) => {
   return useQuery({
-    queryKey: ['sql-warehouse-analysis', warehouseId],
-    queryFn: () => apiClient.getSqlWarehouseAnalysis(warehouseId!),
+    queryKey: ["sql-warehouse-analysis", warehouseId, dateRange],
+    queryFn: () => apiClient.getSqlWarehouseAnalysis(warehouseId!, dateRange),
     staleTime: ANALYSIS_STALE_TIME_MS,
     enabled: !!warehouseId && (options?.enabled ?? true),
   });

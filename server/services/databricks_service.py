@@ -16,6 +16,7 @@ from server.models.job_spend import (
   CoverageSummaryResponse,
   ExcludedDbuByTab,
   ExcludedWorkspace,
+  ExcludedWorkspaceCountByTab,
   GroupedAllPurposeCluster,
   GroupedAllPurposeUser,
   GroupedInstancePool,
@@ -70,6 +71,15 @@ _WAREHOUSE_TYPE_BUCKET_SQL = """CASE
                      WHEN UPPER(COALESCE(warehouse_type, '')) = 'CLASSIC'  THEN 'CLASSIC'
                      ELSE 'SERVERLESS'
                    END"""
+
+
+def _sql_warehouse_cost_basis(warehouse_type: Optional[str]) -> str:
+  """Return whether tracked DBU represents complete warehouse cost."""
+  normalized = (warehouse_type or '').upper()
+  if normalized == 'CLASSIC' or 'PRO' in normalized:
+    return 'dbu_only'
+  return 'full'
+
 
 # Friendly `workload_type` labels (mirrors WORKLOAD_MAP in
 # `pipeline_spends_app.ipynb`, plan §5.5) that are *expected* to carry a
@@ -234,10 +244,11 @@ class DatabricksService:
       if state in (None, StatementState.SUCCEEDED):
         break
       if state in (StatementState.FAILED, StatementState.CANCELED, StatementState.CLOSED):
-        break
+        err = getattr(status, 'error', None)
+        message = getattr(err, 'message', None) or f'SQL statement ended in {state}'
+        raise RuntimeError(message)
       if time.monotonic() >= deadline:
-        logger.error('SQL statement timed out after %ss', self.query_timeout)
-        break
+        raise TimeoutError(f'SQL statement timed out after {self.query_timeout}s')
       statement_id = getattr(response, 'statement_id', None)
       if not statement_id:
         break
@@ -247,7 +258,7 @@ class DatabricksService:
     status = getattr(response, 'status', None)
     if status is not None and getattr(status, 'error', None) is not None:
       err_msg = getattr(status.error, 'message', '') or 'unknown SQL error'
-      logger.error('SQL statement failed: %s', err_msg)
+      raise RuntimeError(err_msg)
 
     return response
 
@@ -259,9 +270,8 @@ class DatabricksService:
       fqn = table_name if '.' in table_name else table_name
       parts = fqn.split('.')
       catalog, schema, table = parts[-3], parts[-2], parts[-1]
-      resp = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=(
+      resp = self._execute_statement(
+        (
           f'SELECT 1 FROM {catalog}.information_schema.columns '
           f"WHERE table_catalog = '{catalog}' "
           f"AND table_schema = '{schema}' "
@@ -272,7 +282,8 @@ class DatabricksService:
       )
       has_col = bool(resp.result and resp.result.data_array and len(resp.result.data_array) > 0)
     except Exception:
-      has_col = False
+      logger.exception('Failed to inspect workspace_covered on %s', table_name)
+      raise
     self._workspace_covered_column_cache[table_name] = has_col
     return has_col
 
@@ -331,10 +342,7 @@ class DatabricksService:
         GROUP BY job_id
         """
     try:
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=query,
-      )
+      response = self._execute_statement(query)
       name_map: Dict[str, str] = {}
       if response.result and response.result.data_array:
         for row in response.result.data_array:
@@ -364,7 +372,15 @@ class DatabricksService:
     # Add job name filter if provided
     if job_name:
       like_pattern = _escape_like_pattern(job_name).replace("'", "''")
-      where_clause += f" AND job_id LIKE '%{like_pattern}%' ESCAPE '\\\\'"
+      predicates = [f"job_id LIKE '%{like_pattern}%' ESCAPE '\\\\'"]
+      term = job_name.lower()
+      matching_ids = [
+        job_id for job_id, name in self._get_job_name_map().items() if name and term in name.lower()
+      ]
+      if matching_ids:
+        escaped_ids = [job_id.replace("'", "''") for job_id in matching_ids]
+        predicates.append('job_id IN (' + ', '.join(f"'{job_id}'" for job_id in escaped_ids) + ')')
+      where_clause += ' AND (' + ' OR '.join(predicates) + ')'
 
     # Count query for pagination
     count_query = f"""
@@ -398,23 +414,19 @@ class DatabricksService:
             GROUP BY job_id
         ) jobs ON a.job_id = jobs.job_id
         {where_clause}
-        ORDER BY (a.cloud_cost + a.databricks_cost) DESC
+        ORDER BY (COALESCE(a.cloud_cost, 0) + a.databricks_cost) DESC
         LIMIT {limit} OFFSET {offset}
         """
 
     # Execute count query
-    count_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id, statement=count_query
-    )
+    count_response = self._execute_statement(count_query)
 
     total_count = 0
     if count_response.result and count_response.result.data_array:
       total_count = int(count_response.result.data_array[0][0])
 
     # Execute data query
-    data_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id, statement=data_query
-    )
+    data_response = self._execute_statement(data_query)
 
     job_spends = []
     if data_response.result and data_response.result.data_array:
@@ -423,7 +435,7 @@ class DatabricksService:
 
         job_spend = JobSpend(
           cluster_id=row[0],
-          cloud_cost=float(row[1]),
+          cloud_cost=float(row[1]) if row[1] is not None else None,
           job_id=job_id,
           job_name=row[6],
           run_id=row[3],
@@ -498,23 +510,21 @@ class DatabricksService:
         )
         SELECT
             (SELECT COUNT(*) FROM job_level) AS total_jobs,
-            COALESCE(SUM(CASE WHEN {wsc_expr} THEN cloud_cost + databricks_cost ELSE 0 END), 0) AS total_spend,
-            COALESCE(AVG(CASE WHEN {wsc_expr} THEN cloud_cost + databricks_cost END), 0) AS avg_cost,
-            COALESCE(MAX(CASE WHEN {wsc_expr} THEN cloud_cost + databricks_cost END), 0) AS max_cost,
-            COALESCE(MIN(CASE WHEN {wsc_expr} THEN cloud_cost + databricks_cost END), 0) AS min_cost,
-            COALESCE(SUM(CASE WHEN {wsc_expr} THEN cloud_cost ELSE 0 END), 0) AS total_cloud_cost,
-            COALESCE(SUM(CASE WHEN {wsc_expr} THEN databricks_cost ELSE 0 END), 0) AS total_databricks_cost,
-            SUM(CASE WHEN {wsc_expr} THEN compute_cost END) AS total_compute_cost,
-            SUM(CASE WHEN {wsc_expr} THEN storage_cost END) AS total_storage_cost,
-            SUM(CASE WHEN {wsc_expr} THEN network_cost END) AS total_network_cost,
-            SUM(CASE WHEN {wsc_expr} THEN other_cost END) AS total_other_cost,
+            COALESCE(SUM(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS total_spend,
+            COALESCE(AVG(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS avg_cost,
+            COALESCE(MAX(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS max_cost,
+            COALESCE(MIN(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS min_cost,
+            COALESCE(SUM(cloud_cost), 0) AS total_cloud_cost,
+            COALESCE(SUM(databricks_cost), 0) AS total_databricks_cost,
+            SUM(compute_cost) AS total_compute_cost,
+            SUM(storage_cost) AS total_storage_cost,
+            SUM(network_cost) AS total_network_cost,
+            SUM(other_cost) AS total_other_cost,
             COALESCE(SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END), 0) AS dbu_in_non_covered_workspaces
         FROM run_level
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id, statement=query
-    )
+    response = self._execute_statement(query)
 
     if response.result and response.result.data_array:
       row = response.result.data_array[0]
@@ -580,16 +590,27 @@ class DatabricksService:
       date_range_days=(end_date - start_date).days + 1,
     )
 
-  async def get_job_cost_breakdown(self, job_id: str, run_id: str) -> Optional[CostBreakdown]:
-    """Get detailed cost breakdown for a specific job run, aggregated across all days."""
+  async def get_job_cost_breakdown(
+    self,
+    job_id: str,
+    run_id: str,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+  ) -> Optional[CostBreakdown]:
+    """Get a run cost breakdown, optionally restricted to the selected window."""
     escaped_job_id = job_id.replace("'", "''")
     escaped_run_id = run_id.replace("'", "''")
+    date_filter = ''
+    if start_date is not None:
+      date_filter += f" AND usage_date >= '{start_date.isoformat()}'"
+    if end_date is not None:
+      date_filter += f" AND usage_date <= '{end_date.isoformat()}'"
 
     query = f"""
         SELECT
             job_id,
             run_id,
-            MIN(cluster_id) as cluster_id,
+            CONCAT_WS(',', SORT_ARRAY(COLLECT_SET(cluster_id))) as cluster_ids,
             MIN(usage_date) as start_date,
             MAX(usage_date) as end_date,
             SUM(cloud_cost) as total_cloud_cost,
@@ -600,16 +621,16 @@ class DatabricksService:
             SUM(other_cost) as total_other_cost
         FROM {self.table_name}
         WHERE job_id = '{escaped_job_id}' AND run_id = '{escaped_run_id}'
+        {date_filter}
         GROUP BY job_id, run_id
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id, statement=query
-    )
+    response = self._execute_statement(query)
 
     if response.result and response.result.data_array:
       row = response.result.data_array[0]
-      cloud_cost = float(row[5])
+      cluster_ids = [value for value in (row[2] or '').split(',') if value]
+      cloud_cost = float(row[5]) if row[5] is not None else None
       databricks_cost = float(row[6])
       start_date = date.fromisoformat(row[3])
       end_date = date.fromisoformat(row[4])
@@ -617,12 +638,13 @@ class DatabricksService:
       return CostBreakdown(
         job_id=row[0],
         run_id=row[1],
-        cluster_id=row[2],
+        cluster_id=cluster_ids[0] if cluster_ids else '',
+        cluster_ids=cluster_ids,
         usage_date=start_date,
         end_date=end_date if end_date != start_date else None,
         cloud_cost=cloud_cost,
         databricks_cost=databricks_cost,
-        total_cost=cloud_cost + databricks_cost,
+        total_cost=(cloud_cost or 0.0) + databricks_cost,
         compute_cost=float(row[7]) if row[7] is not None else None,
         storage_cost=float(row[8]) if row[8] is not None else None,
         network_cost=float(row[9]) if row[9] is not None else None,
@@ -702,13 +724,11 @@ class DatabricksService:
             FROM system.lakeflow.jobs
             GROUP BY job_id
         ) lj ON j.job_id = lj.job_id
-        ORDER BY (j.total_cloud_cost + j.total_databricks_cost) DESC
+        ORDER BY (COALESCE(j.total_cloud_cost, 0) + j.total_databricks_cost) DESC
         LIMIT {limit}
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id, statement=query
-    )
+    response = self._execute_statement(query)
 
     jobs: List[GroupedJob] = []
     if response.result and response.result.data_array:
@@ -718,7 +738,7 @@ class DatabricksService:
             job_id=row[0],
             job_name=row[4],
             run_count=int(row[3]),
-            total_cloud_cost=float(row[1]),
+            total_cloud_cost=float(row[1]) if row[1] is not None else None,
             total_databricks_cost=float(row[2]),
             total_compute_cost=float(row[5]) if row[5] is not None else None,
             total_storage_cost=float(row[6]) if row[6] is not None else None,
@@ -745,7 +765,7 @@ class DatabricksService:
     'total_storage_cost': 'total_storage_cost',
     'total_network_cost': 'total_network_cost',
     'total_other_cost': 'total_other_cost',
-    'total_cost': '(total_cloud_cost + total_databricks_cost)',
+    'total_cost': '(COALESCE(total_cloud_cost, 0) + total_databricks_cost)',
   }
 
   async def get_grouped_job_spends(
@@ -785,15 +805,13 @@ class DatabricksService:
       id_predicates = [f"job_id LIKE '%{like_pattern}%' ESCAPE '\\\\'"]
       name_matched_ids = [jid for jid, nm in name_map.items() if nm and term in nm.lower()]
       if name_matched_ids:
-        # Cap the IN-list defensively; a term matching thousands of jobs
-        # is a degenerate search and the LIKE predicate still applies.
-        escaped_ids = [j.replace("'", "''") for j in name_matched_ids[:5000]]
+        escaped_ids = [j.replace("'", "''") for j in name_matched_ids]
         in_list = ', '.join(f"'{j}'" for j in escaped_ids)
         id_predicates.append(f'job_id IN ({in_list})')
       usage_search_filter = 'AND (' + ' OR '.join(id_predicates) + ')'
 
     order_column = self._GROUPED_JOB_SORT_COLUMNS.get(
-      sort_by, '(total_cloud_cost + total_databricks_cost)'
+      sort_by, '(COALESCE(total_cloud_cost, 0) + total_databricks_cost)'
     )
     direction = 'ASC' if str(sort_dir).lower() == 'asc' else 'DESC'
     # `job_id` tiebreaker keeps pagination deterministic when two jobs share
@@ -861,9 +879,7 @@ class DatabricksService:
         LIMIT {limit} OFFSET {offset}
         """
 
-    data_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id, statement=data_query
-    )
+    data_response = self._execute_statement(data_query)
 
     total_count = 0
     if data_response.result and data_response.result.data_array:
@@ -879,7 +895,7 @@ class DatabricksService:
       # `/api/job/{job_id}/runs` endpoint when the user expands a row.
       for row in data_response.result.data_array:
         job_id = row[0]
-        total_cloud_cost = float(row[1])
+        total_cloud_cost = float(row[1]) if row[1] is not None else None
         total_databricks_cost = float(row[2])
         run_count = int(row[3])
 
@@ -926,7 +942,7 @@ class DatabricksService:
             SELECT
                 job_id,
                 run_id,
-                cluster_id,
+                CONCAT_WS(',', SORT_ARRAY(COLLECT_SET(cluster_id))) as cluster_ids,
                 MIN(usage_date) as start_date,
                 MAX(usage_date) as end_date,
                 SUM(cloud_cost) as total_cloud_cost,
@@ -944,7 +960,7 @@ class DatabricksService:
             WHERE job_id IN ({in_clause})
             AND usage_date >= '{start_date.isoformat()}'
             AND usage_date <= '{end_date.isoformat()}'
-            GROUP BY job_id, run_id, cluster_id
+            GROUP BY job_id, run_id
         )
         SELECT job_id, run_id, cluster_id, start_date, end_date,
                total_cloud_cost, total_databricks_cost,
@@ -955,9 +971,7 @@ class DatabricksService:
         ORDER BY job_id, end_date DESC, run_id DESC
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id, statement=query
-    )
+    response = self._execute_statement(query)
 
     runs_by_job: dict[str, List[JobRun]] = {}
     if response.result and response.result.data_array:
@@ -965,10 +979,11 @@ class DatabricksService:
         job_id = row[0]
         run = JobRun(
           run_id=row[1],
-          cluster_id=row[2],
+          cluster_id=(row[2] or '').split(',')[0],
+          cluster_ids=[value for value in (row[2] or '').split(',') if value],
           start_date=date.fromisoformat(row[3]),
           end_date=date.fromisoformat(row[4]),
-          cloud_cost=float(row[5]),
+          cloud_cost=float(row[5]) if row[5] is not None else None,
           databricks_cost=float(row[6]),
           compute_cost=float(row[7]) if row[7] is not None else None,
           storage_cost=float(row[8]) if row[8] is not None else None,
@@ -991,7 +1006,7 @@ class DatabricksService:
     query = f"""
         SELECT
             run_id,
-            cluster_id,
+            CONCAT_WS(',', SORT_ARRAY(COLLECT_SET(cluster_id))) as cluster_ids,
             MIN(usage_date) as start_date,
             MAX(usage_date) as end_date,
             SUM(cloud_cost) as total_cloud_cost,
@@ -1005,24 +1020,23 @@ class DatabricksService:
         WHERE job_id = '{escaped_job_id}'
         AND usage_date >= '{start_date.isoformat()}'
         AND usage_date <= '{end_date.isoformat()}'
-        GROUP BY run_id, cluster_id
+        GROUP BY run_id
         ORDER BY end_date DESC, run_id DESC
         LIMIT {limit}
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id, statement=query
-    )
+    response = self._execute_statement(query)
 
     runs = []
     if response.result and response.result.data_array:
       for row in response.result.data_array:
         run = JobRun(
           run_id=row[0],
-          cluster_id=row[1],
+          cluster_id=(row[1] or '').split(',')[0],
+          cluster_ids=[value for value in (row[1] or '').split(',') if value],
           start_date=date.fromisoformat(row[2]),
           end_date=date.fromisoformat(row[3]),
-          cloud_cost=float(row[4]),
+          cloud_cost=float(row[4]) if row[4] is not None else None,
           databricks_cost=float(row[5]),
           compute_cost=float(row[6]) if row[6] is not None else None,
           storage_cost=float(row[7]) if row[7] is not None else None,
@@ -1045,10 +1059,8 @@ class DatabricksService:
   ) -> JobProductBreakdownResponse:
     """Read-time DBU split by billing_origin_product for one job.
 
-    Queries ``system.billing.usage`` joined to ``system.billing.list_prices``
-    filtered by ``usage_metadata.job_id`` and ``job_run_id IS NOT NULL``.
-    Does NOT mirror the rollup ETL's ``cluster_source = 'JOB'`` inner join —
-    the goal is to expose all products that billed against job runs.
+    Mirrors the rollup's JOB-cluster population so the live estimate and
+    stored DBU column have the same workload scope.
     """
     cache_key = (job_id, start_date.isoformat(), end_date.isoformat())
     cache_ttl = app_config.cache_ttl_minutes * 60
@@ -1061,12 +1073,20 @@ class DatabricksService:
     wait_timeout = f'{self.query_timeout}s'
 
     breakdown_query = f"""
-        WITH usage_priced AS (
+        WITH latest_clusters AS (
+            SELECT cluster_id, MAX_BY(cluster_source, change_time) AS cluster_source
+            FROM system.compute.clusters
+            GROUP BY cluster_id
+        ),
+        usage_priced AS (
             SELECT
                 u.billing_origin_product,
                 u.usage_quantity,
                 CAST(lp.pricing['default'] AS DOUBLE) AS unit_price
             FROM system.billing.usage u
+            INNER JOIN latest_clusters c
+                ON u.usage_metadata.cluster_id = c.cluster_id
+               AND c.cluster_source = 'JOB'
             LEFT JOIN system.billing.list_prices lp
                 ON  u.sku_name = lp.sku_name
                 AND u.usage_start_time >= lp.price_start_time
@@ -1099,15 +1119,13 @@ class DatabricksService:
           AND usage_date <= '{end_date.isoformat()}'
         """
 
-    breakdown_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=breakdown_query,
+    breakdown_response = self._execute_statement(
+      breakdown_query,
       wait_timeout=wait_timeout,
     )
 
-    rollup_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=rollup_query,
+    rollup_response = self._execute_statement(
+      rollup_query,
       wait_timeout=wait_timeout,
     )
 
@@ -1189,12 +1207,11 @@ class DatabricksService:
                 cluster_name
             FROM system.compute.clusters
             WHERE cluster_id = '{escaped_cluster_id}'
+            ORDER BY change_time DESC
             LIMIT 1
             """
 
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id, statement=query
-      )
+      response = self._execute_statement(query)
 
       if response.result and response.result.data_array and len(response.result.data_array) > 0:
         row = response.result.data_array[0]
@@ -1444,10 +1461,7 @@ class DatabricksService:
             """
 
       try:
-        response = self.client.statement_execution.execute_statement(
-          warehouse_id=self.warehouse_id,
-          statement=query,
-        )
+        response = self._execute_statement(query)
       except Exception as exc:
         if self._is_permission_error(exc):
           logger.warning(
@@ -1577,7 +1591,7 @@ class DatabricksService:
                     run_id,
                     SUM(cloud_cost) AS cloud_cost,
                     SUM(databricks_cost) AS databricks_cost,
-                    SUM(cloud_cost) + SUM(databricks_cost) AS total_cost,
+                    COALESCE(SUM(cloud_cost), 0) + COALESCE(SUM(databricks_cost), 0) AS total_cost,
                     MIN(usage_date) AS first_date,
                     MAX(usage_date) AS last_date
                 FROM {self.table_name}
@@ -1640,10 +1654,7 @@ class DatabricksService:
             LEFT JOIN last_run l ON 1=1
             """
 
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=query,
-      )
+      response = self._execute_statement(query)
 
       if not response.result or not response.result.data_array:
         return {
@@ -1776,14 +1787,11 @@ class DatabricksService:
     """
     escaped_cluster_id = cluster_id.replace("'", "''")
     query = (
-      'SELECT cluster_source FROM system.compute.clusters '
-      f"WHERE cluster_id = '{escaped_cluster_id}' LIMIT 1"
+      'SELECT MAX_BY(cluster_source, change_time) FROM system.compute.clusters '
+      f"WHERE cluster_id = '{escaped_cluster_id}'"
     )
     try:
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=query,
-      )
+      response = self._execute_statement(query)
       if (
         response.result
         and response.result.data_array
@@ -1827,10 +1835,10 @@ class DatabricksService:
                 SELECT
                     COALESCE(SUM(cloud_cost), 0) AS total_cloud_cost,
                     COALESCE(SUM(databricks_cost), 0) AS total_databricks_cost,
-                    COALESCE(SUM(CASE WHEN COALESCE(workspace_covered, true) THEN COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0) ELSE 0 END), 0) AS total_spend,
+                    COALESCE(SUM(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS total_spend,
                     COUNT(DISTINCT job_id) AS distinct_job_count,
                     COUNT(*) AS total_run_count,
-                    COALESCE(AVG(cloud_cost + databricks_cost), 0) AS avg_cost_per_run
+                    COALESCE(AVG(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS avg_cost_per_run
                 FROM run_level
             ),
             date_range AS (
@@ -1851,10 +1859,7 @@ class DatabricksService:
             FROM agg a, date_range d
             """
 
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=query,
-      )
+      response = self._execute_statement(query)
 
       if not response.result or not response.result.data_array:
         return {
@@ -1905,9 +1910,9 @@ class DatabricksService:
     """All-purpose-cluster path for `get_cluster_cost_summary`.
 
     Grain is ``(user_id, usage_date)`` against
-    ``dbspend360_total_all_purpose_spends``. Output dict shape mirrors
-    the job path so the LLM prompt builder doesn't branch — see
-    ``get_cluster_cost_summary`` docstring for the semantic remap.
+    ``dbspend360_total_all_purpose_spends``. Output dict keeps the shared
+    cost fields while adding ``distinct_user_count``; the LLM prompt builder
+    uses cluster-day terminology for this path.
     """
     try:
       escaped_cluster_id = cluster_id.replace("'", "''")
@@ -1939,10 +1944,16 @@ class DatabricksService:
                 SELECT
                     COALESCE(SUM(cloud_cost), 0) AS total_cloud_cost,
                     COALESCE(SUM(databricks_cost), 0) AS total_databricks_cost,
-                    COALESCE(SUM(cloud_cost + databricks_cost), 0) AS total_spend,
+                    COALESCE(
+                        SUM(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)),
+                        0
+                    ) AS total_spend,
                     COUNT(DISTINCT user_id) AS distinct_user_count,
                     COUNT(*) AS total_run_count,
-                    COALESCE(AVG(cloud_cost + databricks_cost), 0) AS avg_cost_per_run
+                    COALESCE(
+                        AVG(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)),
+                        0
+                    ) AS avg_cost_per_run
                 FROM day_level
             ),
             date_range AS (
@@ -1963,10 +1974,7 @@ class DatabricksService:
             FROM agg a, date_range d
             """
 
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=query,
-      )
+      response = self._execute_statement(query)
 
       if not response.result or not response.result.data_array:
         return {
@@ -2024,6 +2032,9 @@ class DatabricksService:
     start_date: date,
     end_date: date,
     cluster_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    cluster_kind: Optional[Literal['job', 'all_purpose']] = None,
     limit: int = 15,
   ) -> OtherCostBreakdownResponse:
     """Get breakdown of other_cost by service_name for the given date range."""
@@ -2038,13 +2049,27 @@ class DatabricksService:
 
     breakdown_table = f'{schema_name}.dbspend360_other_cost_breakdown'
 
+    rollup_table = self.all_purpose_table_name if cluster_kind == 'all_purpose' else self.table_name
+    rollup_alias = 'a' if cluster_kind == 'all_purpose' else 'j'
+    rollup_scope = [
+      f'{rollup_alias}.cluster_id = b.cluster_id',
+      f'{rollup_alias}.usage_date = b.cost_incurred_date',
+    ]
+    if job_id:
+      escaped_job_id = job_id.replace("'", "''")
+      rollup_scope.append(f"{rollup_alias}.job_id = '{escaped_job_id}'")
+    if run_id:
+      escaped_run_id = run_id.replace("'", "''")
+      rollup_scope.append(f"{rollup_alias}.run_id = '{escaped_run_id}'")
+
     where_parts = [
-      f"cost_incurred_date >= '{start_date.isoformat()}'",
-      f"cost_incurred_date <= '{end_date.isoformat()}'",
+      f"b.cost_incurred_date >= '{start_date.isoformat()}'",
+      f"b.cost_incurred_date <= '{end_date.isoformat()}'",
+      (f'EXISTS (SELECT 1 FROM {rollup_table} {rollup_alias} WHERE {" AND ".join(rollup_scope)})'),
     ]
     if cluster_id:
       escaped = cluster_id.replace("'", "''")
-      where_parts.append(f"cluster_id = '{escaped}'")
+      where_parts.append(f"b.cluster_id = '{escaped}'")
 
     where_clause = ' AND '.join(where_parts)
 
@@ -2055,7 +2080,7 @@ class DatabricksService:
                 source_system,
                 SUM(cost) AS total_cost,
                 ROW_NUMBER() OVER (ORDER BY SUM(cost) DESC) AS rn
-            FROM {breakdown_table}
+            FROM {breakdown_table} b
             WHERE {where_clause}
             GROUP BY service_name, source_system
         ),
@@ -2084,9 +2109,7 @@ class DatabricksService:
         """
 
     try:
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id, statement=query
-      )
+      response = self._execute_statement(query)
 
       items: List[OtherCostBreakdownItem] = []
       total_other_cost = 0.0
@@ -2173,24 +2196,21 @@ class DatabricksService:
         SELECT
             (SELECT COUNT(DISTINCT cluster_id) FROM filtered) AS total_clusters,
             (SELECT COUNT(DISTINCT user_id)    FROM filtered) AS total_users,
-            COALESCE(SUM(CASE WHEN {wsc_expr} THEN COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0) ELSE 0 END), 0) AS total_spend,
-            COALESCE(AVG(CASE WHEN {wsc_expr} THEN COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0) END), 0) AS avg_cost_per_cluster_day,
-            COALESCE(MAX(CASE WHEN {wsc_expr} THEN COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0) END), 0) AS max_cost_per_cluster_day,
-            COALESCE(MIN(CASE WHEN {wsc_expr} THEN COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0) END), 0) AS min_cost_per_cluster_day,
-            COALESCE(SUM(CASE WHEN {wsc_expr} THEN cloud_cost ELSE 0 END), 0) AS total_cloud_cost,
-            COALESCE(SUM(CASE WHEN {wsc_expr} THEN databricks_cost ELSE 0 END), 0) AS total_databricks_cost,
-            SUM(CASE WHEN {wsc_expr} THEN compute_cost END) AS total_compute_cost,
-            SUM(CASE WHEN {wsc_expr} THEN storage_cost END) AS total_storage_cost,
-            SUM(CASE WHEN {wsc_expr} THEN network_cost END) AS total_network_cost,
-            SUM(CASE WHEN {wsc_expr} THEN other_cost END) AS total_other_cost,
+            COALESCE(SUM(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS total_spend,
+            COALESCE(AVG(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS avg_cost_per_cluster_day,
+            COALESCE(MAX(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS max_cost_per_cluster_day,
+            COALESCE(MIN(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS min_cost_per_cluster_day,
+            COALESCE(SUM(cloud_cost), 0) AS total_cloud_cost,
+            COALESCE(SUM(databricks_cost), 0) AS total_databricks_cost,
+            SUM(compute_cost) AS total_compute_cost,
+            SUM(storage_cost) AS total_storage_cost,
+            SUM(network_cost) AS total_network_cost,
+            SUM(other_cost) AS total_other_cost,
             COALESCE(SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END), 0) AS dbu_in_non_covered_workspaces
         FROM cluster_day_level
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     date_range_days = (end_date - start_date).days + 1
 
@@ -2234,6 +2254,8 @@ class DatabricksService:
     search: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: str = 'total_cost',
+    sort_dir: Literal['asc', 'desc'] = 'desc',
   ) -> PaginatedAllPurposeClusters:
     """Paginated By-Cluster rollup for the All-Purpose tab.
 
@@ -2257,8 +2279,22 @@ class DatabricksService:
         ')'
       )
 
+    sort_columns = {
+      'cluster_id': 'c.cluster_id',
+      'owner_user_id': 'c.owner_user_id',
+      'active_days': 'c.active_days',
+      'total_cloud_cost': 'c.total_cloud_cost',
+      'total_databricks_cost': 'c.total_databricks_cost',
+      'total_compute_cost': 'c.total_compute_cost',
+      'total_storage_cost': 'c.total_storage_cost',
+      'total_network_cost': 'c.total_network_cost',
+      'total_other_cost': 'c.total_other_cost',
+      'total_cost': ('(COALESCE(c.total_cloud_cost, 0) + COALESCE(c.total_databricks_cost, 0))'),
+    }
+    order_column = sort_columns.get(sort_by, sort_columns['total_cost'])
+    order_direction = 'ASC' if sort_dir == 'asc' else 'DESC'
+
     wsc_agg = self._workspace_covered_agg_sql(self.all_purpose_table_name)
-    wsc_expr = self._workspace_covered_sql(self.all_purpose_table_name)
     data_query = f"""
         WITH filtered AS (
             SELECT *
@@ -2308,14 +2344,11 @@ class DatabricksService:
             GROUP BY cluster_id
         ) cl ON c.cluster_id = cl.cluster_id
         {search_clause}
-        ORDER BY (COALESCE(c.total_cloud_cost, 0) + COALESCE(c.total_databricks_cost, 0)) DESC
+        ORDER BY {order_column} {order_direction}, c.cluster_id
         LIMIT {limit} OFFSET {offset}
         """
 
-    data_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=data_query,
-    )
+    data_response = self._execute_statement(data_query)
 
     total_count = 0
     if data_response.result and data_response.result.data_array:
@@ -2324,8 +2357,17 @@ class DatabricksService:
     grouped: List[GroupedAllPurposeCluster] = []
     if data_response.result and data_response.result.data_array:
       cluster_ids = [row[0] for row in data_response.result.data_array]
+      # Return every active day for ordinary selected windows so the expanded
+      # rows reconcile to their parent totals. Keep a defensive ceiling for
+      # accidentally unbounded multi-year requests; the UI discloses when it
+      # receives fewer rows than active_days.
+      window_days = (end_date - start_date).days + 1
+      days_per_cluster = min(max(window_days, 30), 1000)
       users_by_cluster = await self._get_batch_cluster_days(
-        cluster_ids, start_date, end_date, days_per_cluster=30
+        cluster_ids,
+        start_date,
+        end_date,
+        days_per_cluster=days_per_cluster,
       )
 
       for row in data_response.result.data_array:
@@ -2368,6 +2410,8 @@ class DatabricksService:
     search: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: str = 'total_cost',
+    sort_dir: Literal['asc', 'desc'] = 'desc',
   ) -> PaginatedAllPurposeUsers:
     """Paginated By-User rollup for the All-Purpose tab (chargeback view).
 
@@ -2384,6 +2428,21 @@ class DatabricksService:
       search_clause = (
         f"WHERE LOWER(COALESCE(user_id, '')) LIKE LOWER('%{like_pattern}%') ESCAPE '\\\\'"
       )
+
+    sort_columns = {
+      'user_id': 'user_id',
+      'cluster_count': 'cluster_count',
+      'user_active_days': 'user_active_days',
+      'total_cloud_cost': 'total_cloud_cost',
+      'total_databricks_cost': 'total_databricks_cost',
+      'total_compute_cost': 'total_compute_cost',
+      'total_storage_cost': 'total_storage_cost',
+      'total_network_cost': 'total_network_cost',
+      'total_other_cost': 'total_other_cost',
+      'total_cost': ('(COALESCE(total_cloud_cost, 0) + COALESCE(total_databricks_cost, 0))'),
+    }
+    order_column = sort_columns.get(sort_by, sort_columns['total_cost'])
+    order_direction = 'ASC' if sort_dir == 'asc' else 'DESC'
 
     wsc_agg = self._workspace_covered_agg_sql(self.all_purpose_table_name)
     data_query = f"""
@@ -2446,14 +2505,11 @@ class DatabricksService:
             COUNT(*) OVER() AS total_matching
         FROM user_level
         {search_clause}
-        ORDER BY (COALESCE(total_cloud_cost, 0) + COALESCE(total_databricks_cost, 0)) DESC
+        ORDER BY {order_column} {order_direction}, user_id
         LIMIT {limit} OFFSET {offset}
         """
 
-    data_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=data_query,
-    )
+    data_response = self._execute_statement(data_query)
 
     total_count = 0
     if data_response.result and data_response.result.data_array:
@@ -2510,6 +2566,7 @@ class DatabricksService:
     query for cost reasons (mirrors `get_top_jobs` returning
     `runs=[]`; see the model docstring on `GroupedJob`).
     """
+    wsc_agg = self._workspace_covered_agg_sql(self.all_purpose_table_name)
     query = f"""
         WITH filtered AS (
             SELECT *
@@ -2528,7 +2585,8 @@ class DatabricksService:
                 SUM(compute_cost)             AS total_compute_cost,
                 SUM(storage_cost)             AS total_storage_cost,
                 SUM(network_cost)             AS total_network_cost,
-                SUM(other_cost)               AS total_other_cost
+                SUM(other_cost)               AS total_other_cost,
+                {wsc_agg}
             FROM filtered
             GROUP BY cluster_id
         )
@@ -2543,7 +2601,8 @@ class DatabricksService:
             c.total_storage_cost,
             c.total_network_cost,
             c.total_other_cost,
-            cl.cluster_name
+            cl.cluster_name,
+            c.workspace_covered
         FROM cluster_level c
         LEFT JOIN (
             SELECT cluster_id,
@@ -2556,10 +2615,7 @@ class DatabricksService:
         LIMIT {limit}
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     clusters: List[GroupedAllPurposeCluster] = []
     if response.result and response.result.data_array:
@@ -2578,6 +2634,7 @@ class DatabricksService:
             total_storage_cost=float(row[7]) if row[7] is not None else None,
             total_network_cost=float(row[8]) if row[8] is not None else None,
             total_other_cost=float(row[9]) if row[9] is not None else None,
+            workspace_covered=_parse_workspace_covered(row[11]),
             users=[],
           )
         )
@@ -2595,6 +2652,7 @@ class DatabricksService:
     from the raw rows directly (not summed across clusters) for the
     same correctness reason as `get_all_purpose_grouped_by_user`.
     """
+    wsc_agg = self._workspace_covered_agg_sql(self.all_purpose_table_name)
     query = f"""
         WITH filtered AS (
             SELECT *
@@ -2611,7 +2669,8 @@ class DatabricksService:
                 SUM(compute_cost)           AS compute_cost,
                 SUM(storage_cost)           AS storage_cost,
                 SUM(network_cost)           AS network_cost,
-                SUM(other_cost)             AS other_cost
+                SUM(other_cost)             AS other_cost,
+                {wsc_agg}
             FROM filtered
             GROUP BY user_id, cluster_id
         ),
@@ -2630,7 +2689,8 @@ class DatabricksService:
                 SUM(ucl.compute_cost)          AS total_compute_cost,
                 SUM(ucl.storage_cost)          AS total_storage_cost,
                 SUM(ucl.network_cost)          AS total_network_cost,
-                SUM(ucl.other_cost)            AS total_other_cost
+                SUM(ucl.other_cost)            AS total_other_cost,
+                BOOL_AND(ucl.workspace_covered) AS workspace_covered
             FROM user_cluster_level ucl
             JOIN user_active_days uad USING (user_id)
             GROUP BY ucl.user_id, uad.active_days
@@ -2644,16 +2704,14 @@ class DatabricksService:
             total_compute_cost,
             total_storage_cost,
             total_network_cost,
-            total_other_cost
+            total_other_cost,
+            workspace_covered
         FROM user_level
         ORDER BY (COALESCE(total_cloud_cost, 0) + COALESCE(total_databricks_cost, 0)) DESC
         LIMIT {limit}
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     users: List[GroupedAllPurposeUser] = []
     if response.result and response.result.data_array:
@@ -2670,6 +2728,7 @@ class DatabricksService:
             total_storage_cost=float(row[6]) if row[6] is not None else None,
             total_network_cost=float(row[7]) if row[7] is not None else None,
             total_other_cost=float(row[8]) if row[8] is not None else None,
+            workspace_covered=_parse_workspace_covered(row[9]),
             clusters=[],
           )
         )
@@ -2898,11 +2957,11 @@ class DatabricksService:
     (the system table's `tags` column excludes default tags per
     plan §10).
 
-    Failure tuples `(f"Pool {pool_id}", None)` are cached as well so
-    a flaky or nonexistent pool ID does not re-issue the REST API on
-    every render. The SDK call itself is synchronous; this method
-    follows `get_job_name`'s `async def` / sync-body pattern so callers
-    can `await` it uniformly.
+    Successful lookups are cached. Failures are not cached, so a transient
+    REST/API permission or network error does not leave the modal stuck on a
+    fallback name and "Unknown creator" until the app process restarts. The SDK
+    call itself is synchronous; this method follows `get_job_name`'s
+    `async def` / sync-body pattern so callers can `await` it uniformly.
 
     v1 stops at the GUID; GUID -> email resolution is a v2 follow-up
     (plan §13) that adds a second `client.users.get(<guid>)` hop.
@@ -2916,16 +2975,15 @@ class DatabricksService:
       default_tags = pool_info.default_tags or {}
       creator_id = default_tags.get('DatabricksInstancePoolCreatorId')
       metadata = (pool_name, creator_id)
+      self.pool_metadata_cache[pool_id] = metadata
+      return metadata
     except Exception as exc:
       logger.warning(
         'Failed to resolve pool metadata for %s via REST API: %s',
         pool_id,
         str(exc),
       )
-      metadata = (f'Pool {pool_id}', None)
-
-    self.pool_metadata_cache[pool_id] = metadata
-    return metadata
+      return (f'Pool {pool_id}', None)
 
   async def get_instance_pool_summary_metrics(
     self, start_date: date, end_date: date
@@ -2939,11 +2997,9 @@ class DatabricksService:
     `pool_snapshot_missing = TRUE` — surfaced as a KPI so operators
     can spot lost-metadata churn at a glance (plan §10 risk row).
 
-    As of CP7 `total_cloud_cost` is the summed pool EC2/EBS cost over
-    the window (plan §4.4/§4.6); it stays `None` only when no pool-day
-    in the window carries a cloud row yet (`SUM(cloud_cost)` over an
-    all-`NULL` slice is `NULL`), so the KPI is hidden rather than
-    showing a misleading `$0` (plan §5 / decision #3).
+    `total_cloud_cost` is the summed ClusterId-free idle/warm pool VM
+    cost over the window; active pool-backed VM cost remains on its
+    cluster lens. Freshness fields expose partial landing explicitly.
     """
     # `pool_snapshot_state` aggregates pool_snapshot_missing to one
     # row per pool via BOOL_AND so the orphan KPI counts only pools
@@ -2954,7 +3010,6 @@ class DatabricksService:
     # in `get_instance_pools_grouped` for the underlying mechanism
     # and the §13 follow-up that moves snapshot-state to a live
     # read against system.compute.instance_pools.
-    wsc_agg = self._workspace_covered_agg_sql(self.pool_table_name)
     wsc_expr = self._workspace_covered_sql(self.pool_table_name)
     query = f"""
         WITH filtered AS (
@@ -2969,8 +3024,7 @@ class DatabricksService:
                 usage_date,
                 SUM(databricks_cost) AS databricks_cost,
                 SUM(cloud_cost)      AS cloud_cost,
-                SUM(total_cost)      AS total_cost,
-                {wsc_agg}
+                SUM(total_cost)      AS total_cost
             FROM filtered
             GROUP BY instance_pool_id, usage_date
         ),
@@ -2992,20 +3046,28 @@ class DatabricksService:
              FROM filtered)                                                    AS total_clusters,
             (SELECT COUNT(*) FROM pool_snapshot_state
                 WHERE pool_uniformly_orphaned)                                 AS orphaned_pools,
-            COALESCE(SUM(CASE WHEN {wsc_expr} THEN total_cost ELSE 0 END), 0)       AS total_spend,
-            COALESCE(AVG(CASE WHEN {wsc_expr} THEN total_cost END), 0)       AS avg_cost_per_pool_day,
-            COALESCE(MAX(CASE WHEN {wsc_expr} THEN total_cost END), 0)       AS max_cost_per_pool_day,
-            COALESCE(MIN(CASE WHEN {wsc_expr} THEN total_cost END), 0)       AS min_cost_per_pool_day,
-            COALESCE(SUM(CASE WHEN {wsc_expr} THEN databricks_cost ELSE 0 END), 0)  AS total_databricks_cost,
-            SUM(CASE WHEN {wsc_expr} THEN cloud_cost END)                    AS total_cloud_cost,
-            COALESCE(SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END), 0) AS dbu_in_non_covered_workspaces
+            COALESCE(SUM(total_cost), 0)                                      AS total_spend,
+            COALESCE(AVG(total_cost), 0)                                      AS avg_cost_per_pool_day,
+            COALESCE(MAX(total_cost), 0)                                      AS max_cost_per_pool_day,
+            COALESCE(MIN(total_cost), 0)                                      AS min_cost_per_pool_day,
+            COALESCE(SUM(databricks_cost), 0)                                 AS total_databricks_cost,
+            SUM(cloud_cost)                                                    AS total_cloud_cost,
+            COALESCE((
+                SELECT SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END)
+                FROM filtered
+            ), 0)                                                              AS dbu_in_non_covered_workspaces,
+            (SELECT MAX(usage_date) FROM filtered)                              AS latest_data_date,
+            (SELECT MAX(CASE WHEN databricks_cost <> 0 THEN usage_date END)
+             FROM filtered)                                                     AS latest_dbu_date,
+            (SELECT MAX(CASE WHEN cloud_cost IS NOT NULL THEN usage_date END)
+             FROM filtered)                                                     AS latest_cloud_date,
+            (SELECT COUNT(DISTINCT CASE WHEN cloud_cost IS NOT NULL
+                                        THEN usage_date END)
+             FROM filtered)                                                     AS cloud_data_days
         FROM pool_day_level
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     date_range_days = (end_date - start_date).days + 1
 
@@ -3023,6 +3085,16 @@ class DatabricksService:
         total_cloud_cost=float(row[8]) if row[8] is not None else None,
         date_range_days=date_range_days,
         dbu_in_non_covered_workspaces=float(row[9]) if len(row) > 9 and row[9] is not None else 0.0,
+        latest_data_date=date.fromisoformat(str(row[10])[:10])
+        if len(row) > 10 and row[10]
+        else None,
+        latest_dbu_date=date.fromisoformat(str(row[11])[:10])
+        if len(row) > 11 and row[11]
+        else None,
+        latest_cloud_date=date.fromisoformat(str(row[12])[:10])
+        if len(row) > 12 and row[12]
+        else None,
+        cloud_data_days=int(row[13]) if len(row) > 13 and row[13] is not None else 0,
       )
 
     return InstancePoolSummaryMetrics(
@@ -3036,6 +3108,7 @@ class DatabricksService:
       total_databricks_cost=0.0,
       total_cloud_cost=None,
       date_range_days=date_range_days,
+      cloud_data_days=0,
     )
 
   async def get_instance_pool_daily_trend(
@@ -3044,16 +3117,14 @@ class DatabricksService:
     """Daily aggregate pool spend for the Instance Pools trend sparkline.
 
     One point per calendar day in ``[start_date, end_date]``. Days with no
-    covered-workspace pool rows are zero-filled so the sparkline length
-    matches the selected window. Spend uses the same coverage filter as
-    ``get_instance_pool_summary_metrics.total_spend``.
+    pool rows are zero-filled so the sparkline length matches the selected
+    window. Spend uses the same all-known-DBU scope as the summary and grouped
+    views; cloud coverage gaps are disclosed separately.
     """
-    wsc_expr = self._workspace_covered_sql(self.pool_table_name)
     query = f"""
         SELECT
             usage_date,
-            COALESCE(SUM(CASE WHEN {wsc_expr} THEN total_cost ELSE 0 END), 0)
-                AS total_cost
+            COALESCE(SUM(total_cost), 0) AS total_cost
         FROM {self.pool_table_name}
         WHERE usage_date >= '{start_date.isoformat()}'
           AND usage_date <= '{end_date.isoformat()}'
@@ -3061,10 +3132,7 @@ class DatabricksService:
         ORDER BY usage_date
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     by_day: Dict[date, float] = {}
     if response.result and response.result.data_array:
@@ -3176,7 +3244,8 @@ class DatabricksService:
                 pool_deleted_at,
                 ROW_NUMBER() OVER (
                     PARTITION BY instance_pool_id
-                    ORDER BY pool_snapshot_missing ASC, usage_date DESC
+                    ORDER BY pool_snapshot_missing ASC, usage_date DESC,
+                             updated_at DESC, cluster_id
                 ) AS rn
             FROM filtered
         ),
@@ -3359,7 +3428,7 @@ class DatabricksService:
     if response.result and response.result.data_array:
       for row in response.result.data_array:
         pool_id = row[0]
-        usage_date = date.fromisoformat(row[1])
+        usage_date = date.fromisoformat(str(row[1])[:10])
         cluster_id = row[2]
         dbx = float(row[3]) if row[3] is not None else 0.0
         # `cloud` is NULL on per-cluster rows and carries the real
@@ -3457,7 +3526,8 @@ class DatabricksService:
                 pool_deleted_at,
                 ROW_NUMBER() OVER (
                     PARTITION BY instance_pool_id
-                    ORDER BY pool_snapshot_missing ASC, usage_date DESC
+                    ORDER BY pool_snapshot_missing ASC, usage_date DESC,
+                             updated_at DESC, cluster_id
                 ) AS rn
             FROM filtered
         ),
@@ -3630,17 +3700,21 @@ class DatabricksService:
       pool_deleted_at=self._parse_timestamp(snapshot_row[8]),
     )
 
-  async def get_pool_cost_summary(self, pool_id: str) -> Optional[dict]:
-    """Aggregated cost summary for a single pool over the lookback window.
+  async def get_pool_cost_summary(
+    self,
+    pool_id: str,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+  ) -> Optional[dict]:
+    """Aggregated cost summary for a single pool over the selected window.
 
     Feeds the LLM analyze endpoint (`/api/instance-pools/{id}/analyze`)
     with the pool-specific context plan §CP7 calls out: idle config
     vs observed peak concurrent attached clusters, ratio of distinct
     clusters to active days, and dollar context for the
-    recommendations. As of CP7 the pool EC2/EBS cloud cost is joined in
-    (plan §4.4/§4.6), so `total_cloud_cost` carries the real summed
-    value — `None` only when no pool-day in the window has a cloud row
-    yet (plan §5 / decision #3).
+    recommendations. `total_cloud_cost` carries ClusterId-free idle/warm
+    pool VM cost; active pool-backed VM cost remains on the Job or
+    All-Purpose lens.
 
     Returns ``None`` only on query failure; an empty-window pool
     returns a zero-valued dict (with `limited_history=True`) so the
@@ -3649,19 +3723,24 @@ class DatabricksService:
     """
     try:
       escaped_pool_id = pool_id.replace("'", "''")
-      lookback_date = (date.today() - timedelta(days=LOOKBACK_DAYS)).isoformat()
+      window_end = end_date or date.today()
+      window_start = start_date or (window_end - timedelta(days=LOOKBACK_DAYS - 1))
+      lookback_days = (window_end - window_start).days + 1
 
       query = f"""
             WITH filtered AS (
                 SELECT *
                 FROM {self.pool_table_name}
                 WHERE instance_pool_id = '{escaped_pool_id}'
-                  AND usage_date >= '{lookback_date}'
+                  AND usage_date >= '{window_start.isoformat()}'
+                  AND usage_date <= '{window_end.isoformat()}'
             ),
             day_level AS (
                 SELECT
                     usage_date,
-                    COUNT(DISTINCT cluster_id) AS clusters_on_day,
+                    COUNT(DISTINCT CASE
+                        WHEN cluster_id <> '__pool_overhead__' THEN cluster_id
+                    END) AS clusters_on_day,
                     SUM(databricks_cost)       AS day_databricks_cost,
                     SUM(cloud_cost)            AS day_cloud_cost,
                     SUM(total_cost)            AS day_total_cost
@@ -3671,7 +3750,9 @@ class DatabricksService:
             SELECT
                 COALESCE(SUM(day_total_cost), 0)       AS total_spend,
                 COALESCE(SUM(day_databricks_cost), 0)  AS total_databricks_cost,
-                (SELECT COUNT(DISTINCT cluster_id)
+                (SELECT COUNT(DISTINCT CASE
+                            WHEN cluster_id <> '__pool_overhead__' THEN cluster_id
+                        END)
                    FROM filtered)                      AS distinct_cluster_count,
                 COUNT(*)                               AS active_days,
                 COALESCE(MAX(clusters_on_day), 0)      AS peak_concurrent_clusters,
@@ -3701,7 +3782,7 @@ class DatabricksService:
           'first_active_date': None,
           'last_active_date': None,
           'pool_overhead_rows': 0,
-          'lookback_days': LOOKBACK_DAYS,
+          'lookback_days': lookback_days,
           'limited_history': True,
         }
 
@@ -3722,7 +3803,7 @@ class DatabricksService:
         'first_active_date': row[6],
         'last_active_date': row[7],
         'pool_overhead_rows': int(row[8]) if row[8] is not None else 0,
-        'lookback_days': LOOKBACK_DAYS,
+        'lookback_days': lookback_days,
         'limited_history': active_days < 3,
       }
     except Exception as exc:
@@ -3800,10 +3881,7 @@ class DatabricksService:
         )
         WHERE workspace_id IS NOT NULL
         """
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     candidates: List[str] = []
     if response.result and response.result.data_array:
@@ -3823,6 +3901,8 @@ class DatabricksService:
     workload_type: Optional[List[str]] = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: str = 'total',
+    sort_dir: str = 'desc',
   ) -> PaginatedPipelines:
     """Paginated By-Pipeline rollup for the Pipeline Compute tab.
 
@@ -3844,6 +3924,24 @@ class DatabricksService:
     enriched via `_get_batch_pipeline_days`.
     """
     workload_filter = self._pipeline_workload_filter(workload_type)
+    sort_columns = {
+      'pipeline': 'pl.pipeline_id',
+      'name': "LOWER(COALESCE(pl.pipeline_name, ''))",
+      'workload': "LOWER(COALESCE(wd.workload_type, ''))",
+      'compute': "LOWER(COALESCE(pl.compute_mode, ''))",
+      'creator': "LOWER(COALESCE(pl.created_by, ''))",
+      'active_days': 'pl.active_days',
+      'cloud': 'COALESCE(pl.total_cloud_cost, 0)',
+      'dbu': 'pl.total_databricks_cost',
+      'total': 'pl.total_cost',
+    }
+    if sort_by not in sort_columns:
+      raise ValueError(f'Unsupported pipeline sort column: {sort_by}')
+    normalized_sort_dir = sort_dir.lower()
+    if normalized_sort_dir not in ('asc', 'desc'):
+      raise ValueError(f'Unsupported pipeline sort direction: {sort_dir}')
+    order_column = sort_columns[sort_by]
+    order_direction = normalized_sort_dir.upper()
 
     search_clause = ''
     if search:
@@ -3914,14 +4012,13 @@ class DatabricksService:
         FROM pipeline_level pl
         JOIN wl_dominant wd USING (workspace_id, pipeline_id)
         {search_clause}
-        ORDER BY pl.total_cost DESC
+        ORDER BY {order_column} {order_direction},
+                 pl.pipeline_id ASC,
+                 pl.workspace_id ASC
         LIMIT {limit} OFFSET {offset}
         """
 
-    data_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=data_query,
-    )
+    data_response = self._execute_statement(data_query)
 
     total_count = 0
     if data_response.result and data_response.result.data_array:
@@ -4027,10 +4124,7 @@ class DatabricksService:
         ORDER BY pipeline_id, usage_date
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     result: Dict[Tuple[str, str], List[PipelineDailySpend]] = {}
     if response.result and response.result.data_array:
@@ -4070,6 +4164,7 @@ class DatabricksService:
     None selection means "all workloads".
     """
     workload_filter = self._pipeline_workload_filter(workload_type)
+    wsc_agg = self._workspace_covered_agg_sql(self.pipeline_table_name)
     query = f"""
         WITH filtered AS (
             SELECT *
@@ -4110,7 +4205,8 @@ class DatabricksService:
                    COUNT(DISTINCT usage_date)     AS active_days,
                    SUM(databricks_cost)           AS total_databricks_cost,
                    SUM(cloud_cost)                AS total_cloud_cost,
-                   SUM(total_cost)                AS total_cost
+                   SUM(total_cost)                AS total_cost,
+                   {wsc_agg}
             FROM filtered
             GROUP BY workspace_id, pipeline_id
         )
@@ -4119,17 +4215,14 @@ class DatabricksService:
                pl.compute_mode, pl.cost_basis, pl.metadata_missing,
                pl.pipeline_deleted_at, pl.active_days,
                pl.total_databricks_cost, pl.total_cloud_cost, pl.total_cost,
-               wd.workload_type
+               pl.workspace_covered, wd.workload_type
         FROM pipeline_level pl
         JOIN wl_dominant wd USING (workspace_id, pipeline_id)
         ORDER BY pl.total_cost DESC
         LIMIT {limit}
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     pipelines: List[GroupedPipeline] = []
     if response.result and response.result.data_array:
@@ -4150,7 +4243,8 @@ class DatabricksService:
             total_databricks_cost=float(row[11]) if row[11] is not None else 0.0,
             total_cloud_cost=float(row[12]) if row[12] is not None else None,
             total_cost=float(row[13]) if row[13] is not None else 0.0,
-            workload_type=row[14],
+            workspace_covered=_parse_workspace_covered(row[14]),
+            workload_type=row[15],
             days=[],
           )
         )
@@ -4208,12 +4302,20 @@ class DatabricksService:
                    BOOL_AND(COALESCE(workspace_covered, true)) AS workspace_covered,
                    SUM(total_cost)                 AS pipe_cost,
                    SUM(databricks_cost)            AS pipe_databricks_cost,
-                   SUM(cloud_cost)                 AS pipe_cloud_cost,
-                   SUM(CASE WHEN compute_mode='serverless' THEN total_cost ELSE 0 END) AS serverless_cost,
-                   SUM(CASE WHEN compute_mode='classic'    THEN total_cost ELSE 0 END) AS classic_cost,
-                   SUM(CASE WHEN compute_mode='mixed'      THEN total_cost ELSE 0 END) AS mixed_cost
+                   SUM(cloud_cost)                 AS pipe_cloud_cost
             FROM filtered
             GROUP BY workspace_id, pipeline_id
+        ),
+        freshness AS (
+            SELECT MAX(usage_date) AS latest_data_date,
+                   MAX(CASE WHEN databricks_cost <> 0
+                            THEN usage_date END) AS latest_dbu_date,
+                   MAX(CASE WHEN cloud_cost IS NOT NULL
+                            THEN usage_date END) AS latest_cloud_date,
+                   COUNT(DISTINCT usage_date) AS data_days,
+                   COUNT(DISTINCT CASE WHEN cloud_cost IS NOT NULL
+                                       THEN usage_date END) AS cloud_data_days
+            FROM filtered
         )
         SELECT
             COUNT(*)                                                      AS total_pipelines,
@@ -4222,21 +4324,26 @@ class DatabricksService:
             SUM(CASE WHEN p.compute_mode='mixed'      THEN 1 ELSE 0 END)  AS mixed_pipelines,
             SUM(CASE WHEN p.metadata_missing AND pw.workload_type IN ({metadata_bearing_list})
                      THEN 1 ELSE 0 END)                                   AS metadata_unavailable,
-            COALESCE(SUM(CASE WHEN p.workspace_covered THEN p.pipe_cost ELSE 0 END), 0) AS total_spend,
-            COALESCE(SUM(CASE WHEN p.workspace_covered THEN p.serverless_cost ELSE 0 END), 0) AS serverless_spend,
-            COALESCE(SUM(CASE WHEN p.workspace_covered THEN p.classic_cost ELSE 0 END), 0) AS classic_spend,
-            COALESCE(SUM(CASE WHEN p.workspace_covered THEN p.mixed_cost ELSE 0 END), 0) AS mixed_spend,
-            COALESCE(SUM(CASE WHEN p.workspace_covered THEN p.pipe_databricks_cost ELSE 0 END), 0) AS total_databricks_cost,
-            SUM(CASE WHEN p.workspace_covered THEN p.pipe_cloud_cost END) AS total_cloud_cost,
-            COALESCE(SUM(CASE WHEN NOT p.workspace_covered THEN p.pipe_databricks_cost ELSE 0 END), 0) AS dbu_in_non_covered_workspaces
+            COALESCE(SUM(p.pipe_cost), 0) AS total_spend,
+            COALESCE(SUM(CASE WHEN p.compute_mode='serverless' THEN p.pipe_cost ELSE 0 END), 0) AS serverless_spend,
+            COALESCE(SUM(CASE WHEN p.compute_mode='classic' THEN p.pipe_cost ELSE 0 END), 0) AS classic_spend,
+            COALESCE(SUM(CASE WHEN p.compute_mode='mixed' THEN p.pipe_cost ELSE 0 END), 0) AS mixed_spend,
+            COALESCE(SUM(p.pipe_databricks_cost), 0) AS total_databricks_cost,
+            SUM(p.pipe_cloud_cost) AS total_cloud_cost,
+            COALESCE(SUM(CASE WHEN NOT p.workspace_covered THEN p.pipe_databricks_cost ELSE 0 END), 0) AS dbu_in_non_covered_workspaces,
+            f.latest_data_date,
+            f.latest_dbu_date,
+            f.latest_cloud_date,
+            f.data_days,
+            f.cloud_data_days
         FROM pipe p
         JOIN pipe_wl pw USING (workspace_id, pipeline_id)
+        CROSS JOIN freshness f
+        GROUP BY f.latest_data_date, f.latest_dbu_date, f.latest_cloud_date,
+                 f.data_days, f.cloud_data_days
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     date_range_days = (end_date - start_date).days + 1
 
@@ -4251,10 +4358,7 @@ class DatabricksService:
         GROUP BY workload_type
         ORDER BY wl_cost DESC
         """
-    breakdown_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=breakdown_query,
-    )
+    breakdown_response = self._execute_statement(breakdown_query)
     workload_breakdown: Dict[str, float] = {}
     if breakdown_response.result and breakdown_response.result.data_array:
       for row in breakdown_response.result.data_array:
@@ -4280,6 +4384,11 @@ class DatabricksService:
         dbu_in_non_covered_workspaces=float(row[11])
         if len(row) > 11 and row[11] is not None
         else 0.0,
+        latest_data_date=date.fromisoformat(str(row[12])[:10]) if row[12] else None,
+        latest_dbu_date=date.fromisoformat(str(row[13])[:10]) if row[13] else None,
+        latest_cloud_date=date.fromisoformat(str(row[14])[:10]) if row[14] else None,
+        data_days=int(row[15]) if row[15] is not None else 0,
+        cloud_data_days=int(row[16]) if row[16] is not None else 0,
       )
 
     return PipelineSummaryMetrics(
@@ -4296,6 +4405,11 @@ class DatabricksService:
       total_cloud_cost=None,
       workload_breakdown=workload_breakdown,
       date_range_days=date_range_days,
+      latest_data_date=None,
+      latest_dbu_date=None,
+      latest_cloud_date=None,
+      data_days=0,
+      cloud_data_days=0,
     )
 
   async def get_pipeline_details(
@@ -4308,8 +4422,7 @@ class DatabricksService:
     pipeline_id)` — plan §5.5/§3.4). No REST API, no GUID resolution:
     `created_by`/`run_as` are human-readable system-table values.
     `workload_type`/`compute_mode`/`cost_basis` are collapsed in from the
-    rollup so the modal renders the workload badge and DBU-only caveat
-    consistently with the list.
+    rollup so the modal renders consistent workload and compute context.
 
     `workspace_id` scopes the reads when supplied; otherwise the
     workspace is resolved across the rollup + system table and an
@@ -4335,10 +4448,7 @@ class DatabricksService:
 
     snapshot_row = None
     try:
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=snapshot_query,
-      )
+      response = self._execute_statement(snapshot_query)
       if response.result and response.result.data_array and len(response.result.data_array) > 0:
         snapshot_row = response.result.data_array[0]
     except Exception as exc:
@@ -4349,7 +4459,7 @@ class DatabricksService:
       )
 
     # Collapse the rollup's pre-computed dimensions for this pipeline so
-    # the modal can show the workload badge + DBU-only caveat. No date
+    # the modal can show consistent workload and compute context. No date
     # window — the modal describes the pipeline, not a window slice.
     workload_type = None
     compute_mode = None
@@ -4373,10 +4483,7 @@ class DatabricksService:
         FROM r
         """
     try:
-      dims_response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=dims_query,
-      )
+      dims_response = self._execute_statement(dims_query)
       if dims_response.result and dims_response.result.data_array:
         drow = dims_response.result.data_array[0]
         workload_type = drow[0]
@@ -4423,9 +4530,9 @@ class DatabricksService:
     the `workload_type` + `cost_basis` context plan §4.1 requires so the
     model never gives confidently-wrong advice on incomplete numbers. As
     of CP2 the classic EC2/EBS cloud cost is joined in (plan §3.2), so
-    `total_cloud_cost` carries the real summed value — `None` only when
-    the pipeline is fully serverless (no separate VM line); the prompt's
-    `cost_basis` caveat still covers the serverless / partial gap.
+    `total_cloud_cost` carries the real summed value. The explicit
+    `cloud_coverage_complete` signal distinguishes complete classic/mixed
+    cloud data from missing coverage; serverless has no separate VM line.
 
     `workspace_id` scopes the read when supplied; otherwise resolved
     across workspaces (raises `AmbiguousPipelineError` on collision —
@@ -4438,6 +4545,7 @@ class DatabricksService:
       escaped_id = pipeline_id.replace("'", "''")
       workspace_clause = self._pipeline_workspace_clause(resolved_workspace)
       lookback_date = (date.today() - timedelta(days=LOOKBACK_DAYS)).isoformat()
+      workspace_covered_expr = self._workspace_covered_sql(self.pipeline_table_name)
 
       query = f"""
             WITH filtered AS (
@@ -4473,20 +4581,29 @@ class DatabricksService:
                 (SELECT CASE WHEN MIN(cost_basis) = MAX(cost_basis) THEN MAX(cost_basis)
                              ELSE 'partial' END FROM filtered)         AS cost_basis,
                 (SELECT COUNT(DISTINCT workload_type) FROM filtered)   AS distinct_workload_count,
-                SUM(day_cloud_cost)                    AS total_cloud_cost
+                SUM(day_cloud_cost)                    AS total_cloud_cost,
+                (SELECT CASE
+                    WHEN COUNT(*) = 0 THEN false
+                    WHEN COUNT(DISTINCT compute_mode) = 1
+                         AND MAX(compute_mode) = 'serverless' THEN true
+                    ELSE BOOL_AND({workspace_covered_expr})
+                         AND BOOL_AND(
+                           CASE WHEN compute_mode = 'serverless' THEN true
+                                ELSE cloud_cost IS NOT NULL END
+                         )
+                  END
+                 FROM filtered)                        AS cloud_coverage_complete
             FROM day_level
             """
 
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=query,
-      )
+      response = self._execute_statement(query)
 
       if not response.result or not response.result.data_array:
         return {
           'total_spend': 0.0,
           'total_databricks_cost': 0.0,
           'total_cloud_cost': None,
+          'cloud_coverage_complete': False,
           'active_days': 0,
           'avg_cost_per_day': 0.0,
           'first_active_date': None,
@@ -4507,6 +4624,7 @@ class DatabricksService:
         'total_spend': float(row[0]) if row[0] is not None else 0.0,
         'total_databricks_cost': float(row[1]) if row[1] is not None else 0.0,
         'total_cloud_cost': float(row[10]) if row[10] is not None else None,
+        'cloud_coverage_complete': self._parse_bool(row[11]) or False,
         'active_days': active_days,
         'avg_cost_per_day': float(row[3]) if row[3] is not None else 0.0,
         'first_active_date': row[4],
@@ -4536,11 +4654,9 @@ class DatabricksService:
   ) -> SqlWarehouseSummaryMetrics:
     """Get summary metrics for the SQL Warehouses tab KPI strip.
 
-    DBU-only: SQL warehouses run on Databricks-managed compute for all three
-    types, so `total_spend` IS the DBU spend and there is no cloud component
-    to split out. The warehouse-count split is exhaustive — `classic` + `pro`
-    + `serverless` == `total_warehouses` — via `_WAREHOUSE_TYPE_BUCKET_SQL`,
-    and the `$` split sums to `total_spend` the same way.
+    `total_spend` is tracked DBU spend. It is complete for Serverless, while
+    Classic/Pro customer-cloud infrastructure remains unattributed. The
+    warehouse-count and DBU splits are exhaustive.
 
     Warehouses are collapsed to one row each *before* the counts so a
     warehouse active on many days is counted once. Spend is attributed to
@@ -4548,46 +4664,64 @@ class DatabricksService:
     as `dbu_in_non_covered_workspaces` for the coverage banner rather than
     being silently folded into the headline number.
     """
-    wsc_agg = self._workspace_covered_agg_sql(self.sql_warehouse_table_name)
+    wsc_expr = self._workspace_covered_sql(self.sql_warehouse_table_name)
     query = f"""
         WITH filtered AS (
-            SELECT *
+            SELECT *,
+                   {_WAREHOUSE_TYPE_BUCKET_SQL} AS type_bucket,
+                   {wsc_expr} AS covered
             FROM {self.sql_warehouse_table_name}
             WHERE usage_date >= '{start_date.isoformat()}'
               AND usage_date <= '{end_date.isoformat()}'
         ),
         wh AS (
             SELECT warehouse_id,
-                   MAX({_WAREHOUSE_TYPE_BUCKET_SQL}) AS type_bucket,
-                   SUM(databricks_cost)              AS wh_databricks_cost,
-                   SUM(total_cost)                   AS wh_cost,
-                   {wsc_agg}
+                   MAX_BY(type_bucket, usage_date) AS type_bucket
             FROM filtered
             GROUP BY warehouse_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS total_warehouses,
+                SUM(CASE WHEN type_bucket = 'CLASSIC' THEN 1 ELSE 0 END) AS classic_warehouses,
+                SUM(CASE WHEN type_bucket = 'PRO' THEN 1 ELSE 0 END) AS pro_warehouses,
+                SUM(CASE WHEN type_bucket = 'SERVERLESS' THEN 1 ELSE 0 END) AS serverless_warehouses
+            FROM wh
+        ),
+        spend AS (
+            SELECT
+                COALESCE(SUM(CASE WHEN covered THEN total_cost ELSE 0 END), 0) AS total_spend,
+                COALESCE(SUM(CASE WHEN covered AND type_bucket = 'CLASSIC'
+                                  THEN total_cost ELSE 0 END), 0) AS classic_spend,
+                COALESCE(SUM(CASE WHEN covered AND type_bucket = 'PRO'
+                                  THEN total_cost ELSE 0 END), 0) AS pro_spend,
+                COALESCE(SUM(CASE WHEN covered AND type_bucket = 'SERVERLESS'
+                                  THEN total_cost ELSE 0 END), 0) AS serverless_spend,
+                COALESCE(SUM(CASE WHEN covered THEN databricks_cost ELSE 0 END), 0)
+                    AS total_databricks_cost,
+                COALESCE(SUM(CASE WHEN NOT covered THEN databricks_cost ELSE 0 END), 0)
+                    AS dbu_in_non_covered_workspaces,
+                COUNT(DISTINCT usage_date) AS landed_days,
+                MAX(usage_date) AS data_through_date
+            FROM filtered
         )
         SELECT
-            COUNT(*)                                                    AS total_warehouses,
-            SUM(CASE WHEN type_bucket = 'CLASSIC'    THEN 1 ELSE 0 END) AS classic_warehouses,
-            SUM(CASE WHEN type_bucket = 'PRO'        THEN 1 ELSE 0 END) AS pro_warehouses,
-            SUM(CASE WHEN type_bucket = 'SERVERLESS' THEN 1 ELSE 0 END) AS serverless_warehouses,
-            COALESCE(SUM(CASE WHEN workspace_covered THEN wh_cost ELSE 0 END), 0) AS total_spend,
-            COALESCE(SUM(CASE WHEN workspace_covered AND type_bucket = 'CLASSIC'
-                              THEN wh_cost ELSE 0 END), 0)              AS classic_spend,
-            COALESCE(SUM(CASE WHEN workspace_covered AND type_bucket = 'PRO'
-                              THEN wh_cost ELSE 0 END), 0)              AS pro_spend,
-            COALESCE(SUM(CASE WHEN workspace_covered AND type_bucket = 'SERVERLESS'
-                              THEN wh_cost ELSE 0 END), 0)              AS serverless_spend,
-            COALESCE(SUM(CASE WHEN workspace_covered
-                              THEN wh_databricks_cost ELSE 0 END), 0)   AS total_databricks_cost,
-            COALESCE(SUM(CASE WHEN NOT workspace_covered
-                              THEN wh_databricks_cost ELSE 0 END), 0)   AS dbu_in_non_covered_workspaces
-        FROM wh
+            counts.total_warehouses,
+            counts.classic_warehouses,
+            counts.pro_warehouses,
+            counts.serverless_warehouses,
+            spend.total_spend,
+            spend.classic_spend,
+            spend.pro_spend,
+            spend.serverless_spend,
+            spend.total_databricks_cost,
+            spend.dbu_in_non_covered_workspaces,
+            spend.landed_days,
+            spend.data_through_date
+        FROM counts CROSS JOIN spend
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     date_range_days = (end_date - start_date).days + 1
 
@@ -4605,6 +4739,8 @@ class DatabricksService:
         total_databricks_cost=float(row[8]) if row[8] is not None else 0.0,
         date_range_days=date_range_days,
         dbu_in_non_covered_workspaces=float(row[9]) if row[9] is not None else 0.0,
+        landed_days=int(row[10]) if row[10] is not None else 0,
+        data_through_date=date.fromisoformat(row[11]) if row[11] else None,
       )
 
     return SqlWarehouseSummaryMetrics(
@@ -4618,17 +4754,16 @@ class DatabricksService:
       serverless_spend=0.0,
       total_databricks_cost=0.0,
       date_range_days=date_range_days,
+      landed_days=0,
+      data_through_date=None,
     )
 
   def _sql_warehouse_level_sql(self, start_date: date, end_date: date) -> str:
     """Shared `(warehouse_id)` rollup CTEs for the grouped / top-N reads.
 
-    The rollup is already at `(warehouse_id, usage_date)` grain, so the
-    warehouse-level collapse is a plain GROUP BY: `MAX(...)` on the
-    constant-per-warehouse metadata denormalized from
-    `system.compute.warehouses`, `BOOL_OR` on `metadata_missing`, and SUMs on
-    the costs. `warehouse_id` is account-unique (validated), so unlike
-    `pipeline_id` the key needs no `workspace_id` component.
+    The rollup is already at `(warehouse_id, usage_date)` grain. Metadata uses
+    the latest day in the requested window rather than lexicographic MAX, while
+    costs are summed. `warehouse_id` is account-unique (validated).
     """
     wsc_agg = self._workspace_covered_agg_sql(self.sql_warehouse_table_name)
     return f"""
@@ -4640,15 +4775,15 @@ class DatabricksService:
         ),
         warehouse_level AS (
             SELECT warehouse_id,
-                   MAX(warehouse_name)        AS warehouse_name,
-                   MAX(warehouse_type)        AS warehouse_type,
-                   MAX(warehouse_size)        AS warehouse_size,
-                   MAX(creator_id)            AS creator_id,
-                   MAX(auto_stop_mins)        AS auto_stop_mins,
-                   MAX(min_clusters)          AS min_clusters,
-                   MAX(max_clusters)          AS max_clusters,
-                   BOOL_OR(metadata_missing)  AS metadata_missing,
-                   MAX(warehouse_deleted_at)  AS warehouse_deleted_at,
+                   MAX_BY(warehouse_name, usage_date)        AS warehouse_name,
+                   MAX_BY(warehouse_type, usage_date)        AS warehouse_type,
+                   MAX_BY(warehouse_size, usage_date)        AS warehouse_size,
+                   MAX_BY(creator_id, usage_date)            AS creator_id,
+                   MAX_BY(auto_stop_mins, usage_date)        AS auto_stop_mins,
+                   MAX_BY(min_clusters, usage_date)          AS min_clusters,
+                   MAX_BY(max_clusters, usage_date)          AS max_clusters,
+                   MAX_BY(metadata_missing, usage_date)      AS metadata_missing,
+                   MAX_BY(warehouse_deleted_at, usage_date)  AS warehouse_deleted_at,
                    COUNT(DISTINCT usage_date) AS active_days,
                    SUM(databricks_cost)       AS total_databricks_cost,
                    SUM(total_cost)            AS total_cost,
@@ -4682,6 +4817,7 @@ class DatabricksService:
       total_databricks_cost=float(row[11]) if row[11] is not None else 0.0,
       total_cost=float(row[12]) if row[12] is not None else 0.0,
       workspace_covered=_parse_workspace_covered(row[13]),
+      cost_basis=_sql_warehouse_cost_basis(row[2]),
       days=days if days is not None else [],
     )
 
@@ -4692,6 +4828,10 @@ class DatabricksService:
     search: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: Literal[
+      'total_cost', 'total_databricks_cost', 'active_days', 'warehouse_name'
+    ] = 'total_cost',
+    sort_dir: Literal['asc', 'desc'] = 'desc',
   ) -> PaginatedSqlWarehouses:
     """Paginated By-Warehouse rollup for the SQL Warehouses tab.
 
@@ -4714,6 +4854,15 @@ class DatabricksService:
         ')'
       )
 
+    sort_columns = {
+      'total_cost': 'wl.total_cost',
+      'total_databricks_cost': 'wl.total_databricks_cost',
+      'active_days': 'wl.active_days',
+      'warehouse_name': 'LOWER(COALESCE(wl.warehouse_name, wl.warehouse_id))',
+    }
+    order_column = sort_columns[sort_by]
+    order_direction = 'ASC' if sort_dir == 'asc' else 'DESC'
+
     data_query = f"""
         {self._sql_warehouse_level_sql(start_date, end_date)}
         SELECT wl.warehouse_id, wl.warehouse_name, wl.warehouse_type,
@@ -4724,14 +4873,11 @@ class DatabricksService:
                COUNT(*) OVER() AS total_matching
         FROM warehouse_level wl
         {search_clause}
-        ORDER BY wl.total_cost DESC
+        ORDER BY {order_column} {order_direction}, wl.warehouse_id ASC
         LIMIT {limit} OFFSET {offset}
         """
 
-    data_response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=data_query,
-    )
+    data_response = self._execute_statement(data_query)
 
     total_count = 0
     grouped: List[GroupedSqlWarehouse] = []
@@ -4745,6 +4891,16 @@ class DatabricksService:
         grouped.append(
           self._parse_grouped_sql_warehouse(row, days=days_by_warehouse.get(row[0], []))
         )
+    elif offset > 0:
+      count_query = f"""
+          {self._sql_warehouse_level_sql(start_date, end_date)}
+          SELECT COUNT(*)
+          FROM warehouse_level wl
+          {search_clause}
+          """
+      count_response = self._execute_statement(count_query)
+      if count_response.result and count_response.result.data_array:
+        total_count = int(count_response.result.data_array[0][0] or 0)
 
     total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
     current_page = (offset // limit) + 1
@@ -4795,10 +4951,7 @@ class DatabricksService:
         ORDER BY warehouse_id, usage_date
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     result: Dict[str, List[SqlWarehouseDailySpend]] = {}
     if response.result and response.result.data_array:
@@ -4810,6 +4963,7 @@ class DatabricksService:
             total_cost=float(row[3]) if row[3] is not None else 0.0,
             warehouse_type=row[4],
             sku_name=row[5],
+            cost_basis=_sql_warehouse_cost_basis(row[4]),
           )
         )
 
@@ -4836,14 +4990,11 @@ class DatabricksService:
                wl.warehouse_deleted_at, wl.active_days,
                wl.total_databricks_cost, wl.total_cost, wl.workspace_covered
         FROM warehouse_level wl
-        ORDER BY wl.total_cost DESC
+        ORDER BY wl.total_cost DESC, wl.warehouse_id ASC
         LIMIT {limit}
         """
 
-    response = self.client.statement_execution.execute_statement(
-      warehouse_id=self.warehouse_id,
-      statement=query,
-    )
+    response = self._execute_statement(query)
 
     warehouses: List[GroupedSqlWarehouse] = []
     if response.result and response.result.data_array:
@@ -4877,19 +5028,9 @@ class DatabricksService:
         """
 
     row = None
-    try:
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=query,
-      )
-      if response.result and response.result.data_array:
-        row = response.result.data_array[0]
-    except Exception as exc:
-      logger.error(
-        'Error fetching SQL warehouse details for %s: %s',
-        warehouse_id,
-        str(exc),
-      )
+    response = self._execute_statement(query)
+    if response.result and response.result.data_array:
+      row = response.result.data_array[0]
 
     if row is None:
       return SqlWarehouseDetails(
@@ -4909,6 +5050,7 @@ class DatabricksService:
       metadata_missing=self._parse_bool(row[8]) or False,
       warehouse_deleted_at=self._parse_timestamp(row[9]),
       tags=self._get_sql_warehouse_tags(escaped_id),
+      cost_basis=_sql_warehouse_cost_basis(row[2]),
     )
 
   def _get_sql_warehouse_tags(self, escaped_warehouse_id: str) -> Optional[dict]:
@@ -4926,10 +5068,7 @@ class DatabricksService:
             PARTITION BY warehouse_id ORDER BY change_time DESC) = 1
         """
     try:
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=query,
-      )
+      response = self._execute_statement(query)
       if response.result and response.result.data_array:
         return self._parse_tags(response.result.data_array[0][0])
     except Exception as exc:
@@ -4940,27 +5079,31 @@ class DatabricksService:
       )
     return None
 
-  async def get_sql_warehouse_cost_summary(self, warehouse_id: str) -> Optional[dict]:
-    """Aggregated cost summary for a single warehouse over the lookback.
+  async def get_sql_warehouse_cost_summary(
+    self,
+    warehouse_id: str,
+    start_date: date,
+    end_date: date,
+  ) -> Optional[dict]:
+    """Aggregated tracked cost for one warehouse in the requested window.
 
-    Feeds the LLM analyze endpoint (`/api/warehouses/{id}/analyze`). DBU is
-    the complete cost for managed compute, so `total_cost` and
-    `total_dbu_cost` are the same figure — carried as two keys so the prompt
-    can state that explicitly rather than implying a missing cloud component.
+    `total_cost` currently equals DBU. That is complete for Serverless and
+    DBU-only for Classic/Pro, represented by `cost_basis`.
 
     Returns ``None`` only on query failure; a warehouse with no spend in the
     window returns a zero-valued dict so the LLM still gets scaffolding.
     """
     try:
       escaped_id = warehouse_id.replace("'", "''")
-      lookback_date = (date.today() - timedelta(days=SQL_WAREHOUSE_LOOKBACK_DAYS)).isoformat()
+      lookback_days = (end_date - start_date).days + 1
 
       query = f"""
             WITH filtered AS (
                 SELECT *
                 FROM {self.sql_warehouse_table_name}
                 WHERE warehouse_id = '{escaped_id}'
-                  AND usage_date >= '{lookback_date}'
+                  AND usage_date >= '{start_date.isoformat()}'
+                  AND usage_date <= '{end_date.isoformat()}'
             ),
             day_level AS (
                 SELECT usage_date,
@@ -4974,15 +5117,12 @@ class DatabricksService:
                 COALESCE(SUM(day_databricks_cost), 0) AS total_dbu_cost,
                 COUNT(*)                              AS active_days,
                 COALESCE(AVG(day_total_cost), 0)      AS avg_daily_cost,
-                (SELECT MAX(warehouse_type) FROM filtered) AS warehouse_type,
-                (SELECT MAX(warehouse_name) FROM filtered) AS warehouse_name
+                (SELECT MAX_BY(warehouse_type, usage_date) FROM filtered) AS warehouse_type,
+                (SELECT MAX_BY(warehouse_name, usage_date) FROM filtered) AS warehouse_name
             FROM day_level
             """
 
-      response = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=query,
-      )
+      response = self._execute_statement(query)
 
       if not response.result or not response.result.data_array:
         return {
@@ -4992,7 +5132,10 @@ class DatabricksService:
           'avg_daily_cost': 0.0,
           'warehouse_type': None,
           'warehouse_name': None,
-          'lookback_days': SQL_WAREHOUSE_LOOKBACK_DAYS,
+          'lookback_days': lookback_days,
+          'start_date': start_date.isoformat(),
+          'end_date': end_date.isoformat(),
+          'cost_basis': 'unknown',
         }
 
       row = response.result.data_array[0]
@@ -5003,7 +5146,10 @@ class DatabricksService:
         'avg_daily_cost': float(row[3]) if row[3] is not None else 0.0,
         'warehouse_type': row[4],
         'warehouse_name': row[5],
-        'lookback_days': SQL_WAREHOUSE_LOOKBACK_DAYS,
+        'lookback_days': lookback_days,
+        'start_date': start_date.isoformat(),
+        'end_date': end_date.isoformat(),
+        'cost_basis': _sql_warehouse_cost_basis(row[4]),
       }
     except Exception as exc:
       logger.error(
@@ -5084,7 +5230,11 @@ class DatabricksService:
     except Exception:
       return {'raw': raw}
 
-  async def get_coverage_summary(self) -> CoverageSummaryResponse:
+  async def get_coverage_summary(
+    self,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+  ) -> CoverageSummaryResponse:
     """Return subscription-coverage aggregates for banners and KPIs.
 
     Excluded workspaces are derived from `system.billing.usage` workspaces
@@ -5092,6 +5242,14 @@ class DatabricksService:
     `SUM(databricks_cost) WHERE workspace_covered = false` on each rollup.
     """
     lookback = LOOKBACK_DAYS
+    usage_date_predicate = f'u.usage_date >= date_sub(current_date(), {lookback})'
+    rollup_date_predicate = ''
+    if start_date is not None:
+      usage_date_predicate = f"u.usage_date >= '{start_date.isoformat()}'"
+      rollup_date_predicate += f" AND usage_date >= '{start_date.isoformat()}'"
+    if end_date is not None:
+      usage_date_predicate += f" AND u.usage_date <= '{end_date.isoformat()}'"
+      rollup_date_predicate += f" AND usage_date <= '{end_date.isoformat()}'"
 
     subs_query = f"""
         SELECT DISTINCT subscription_id
@@ -5119,7 +5277,7 @@ class DatabricksService:
               ON u.sku_name = lp.sku_name
              AND u.usage_start_time >= lp.price_start_time
              AND (u.usage_start_time < lp.price_end_time OR lp.price_end_time IS NULL)
-            WHERE u.usage_date >= date_sub(current_date(), {lookback})
+            WHERE {usage_date_predicate}
             GROUP BY u.workspace_id
             HAVING SUM(u.usage_quantity) > 0
         )
@@ -5132,57 +5290,60 @@ class DatabricksService:
         LIMIT 10
         """
     tab_query = f"""
-        SELECT 'job' AS tab_key, COALESCE(SUM(databricks_cost), 0) AS excluded_dbu
+        SELECT 'job' AS tab_key,
+               COALESCE(SUM(databricks_cost), 0) AS excluded_dbu,
+               0 AS excluded_workspace_count
         FROM {self.table_name}
         WHERE COALESCE(workspace_covered, true) = false
+        {rollup_date_predicate}
         UNION ALL
-        SELECT 'all_purpose', COALESCE(SUM(databricks_cost), 0)
+        SELECT 'all_purpose', COALESCE(SUM(databricks_cost), 0),
+               0
         FROM {self.all_purpose_table_name}
         WHERE COALESCE(workspace_covered, true) = false
+        {rollup_date_predicate}
         UNION ALL
-        SELECT 'pipeline', COALESCE(SUM(databricks_cost), 0)
+        SELECT 'pipeline', COALESCE(SUM(databricks_cost), 0),
+               COUNT(DISTINCT workspace_id)
         FROM {self.pipeline_table_name}
         WHERE COALESCE(workspace_covered, true) = false
+        {rollup_date_predicate}
         UNION ALL
-        SELECT 'pool', COALESCE(SUM(databricks_cost), 0)
+        SELECT 'pool', COALESCE(SUM(databricks_cost), 0),
+               COUNT(DISTINCT workspace_id)
         FROM {self.pool_table_name}
         WHERE COALESCE(workspace_covered, true) = false
+        {rollup_date_predicate}
         UNION ALL
-        SELECT 'sql_warehouse', COALESCE(SUM(databricks_cost), 0)
+        SELECT 'sql_warehouse', COALESCE(SUM(databricks_cost), 0),
+               COUNT(DISTINCT workspace_id)
         FROM {self.sql_warehouse_table_name}
         WHERE COALESCE(workspace_covered, true) = false
+        {rollup_date_predicate}
         """
 
     covered_workspace_count = 0
     covered_subscription_ids: List[str] = []
     excluded_workspaces: List[ExcludedWorkspace] = []
     excluded_by_tab = ExcludedDbuByTab()
+    excluded_count_by_tab = ExcludedWorkspaceCountByTab()
 
     try:
-      count_resp = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=count_query,
-      )
+      count_resp = self._execute_statement(count_query)
       if count_resp.result and count_resp.result.data_array:
         covered_workspace_count = int(count_resp.result.data_array[0][0] or 0)
     except Exception as e:
       logger.warning('Coverage count query failed (table may not exist yet): %s', e)
 
     try:
-      subs_resp = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=subs_query,
-      )
+      subs_resp = self._execute_statement(subs_query)
       if subs_resp.result and subs_resp.result.data_array:
         covered_subscription_ids = [str(row[0]) for row in subs_resp.result.data_array if row[0]]
     except Exception as e:
       logger.warning('Coverage subscription query failed: %s', e)
 
     try:
-      excluded_resp = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=excluded_query,
-      )
+      excluded_resp = self._execute_statement(excluded_query)
       if excluded_resp.result and excluded_resp.result.data_array:
         for row in excluded_resp.result.data_array:
           excluded_workspaces.append(
@@ -5196,18 +5357,23 @@ class DatabricksService:
       logger.warning('Excluded-workspace query failed: %s', e)
 
     try:
-      tab_resp = self.client.statement_execution.execute_statement(
-        warehouse_id=self.warehouse_id,
-        statement=tab_query,
-      )
+      tab_resp = self._execute_statement(tab_query)
       if tab_resp.result and tab_resp.result.data_array:
         tab_map = {str(row[0]): float(row[1] or 0) for row in tab_resp.result.data_array}
+        tab_count_map = {str(row[0]): int(row[2] or 0) for row in tab_resp.result.data_array}
         excluded_by_tab = ExcludedDbuByTab(
           job=tab_map.get('job', 0.0),
           all_purpose=tab_map.get('all_purpose', 0.0),
           pipeline=tab_map.get('pipeline', 0.0),
           pool=tab_map.get('pool', 0.0),
           sql_warehouse=tab_map.get('sql_warehouse', 0.0),
+        )
+        excluded_count_by_tab = ExcludedWorkspaceCountByTab(
+          job=tab_count_map.get('job', 0),
+          all_purpose=tab_count_map.get('all_purpose', 0),
+          pipeline=tab_count_map.get('pipeline', 0),
+          pool=tab_count_map.get('pool', 0),
+          sql_warehouse=tab_count_map.get('sql_warehouse', 0),
         )
     except Exception as e:
       logger.warning(
@@ -5221,5 +5387,6 @@ class DatabricksService:
       covered_workspace_count=covered_workspace_count,
       excluded_workspaces=excluded_workspaces,
       excluded_dbu_by_tab=excluded_by_tab,
+      excluded_workspace_count_by_tab=excluded_count_by_tab,
       currency='USD',
     )

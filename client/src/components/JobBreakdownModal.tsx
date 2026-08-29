@@ -12,15 +12,18 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useJobBreakdown, useJobCostAnalysis, useClusterDetails, useClusterAnalysis, useAiModelLabel } from '@/hooks/useJobSpends';
+import { useFeatures } from '@/hooks/useFeatures';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
-import { closeOnly, HIGH_COST_USD } from '@/lib/utils';
+import { closeOnly, formatCalendarDate, HIGH_COST_USD } from '@/lib/utils';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 import { AnalysisMarkdown } from './AnalysisMarkdown';
+import type { DateRange } from '@/types/job-spend';
 
 interface JobBreakdownModalProps {
   jobId: string;
   runId: string;
+  dateRange: DateRange;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -39,14 +42,21 @@ interface ClusterDetailsModalProps {
   clusterKind?: 'job' | 'all_purpose';
 }
 
-export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdownModalProps) => {
+export const JobBreakdownModal = ({ jobId, runId, dateRange, isOpen, onClose }: JobBreakdownModalProps) => {
   const { config: cloudConfig } = useCloudPlatform();
   const aiModelLabel = useAiModelLabel();
   const isAws = useIsAws();
   const isSegmentedPlatform = useIsSegmentedPlatform();
-  const { data: breakdown, isLoading, error } = useJobBreakdown(jobId, runId);
-  const { data: analysis, isLoading: analysisLoading, error: analysisError } = useJobCostAnalysis(jobId, runId);
+  const { data: features } = useFeatures();
+  const { data: breakdown, isLoading, error } = useJobBreakdown(jobId, runId, dateRange);
+  const { data: analysis, isLoading: analysisLoading, error: analysisError } = useJobCostAnalysis(
+    jobId,
+    runId,
+    dateRange,
+    features?.enable_cost_analysis ?? false,
+  );
   const [isClusterDetailsOpen, setIsClusterDetailsOpen] = useState(false);
+  const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [isOtherBreakdownOpen, setIsOtherBreakdownOpen] = useState(false);
 
   // D12: the model's `cost_split` is data-shaped (`has_segmented = compute is not
@@ -55,7 +65,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
   // (pie data, the <Cell> color map, and the legend/summary list).
   const awsCostSplit = breakdown
     ? [
-        { name: AWS_CLOUD_LABEL, value: breakdown.cloud_cost, color: '#3b82f6' },
+        { name: AWS_CLOUD_LABEL, value: breakdown.cloud_cost ?? 0, color: '#3b82f6' },
         { name: 'Databricks (DBU)', value: breakdown.databricks_cost, color: '#ef4444' },
       ]
     : [];
@@ -87,17 +97,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
     }).format(amount);
   };
 
-  const formatDate = (dateStr: string) => {
-    try {
-      return new Date(dateStr).toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      });
-    } catch {
-      return dateStr;
-    }
-  };
+  const formatDate = (dateStr: string) => formatCalendarDate(dateStr);
 
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
@@ -234,18 +234,24 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                   <div className="flex justify-between items-start">
                     <span className="text-sm font-medium text-muted-foreground">Cluster ID</span>
                     <div className="text-right flex items-center space-x-2">
-                      <div className="font-mono text-sm max-w-[200px] truncate" title={breakdown.cluster_id}>
-                        {breakdown.cluster_id}
+                      <div className="flex flex-wrap justify-end gap-1">
+                        {(breakdown.cluster_ids.length ? breakdown.cluster_ids : [breakdown.cluster_id]).map((clusterId) => (
+                          <Button
+                            key={clusterId}
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 font-mono text-xs"
+                            onClick={() => {
+                              setSelectedClusterId(clusterId);
+                              setIsClusterDetailsOpen(true);
+                            }}
+                            title={`View details for cluster ${clusterId}`}
+                          >
+                            <Info className="h-3 w-3 text-blue-600 mr-1" />
+                            {clusterId}
+                          </Button>
+                        ))}
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={() => setIsClusterDetailsOpen(true)}
-                        title="View cluster details and AI analysis"
-                      >
-                        <Info className="h-3 w-3 text-blue-600" />
-                      </Button>
                     </div>
                   </div>
 
@@ -321,7 +327,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                     <div className="grid grid-cols-2 gap-4">
                       <div className="text-center p-3 bg-blue-50 dark:bg-blue-500/10 rounded">
                         <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-                          {breakdown.total_cost > 0 ? ((breakdown.cloud_cost / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
+                            {breakdown.total_cost > 0 ? (((breakdown.cloud_cost ?? 0) / breakdown.total_cost) * 100).toFixed(1) : '0.0'}%
                         </div>
                         <div className="text-sm text-blue-600 dark:text-blue-400">{isAws ? AWS_CLOUD_LABEL : (cloudConfig?.compute_service || 'Cloud')} Share</div>
                       </div>
@@ -341,7 +347,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                         High Cost Job
                       </Badge>
                     )}
-                    {breakdown.cloud_cost > breakdown.databricks_cost ? (
+                    {(breakdown.cloud_cost ?? 0) > breakdown.databricks_cost ? (
                       <Badge variant="secondary" className="w-full justify-center">
                         Cloud-Heavy Workload
                       </Badge>
@@ -356,6 +362,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
             </div>
 
             {/* AI Cost Analysis Section */}
+            {features?.enable_cost_analysis && (
             <div className="lg:col-span-2 space-y-4">
               <Card>
                 <CardHeader>
@@ -410,6 +417,7 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
                 </CardContent>
               </Card>
             </div>
+            )}
           </div>
         ) : (
           <div className="text-center py-8">
@@ -420,19 +428,22 @@ export const JobBreakdownModal = ({ jobId, runId, isOpen, onClose }: JobBreakdow
         {/* Cluster Details Modal */}
         {breakdown && (
           <>
-            <ClusterDetailsModal
-              clusterId={breakdown.cluster_id}
-              isOpen={isClusterDetailsOpen}
-              onClose={() => setIsClusterDetailsOpen(false)}
-              clusterKind="job"
-            />
+            {selectedClusterId && (
+              <ClusterDetailsModal
+                clusterId={selectedClusterId}
+                isOpen={isClusterDetailsOpen}
+                onClose={() => setIsClusterDetailsOpen(false)}
+                clusterKind="job"
+              />
+            )}
             {!isAws && (
               <OtherCostBreakdownModal
                 dateRange={{
                   start_date: breakdown.usage_date,
                   end_date: breakdown.end_date || breakdown.usage_date,
                 }}
-                clusterId={breakdown.cluster_id}
+                jobId={jobId}
+                runId={runId}
                 isOpen={isOtherBreakdownOpen}
                 onClose={() => setIsOtherBreakdownOpen(false)}
               />
@@ -450,8 +461,13 @@ export const ClusterDetailsModal = ({
   onClose,
   clusterKind,
 }: ClusterDetailsModalProps) => {
+  const { data: features } = useFeatures();
   const { data: clusterDetails, isLoading: detailsLoading, error: detailsError } = useClusterDetails(clusterId);
-  const { data: clusterAnalysis, isLoading: analysisLoading, error: analysisError } = useClusterAnalysis(clusterId, clusterKind);
+  const { data: clusterAnalysis, isLoading: analysisLoading, error: analysisError } = useClusterAnalysis(
+    clusterId,
+    clusterKind,
+    features?.enable_cluster_analysis ?? false,
+  );
   const aiModelLabel = useAiModelLabel();
 
   const formatDate = (dateStr?: string) => {
@@ -574,7 +590,7 @@ export const ClusterDetailsModal = ({
                   <div className="flex justify-between items-start">
                     <span className="text-sm font-medium text-muted-foreground">Worker Count</span>
                     <div className="text-right">
-                      <div className="text-sm">{clusterDetails.worker_count || 'N/A'}</div>
+                      <div className="text-sm">{clusterDetails.worker_count ?? 'N/A'}</div>
                     </div>
                   </div>
 
@@ -714,6 +730,7 @@ export const ClusterDetailsModal = ({
             </div>
 
             {/* AI Cluster Analysis */}
+            {features?.enable_cluster_analysis && (
             <div className="space-y-4">
               <Card>
                 <CardHeader>
@@ -768,6 +785,7 @@ export const ClusterDetailsModal = ({
                 </CardContent>
               </Card>
             </div>
+            )}
           </div>
         ) : (
           <div className="text-center py-8">

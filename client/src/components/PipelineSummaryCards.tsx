@@ -4,11 +4,8 @@
 // Parallels `InstancePoolsSummaryCards.tsx`, tuned to the pipeline data model
 // (plan §4.1 / CP10):
 //
-//   - Total DBU spend (v1 is DBU-only; `total_cloud_cost` is always null —
-//     plan §3.2). The compute-mode `$` split is surfaced as a footnote in
-//     plain numbers: serverless (full cost) / classic (DBU only) / mixed
-//     (partial) — three buckets that sum to total so the wording never
-//     implies the split is exhaustive of two buckets (plan §3.2 / §5.3).
+//   - Total spend includes all known DBU plus available cloud cost. Freshness
+//     fields disclose how much of the selected window has landed.
 //   - Workload breakdown card — the per-`workload_type` `$` map (exact,
 //     reconciles row-for-row with staging — plan §3.1). This is the headline
 //     truth indicator: it shows DLT is only a slice of pipeline-backed
@@ -42,6 +39,7 @@ import { formatCurrency, workloadBadgeClasses } from '@/lib/pipeline-display';
 import type { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
+import { formatCalendarDate } from '@/lib/utils';
 
 interface PipelineSummaryCardsProps {
   dateRange: DateRange;
@@ -85,11 +83,11 @@ export const PipelineSummaryCards = ({
   // skeletons/errors independently from the top-5 list below (poly3 — no
   // whole-strip block).
   //
-  // Whole-tab daily run-rate: total shown spend / days in the window. This is
-  // NOT a per-pipeline-day average (the rollup carries no such field), so the
-  // tile is labeled "Avg Daily Spend" to match its actual denominator.
+  // Whole-tab landed-day run-rate. Dividing by the selected calendar span
+  // would understate the average whenever the newest billing day has not
+  // landed yet; freshness is disclosed below.
   const dailyAverageSpend = metrics
-    ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
+    ? metrics.total_spend / Math.max(metrics.data_days, 1)
     : 0;
 
   // Sort the workload breakdown by $ descending so the dominant workload
@@ -99,6 +97,11 @@ export const PipelineSummaryCards = ({
     : [];
 
   const hasMetadataGap = !!metrics && metrics.metadata_unavailable > 0;
+  const cloudRelevant =
+    !!metrics &&
+    (metrics.classic_pipelines > 0 ||
+      metrics.mixed_pipelines > 0 ||
+      metrics.total_cloud_cost != null);
 
   // CP3: classic + mixed pipelines now carry EC2/EBS cloud cost, so the
   // headline is total spend (DBU + cloud), not DBU alone. `total_cloud_cost`
@@ -145,7 +148,7 @@ export const PipelineSummaryCards = ({
             <p className="text-xs text-muted-foreground mt-1">
               {metrics.date_range_days} day
               {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
-              {formatCurrency(dailyAverageSpend)}/day avg
+              {formatCurrency(dailyAverageSpend)}/landed-day avg
               {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
                 <>
                   {' '}
@@ -153,6 +156,9 @@ export const PipelineSummaryCards = ({
                   DBU in non-covered workspaces
                 </>
               )}
+            </p>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Includes all known DBU; cloud cost is included where available.
             </p>
           </CardContent>
         </Card>
@@ -177,12 +183,18 @@ export const PipelineSummaryCards = ({
               <>
                 <div
                   className="text-2xl font-bold text-muted-foreground cursor-help"
-                  title="No matched pipeline carries a separate VM line in this window — serverless DBU already bundles infrastructure cost."
+                  title={
+                    cloudRelevant
+                      ? 'No cloud cost was returned for this selection. DBU remains included in Total Spend.'
+                      : 'No matched pipeline carries a separate VM line in this window — serverless DBU already bundles infrastructure cost.'
+                  }
                 >
                   —
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  all serverless — no separate VM line
+                  {cloudRelevant
+                    ? 'cloud cost unavailable for this selection'
+                    : 'serverless-only — no separate VM line'}
                 </p>
               </>
             )}
@@ -235,6 +247,44 @@ export const PipelineSummaryCards = ({
       </div>
       )}
 
+      {metrics && (
+        <Card>
+          <CardContent className="p-4">
+            <div className="grid gap-3 text-xs md:grid-cols-3">
+              <FreshnessItem
+                label="Latest landed data"
+                date={metrics.latest_data_date}
+                days={metrics.data_days}
+                selectedDays={metrics.date_range_days}
+                expectedEnd={dateRange.end_date}
+              />
+              <FreshnessItem
+                label="Latest DBU data"
+                date={metrics.latest_dbu_date}
+                days={metrics.data_days}
+                selectedDays={metrics.date_range_days}
+                expectedEnd={dateRange.end_date}
+              />
+              {cloudRelevant ? (
+                <FreshnessItem
+                  label="Latest cloud data"
+                  date={metrics.latest_cloud_date}
+                  days={metrics.cloud_data_days}
+                  selectedDays={metrics.date_range_days}
+                  expectedEnd={dateRange.end_date}
+                />
+              ) : (
+                <div className="text-muted-foreground">
+                  <div className="font-medium text-foreground">Cloud data</div>
+                  No separate cloud line is expected for this serverless-only
+                  selection.
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Compute-mode $ split footnote — three buckets summing to total so the
           wording stays exact even when mixed rows exist (plan §3.2 / §5.3).
           CP3: classic/mixed now include EC2/EBS cloud cost; serverless is the
@@ -252,7 +302,7 @@ export const PipelineSummaryCards = ({
               {formatPercent(metrics.classic_spend, metrics.total_spend)}
             </span>{' '}
             ({formatCurrency(metrics.classic_spend)}) is classic (DBU +
-            EC2/EBS)
+            available cloud)
             {metrics.mixed_spend > 0 && (
               <>
                 ;{' '}
@@ -260,7 +310,7 @@ export const PipelineSummaryCards = ({
                   {formatPercent(metrics.mixed_spend, metrics.total_spend)}
                 </span>{' '}
                 ({formatCurrency(metrics.mixed_spend)}) is mixed (serverless +
-                classic DBU + EC2/EBS)
+                classic DBU + available cloud)
               </>
             )}
             .
@@ -381,6 +431,15 @@ export const PipelineSummaryCards = ({
                         >
                           {pipeline.workload_type}
                         </Badge>
+                        {pipeline.workspace_covered === false && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] shrink-0 border-amber-300 text-amber-700 dark:text-amber-300"
+                            title="DBU is included, but cloud billing coverage is incomplete for this workspace."
+                          >
+                            Not covered
+                          </Badge>
+                        )}
                       </div>
                       <div className="text-right shrink-0 ml-2">
                         <div className="text-sm font-semibold">
@@ -415,6 +474,49 @@ const TopListSkeleton = () => (
     ))}
   </div>
 );
+
+const FreshnessItem = ({
+  label,
+  date,
+  days,
+  selectedDays,
+  expectedEnd,
+}: {
+  label: string;
+  date?: string | null;
+  days?: number;
+  selectedDays: number;
+  expectedEnd: string;
+}) => {
+  const complete =
+    !!date &&
+    days != null &&
+    selectedDays > 0 &&
+    days >= selectedDays &&
+    date >= expectedEnd;
+
+  return (
+    <div className="text-muted-foreground">
+      <div className="font-medium text-foreground">{label}</div>
+      <div>
+        {date ? formatCalendarDate(date) : 'Date unavailable'}
+        {' · '}
+        {days != null
+          ? `${days} of ${selectedDays} selected days`
+          : 'day count unavailable'}
+      </div>
+      <div
+        className={
+          complete
+            ? 'text-emerald-700 dark:text-emerald-300'
+            : 'text-amber-700 dark:text-amber-300'
+        }
+      >
+        {complete ? 'Selected window landed' : 'Completeness not confirmed'}
+      </div>
+    </div>
+  );
+};
 
 const KpiStripSkeleton = () => (
   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">

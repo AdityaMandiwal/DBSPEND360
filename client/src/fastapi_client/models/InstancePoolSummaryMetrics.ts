@@ -11,10 +11,10 @@
  * day on a single pool cost on average". `orphaned_pools` is the count of
  * distinct pools with `pool_snapshot_missing = TRUE`, surfaced as a KPI so
  * operators can spot lost-metadata churn at a glance (plan §10 risk).
- * `total_cloud_cost` is the summed pool EC2/EBS cost over the window (CP7,
- * plan §4.4/§4.6); it stays optional and is `None` only when no pool-day in
- * the window carries a cloud row yet, so the KPI is hidden rather than
- * showing a misleading `$0` (plan §5 / decision #3).
+ * `total_cloud_cost` is the summed ClusterId-free idle/warm pool VM cost over
+ * the window; active pool-backed VM cost remains on its cluster lens.
+ * `latest_*_date` and `cloud_data_days` make partial source coverage explicit
+ * so the UI never presents landed rows as a complete selected-window total.
  */
 export type InstancePoolSummaryMetrics = {
     total_pools: number;
@@ -28,5 +28,9 @@ export type InstancePoolSummaryMetrics = {
     total_cloud_cost?: (number | null);
     date_range_days: number;
     dbu_in_non_covered_workspaces?: number;
+    latest_data_date?: (string | null);
+    latest_dbu_date?: (string | null);
+    latest_cloud_date?: (string | null);
+    cloud_data_days?: number;
 };
 

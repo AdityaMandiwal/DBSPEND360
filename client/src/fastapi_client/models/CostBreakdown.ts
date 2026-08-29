@@ -9,9 +9,10 @@ export type CostBreakdown = {
     job_id: string;
     run_id: string;
     cluster_id: string;
+    cluster_ids?: Array<string>;
     usage_date: string;
     end_date?: (string | null);
-    cloud_cost: number;
+    cloud_cost?: (number | null);
     databricks_cost: number;
     total_cost: number;
     compute_cost?: (number | null);

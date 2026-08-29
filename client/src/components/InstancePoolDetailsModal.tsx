@@ -3,9 +3,9 @@
 // Distinct from `ClusterDetailsModal` (used elsewhere in the app to render
 // cluster-level config + analysis) because pools and clusters have
 // different upstream sources (`system.compute.instance_pools` vs
-// `system.compute.clusters`) and different LLM prompts (the pool prompt
-// includes pool EC2/EBS cost and the remaining idle-vs-active split caveat
-// per plan §4.5 / CP8).
+// `system.compute.clusters`) and different LLM prompts. The pool prompt
+// receives only ClusterId-free idle/warm cloud cost and discloses that active
+// pool-backed VM cost remains on the Job or All-Purpose tab.
 //
 // Renders the §3.5 three-state info banner at the top of the modal:
 //   - Active                : no banner.
@@ -49,9 +49,11 @@ import {
 import { useAiModelLabel } from '@/hooks/useJobSpends';
 import { closeOnly, formatCalendarDate } from '@/lib/utils';
 import { AnalysisMarkdown } from './AnalysisMarkdown';
+import type { DateRange } from '@/types/job-spend';
 
 interface InstancePoolDetailsModalProps {
   poolId: string;
+  dateRange: DateRange;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -69,6 +71,7 @@ const formatDeleteDate = (dateStr?: string | null): string | null =>
 
 export const InstancePoolDetailsModal = ({
   poolId,
+  dateRange,
   isOpen,
   onClose,
 }: InstancePoolDetailsModalProps) => {
@@ -82,7 +85,7 @@ export const InstancePoolDetailsModal = ({
     data: analysis,
     isLoading: analysisLoading,
     error: analysisError,
-  } = useInstancePoolAnalysis(poolId);
+  } = useInstancePoolAnalysis(poolId, dateRange);
 
   const deletedDateLabel = formatDeleteDate(details?.pool_deleted_at);
 

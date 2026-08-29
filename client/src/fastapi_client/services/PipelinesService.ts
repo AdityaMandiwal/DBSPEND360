@@ -58,6 +58,8 @@ export class PipelinesService {
      * @param endDate End date for filtering (YYYY-MM-DD)
      * @param search Optional free-text filter matched against pipeline_name (case-insensitive substring), pipeline_id (exact), and created_by (case-insensitive substring)
      * @param workloadType Optional workload-type chip filter (multi-value, e.g. 'DLT Pipeline'). Only labels / narrows; never drops (plan §3.1).
+     * @param sortBy Column to sort by
+     * @param sortDir Sort direction
      * @param page Page number
      * @param perPage Items per page
      * @returns PaginatedPipelines Successful Response
@@ -68,6 +70,8 @@ export class PipelinesService {
         endDate: string,
         search?: (string | null),
         workloadType?: (Array<string> | null),
+        sortBy: 'pipeline' | 'name' | 'workload' | 'compute' | 'creator' | 'active_days' | 'cloud' | 'dbu' | 'total' = 'total',
+        sortDir: 'asc' | 'desc' = 'desc',
         page: number = 1,
         perPage: number = 50,
     ): CancelablePromise<PaginatedPipelines> {
@@ -79,6 +83,8 @@ export class PipelinesService {
                 'end_date': endDate,
                 'search': search,
                 'workload_type': workloadType,
+                'sort_by': sortBy,
+                'sort_dir': sortDir,
                 'page': page,
                 'per_page': perPage,
             },
@@ -167,10 +173,9 @@ export class PipelinesService {
      * (`server.services.llm_service.PIPELINE_ANALYSIS_PROMPT`) tailors itself
      * off the `workload_type` field with no per-product branching (plan §4.1).
      *
-     * The analysis MUST include the DBU-only caveat ("excludes cloud VM cost")
-     * iff `cost_basis != 'full'` (plan §3.2 / §9 acceptance criterion #14 /
-     * CP7 exit criterion #4); the structured fallback carries the same
-     * conditional so the invariant holds on LLM failure.
+     * The analysis includes "excludes cloud VM cost" only when the cost summary
+     * reports incomplete cloud coverage. The structured fallback carries the
+     * same conditional so the invariant holds on LLM failure.
      * @param pipelineId
      * @param workspaceId Optional workspace scope (see `/{id}/details`). Returns 409 if the id is ambiguous across workspaces and this is omitted.
      * @returns PipelineAnalysis Successful Response

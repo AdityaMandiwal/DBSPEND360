@@ -16,7 +16,7 @@ export type GroupedJob = {
     job_id: string;
     job_name?: (string | null);
     run_count: number;
-    total_cloud_cost: number;
+    total_cloud_cost?: (number | null);
     total_databricks_cost: number;
     total_compute_cost?: (number | null);
     total_storage_cost?: (number | null);

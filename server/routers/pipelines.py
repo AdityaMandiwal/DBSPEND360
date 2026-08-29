@@ -15,8 +15,8 @@ All-Purpose Clusters, and Instance Pools):
                           mirrors `/api/instance-pools/top-pools`)
 - `/{id}/details`      — pipeline config from
                           `system.lakeflow.pipelines` (no REST API)
-- `/{id}/analyze`      — workload-aware LLM analysis with the mandatory
-                          DBU-only caveat iff `cost_basis != 'full'`
+- `/{id}/analyze`      — workload-aware LLM analysis with a missing-cloud
+                          caveat only when cloud coverage is incomplete
 - `/health`            — smoke test for StaticFiles ordering
 
 This tab covers ALL `usage_metadata.dlt_pipeline_id` spend (not just
@@ -30,7 +30,7 @@ workspace when an ambiguous id is requested without it.
 import asyncio
 import logging
 from datetime import date
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -164,6 +164,18 @@ async def get_pipelines_grouped(
             "'DLT Pipeline'). Only labels / narrows; never drops (plan §3.1)."
         ),
     ),
+    sort_by: Literal[
+        'pipeline',
+        'name',
+        'workload',
+        'compute',
+        'creator',
+        'active_days',
+        'cloud',
+        'dbu',
+        'total',
+    ] = Query('total', description='Column to sort by'),
+    sort_dir: Literal['asc', 'desc'] = Query('desc', description='Sort direction'),
     page: int = Query(1, ge=1, description='Page number'),
     per_page: int = Query(50, ge=1, le=1000, description='Items per page'),
 ):
@@ -184,6 +196,8 @@ async def get_pipelines_grouped(
             end_date=end_date,
             search=search,
             workload_type=workload_type,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
             limit=per_page,
             offset=offset,
         )
@@ -298,10 +312,9 @@ async def analyze_pipeline(
     (`server.services.llm_service.PIPELINE_ANALYSIS_PROMPT`) tailors itself
     off the `workload_type` field with no per-product branching (plan §4.1).
 
-    The analysis MUST include the DBU-only caveat ("excludes cloud VM cost")
-    iff `cost_basis != 'full'` (plan §3.2 / §9 acceptance criterion #14 /
-    CP7 exit criterion #4); the structured fallback carries the same
-    conditional so the invariant holds on LLM failure.
+    The analysis includes "excludes cloud VM cost" only when the cost summary
+    reports incomplete cloud coverage. The structured fallback carries the
+    same conditional so the invariant holds on LLM failure.
     """
     try:
         service = get_databricks_service()

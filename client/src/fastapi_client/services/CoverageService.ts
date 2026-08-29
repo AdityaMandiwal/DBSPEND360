@@ -11,15 +11,27 @@ export class CoverageService {
      * Get Coverage Summary
      * Return the full subscription-coverage map for banners and KPIs.
      *
-     * Single param-less call; the client fetches once and each tab reads its
-     * own key from `excluded_dbu_by_tab`.
+     * When a date range is supplied, excluded-workspace and excluded-DBU values
+     * are scoped to that same inclusive window so they reconcile with tab KPIs.
+     * @param startDate
+     * @param endDate
      * @returns CoverageSummaryResponse Successful Response
      * @throws ApiError
      */
-    public static getCoverageSummaryApiCoverageGet(): CancelablePromise<CoverageSummaryResponse> {
+    public static getCoverageSummaryApiCoverageGet(
+        startDate?: (string | null),
+        endDate?: (string | null),
+    ): CancelablePromise<CoverageSummaryResponse> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/coverage',
+            query: {
+                'start_date': startDate,
+                'end_date': endDate,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
         });
     }
 }

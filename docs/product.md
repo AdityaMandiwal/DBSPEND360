@@ -38,8 +38,8 @@ recommendations powered by a Databricks foundation model.
 
 ## Core Features
 
-### 1. Four cost domains (tabs)
-The app is organized into four tabs (see `client/src/components/Dashboard.tsx`),
+### 1. Five cost domains (tabs)
+The app is organized into five tabs (see `client/src/components/Dashboard.tsx`),
 each backed by its own rollup table and Databricks Job branch:
 
 | Tab | Rollup table (`config/app.dev.config`) |
@@ -48,12 +48,18 @@ each backed by its own rollup table and Databricks Job branch:
 | **All-Purpose Clusters** | `dbspend360.04june.dbspend360_total_all_purpose_spends` |
 | **Instance Pools** | `dbspend360.04june.dbspend360_total_pool_spends` |
 | **Pipeline Compute** | `dbspend360.04june.dbspend360_total_pipeline_spends` |
+| **SQL Warehouses** | `dbspend360.04june.dbspend360_total_sql_warehouse_spends` |
 
-Each tab provides summary cards, a grouped/interactive table (sorting,
-filtering, pagination), date-range presets, a top-N view, and a drill-down with
-a Cloud vs DBU cost breakdown.
+SQL Warehouse cost basis is type-dependent: Serverless DBU includes
+infrastructure; Classic and Pro are labeled DBU-only because customer-cloud VM,
+disk, and network charges are not currently attributable to `warehouse_id`.
 
-> **Cross-tab cost model:** the four tabs intentionally look at the same compute
+Each tab provides summary cards, date-range presets, filtering, pagination,
+top-N context, and entity drill-downs. Sorting and drill-down presentation vary
+by domain: the Instance Pools table is cost-ranked and expands pool → day →
+cluster, while its modal focuses on pool configuration and AI analysis.
+
+> **Cross-tab cost model:** the five tabs intentionally look at the same compute
 > through different lenses, so they **overlap by design and do not sum to the
 > AWS bill**. See `README.md` §4 for the full DBU overlap and EC2/EBS
 > attribution model.
@@ -62,7 +68,7 @@ a Cloud vs DBU cost breakdown.
 - **SQL Warehouse**: `warehouse_id = 8baced1ff014912d`
   (`config/app.dev.config` → `[databricks]`).
 - **Schema**: `dbspend360.04june`.
-- The four rollup tables above are produced by the DBSPEND360 Databricks Job
+- The five rollup tables above are produced by the DBSPEND360 Databricks Job
   (per-cloud cost explorer fan-out → per-domain DBU + spend tasks). The app also
   reads `system.lakeflow.jobs` and `system.compute.clusters` to enrich names and
   cluster details when granted.
@@ -75,9 +81,9 @@ a Cloud vs DBU cost breakdown.
 
 ### 4. Cost breakdown drill-down
 - **Trigger**: click a row / entity in a tab's table.
-- **Display**: a modal with a pie chart of Cloud (EC2 / Azure Compute / GCE) vs
-  Databricks (DBU) cost, plus entity-specific details (runs, cluster details,
-  pool/pipeline metadata).
+- **Display**: entity-specific details appropriate to the domain. Job and
+  cluster paths include Cloud-vs-DBU breakdowns; the Instance Pool modal shows
+  pool configuration, tags, creator metadata, and grounded AI analysis.
 
 ### 5. Summary dashboard cards
 - Per-tab key metrics: total spend, cloud vs DBU split, top contributors, and
@@ -121,7 +127,7 @@ a Cloud vs DBU cost breakdown.
 ## Success Metrics
 
 ### User Engagement
-- Feature adoption across all four tabs and the AI Analyze actions.
+- Feature adoption across all five tabs and the AI Analyze actions.
 - Average session duration sufficient for meaningful drill-down analysis.
 
 ### Operational Impact
@@ -136,7 +142,7 @@ a Cloud vs DBU cost breakdown.
 ## Technical Requirements
 
 ### Data Integration
-- **Rollup tables**: the four `dbspend360.04june.dbspend360_total_*` tables.
+- **Rollup tables**: the five `dbspend360.04june.dbspend360_total_*` tables.
 - **SQL Warehouse**: `8baced1ff014912d`.
 - **System tables** (optional, requires grants): `system.lakeflow.jobs`,
   `system.compute.clusters`.

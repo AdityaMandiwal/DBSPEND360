@@ -31,10 +31,13 @@ const InstancePoolsDashboard = () => {
   const cloudVmLabel = isAws
     ? 'EC2/EBS'
     : cloudConfig?.compute_service || 'cloud';
-  // Match the other two tabs' default window (last 30 days) so users
-  // pivoting between tabs see consistent scope until they pick a preset.
+  const poolCloudCopy =
+    cloudConfig?.platform === 'GCP'
+      ? 'Pool-tag cloud ingestion is not implemented for GCP, so Total Cost is DBU-only on this platform.'
+      : `Total Cost combines pool DBU and ClusterId-free idle/warm ${cloudVmLabel} VM cost. Active pool-backed VM cost stays with the Job Clusters or All-Purpose tab via its ClusterId.`;
+  // Inclusive 30-day window: today plus the preceding 29 calendar days.
   const defaultDateRange: DateRange = {
-    start_date: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
+    start_date: format(subDays(new Date(), 29), 'yyyy-MM-dd'),
     end_date: format(new Date(), 'yyyy-MM-dd'),
   };
 
@@ -43,7 +46,7 @@ const InstancePoolsDashboard = () => {
 
   return (
     <div className="space-y-6">
-      <CoverageBanner tab="pool" />
+      <CoverageBanner tab="pool" dateRange={dateRange} />
       <InstancePoolsSummaryCards dateRange={dateRange} />
 
       <Card>
@@ -69,11 +72,9 @@ const InstancePoolsDashboard = () => {
             pool config and AI analysis.
           </p>
           <p className="text-xs text-muted-foreground mt-2">
-            Total Cost combines pool DBU and {cloudVmLabel} VM cost (idle +
-            active), joined from the pool cloud-cost explorer. Pool spend may
-            overlap
-            with the Job Clusters and All-Purpose tabs — the same compute is
-            shown through different lenses, so the tabs are not meant to sum.
+            {poolCloudCopy} Pool DBU may overlap with the Job Clusters and
+            All-Purpose tabs — the same compute is shown through different
+            lenses, so the tabs are not meant to sum.
           </p>
         </CardHeader>
         <CardContent>

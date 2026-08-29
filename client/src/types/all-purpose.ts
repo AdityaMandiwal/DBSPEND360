@@ -40,6 +40,7 @@ export interface AllPurposeClusterSpend {
   network_cost?: number | null;
   other_cost?: number | null;
   data_security_mode?: string | null;
+  workspace_covered?: boolean;
   total_cost: number;
   cloud_percentage: number;
   databricks_percentage: number;
@@ -139,4 +140,6 @@ export interface AllPurposeFilter {
   search?: string;
   page: number;
   per_page: number;
+  sort_by?: string;
+  sort_dir?: "asc" | "desc";
 }

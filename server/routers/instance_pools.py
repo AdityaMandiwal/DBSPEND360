@@ -15,8 +15,7 @@ Clusters routers in `dashboard.py` and `all_purpose.py`):
 - `/{id}/details`      — pool config + REST-resolved creator GUID
                           for the pool details modal
 - `/{id}/analyze`      — pool-tuned LLM configuration analysis with
-                          the mandatory idle-vs-active-split caveat
-                          (CP8 / plan_pool_pipeline_ec2_cost.md §4.5)
+                          mandatory ClusterId-free cloud-scope disclosure
 - `/health`            — smoke test for StaticFiles ordering
 
 Per plan §3.4 / §4.1 the list endpoint deliberately does NOT enrich
@@ -258,7 +257,15 @@ async def get_instance_pool_details(pool_id: str):
 
 
 @router.get('/{pool_id}/analyze', response_model=InstancePoolAnalysis)
-async def analyze_instance_pool(pool_id: str):
+async def analyze_instance_pool(
+    pool_id: str,
+    start_date: Optional[date] = Query(
+        None, description='Optional analysis-window start (YYYY-MM-DD)'
+    ),
+    end_date: Optional[date] = Query(
+        None, description='Optional analysis-window end (YYYY-MM-DD)'
+    ),
+):
     """Get LLM-powered configuration + cost analysis for an instance pool.
 
     Fetches `InstancePoolDetails` and the pool's cost summary in
@@ -271,20 +278,28 @@ async def analyze_instance_pool(pool_id: str):
     question closer to `analyze_cluster_configuration` than to a
     per-run trend analysis.
 
-    As of CP8 (plan_pool_pipeline_ec2_cost.md §4.4) pool EC2/EBS cost is
-    joined into the cost summary, so the prompt MANDATES only the remaining
-    idle-vs-active-split caveat ("the idle-vs-active VM cost split is not
-    available yet" — §4.5) rather than the old DBU-only caveat; the response
-    must include that string and the structured fallback
-    (`_build_pool_fallback`) carries it too so the invariant holds on LLM
-    failure.
+    The cloud line contains only ClusterId-free idle/warm pool capacity;
+    active pool-backed VM cost remains on the Job or All-Purpose tab. The
+    prompt and structured fallback both carry that scope disclosure.
     """
     try:
+        if (start_date is None) != (end_date is None):
+            raise HTTPException(
+                status_code=400,
+                detail='Both start_date and end_date are required together',
+            )
+        if start_date is not None and end_date is not None:
+            _validate_date_range(start_date, end_date)
+
         service = get_databricks_service()
 
         pool_details, cost_summary = await asyncio.gather(
             service.get_instance_pool_details(pool_id),
-            service.get_pool_cost_summary(pool_id),
+            service.get_pool_cost_summary(
+                pool_id,
+                start_date=start_date,
+                end_date=end_date,
+            ),
             return_exceptions=True,
         )
 

@@ -5,8 +5,8 @@
 //
 //   1. Open the app, switch to the Instance Pools tab. Confirm URL
 //      state `?tab=instance-pools` round-trips on reload.
-//   2. Capture the summary cards strip (Total DBU Spend / Active Pools
-//      / Active Clusters / Avg per Pool-Day + the orphan + top-5 row).
+//   2. Capture the current summary strip (Total Spend / idle-warm cloud /
+//      Active Pools / Active Clusters + trend + top-5).
 //   3. Expand the first pool row -> per-day breakdown rendered.
 //      Expand the first day -> per-cluster breakdown rendered.
 //   4. Click the pool name -> InstancePoolDetailsModal opens. Verify
@@ -76,14 +76,13 @@ async function shot(page, name) {
 
     // ---- 2. Summary strip ------------------------------------------
     console.log('\n[cp10-pools #2] summary cards');
-    await page.waitForSelector('text=Total DBU Spend', { timeout: 15000 });
+    await page.waitForSelector('text=Total Spend', { timeout: 15000 });
     await shot(page, 'p_01_summary_cards.png');
     for (const kpi of [
-      'Total DBU Spend',
+      'Total Spend',
       'Active Pools',
       'Active Clusters',
-      'Avg per Pool-Day',
-      'Pool Metadata',
+      'Daily Pool Spend Trend',
       'Top 5 Costliest Pools',
     ]) {
       const visible = await page.locator(`text=${kpi}`).first().isVisible();

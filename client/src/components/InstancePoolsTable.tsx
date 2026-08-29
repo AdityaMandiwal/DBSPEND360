@@ -141,8 +141,8 @@ export const InstancePoolsTable = ({
   // (plan §4.7 / §1.4): `EC2 / EBS` on AWS, otherwise the provider's generic
   // compute-service name.
   const cloudLabel = isAws
-    ? AWS_CLOUD_LABEL
-    : `Total ${cloudConfig?.compute_service || 'Cloud'}`;
+    ? `Idle/Warm ${AWS_CLOUD_LABEL}`
+    : `Idle/Warm ${cloudConfig?.compute_service || 'Cloud'}`;
   const { data: databricksHost } = useDatabricksHost();
   const [page, setPage] = useState(1);
   const [expandedPools, setExpandedPools] = useState<Set<string>>(new Set());
@@ -243,7 +243,7 @@ export const InstancePoolsTable = ({
               <TableHead className="px-4">Pool</TableHead>
               <TableHead className="px-4">Node Type</TableHead>
               <TableHead className="px-4 text-right">Clusters</TableHead>
-              <TableHead className="px-4 text-right">Active Days</TableHead>
+              <TableHead className="px-4 text-right">Cost Days</TableHead>
               <TableHead className="px-4 text-right">Min Idle</TableHead>
               <TableHead className="px-4 text-right">{cloudLabel}</TableHead>
               <TableHead className="px-4 text-right">DBU Cost</TableHead>
@@ -367,11 +367,6 @@ export const InstancePoolsTable = ({
                         <div className="font-bold text-lg">
                           {formatCurrency(pool.total_cost)}
                         </div>
-                        {pool.total_cost > 1000 && (
-                          <Badge variant="destructive" className="text-xs">
-                            High Cost
-                          </Badge>
-                        )}
                       </TableCell>
                     </TableRow>
                     {isExpanded && (
@@ -451,6 +446,7 @@ export const InstancePoolsTable = ({
       {activePoolModal && (
         <InstancePoolDetailsModal
           poolId={activePoolModal}
+          dateRange={dateRange}
           isOpen
           onClose={() => setActivePoolModal(null)}
         />
@@ -639,8 +635,20 @@ const DayClusterBreakdown = ({
   // Server already orders by total_cost DESC per the §5.2 SQL; we
   // defensively re-sort in case future shapes drop the ORDER BY.
   const sorted = [...day.clusters].sort((a, b) => b.total_cost - a.total_cost);
-  const visible = sorted.slice(0, CLUSTER_DISPLAY_CAP);
-  const overflow = sorted.slice(CLUSTER_DISPLAY_CAP);
+  // Always keep the synthetic overhead row visible because it carries the
+  // pool-level idle/warm cloud cost. Without pinning it, a high-fanout day can
+  // hide the cloud component inside "Other clusters" while still showing it
+  // in the day header.
+  const overhead = sorted.find((c) => c.cluster_id === '__pool_overhead__');
+  const realClusters = sorted.filter(
+    (c) => c.cluster_id !== '__pool_overhead__',
+  );
+  const visible = overhead
+    ? [overhead, ...realClusters.slice(0, CLUSTER_DISPLAY_CAP - 1)]
+    : realClusters.slice(0, CLUSTER_DISPLAY_CAP);
+  const overflow = overhead
+    ? realClusters.slice(CLUSTER_DISPLAY_CAP - 1)
+    : realClusters.slice(CLUSTER_DISPLAY_CAP);
   const overflowCount = overflow.length;
   const overflowTotal = overflow.reduce((acc, c) => acc + c.total_cost, 0);
   const overflowDbu = overflow.reduce((acc, c) => acc + c.databricks_cost, 0);
@@ -674,7 +682,7 @@ const DayClusterBreakdown = ({
               <TableCell className="px-4 py-2 text-xs italic text-muted-foreground">
                 Other clusters ({overflowCount})
                 <span className="ml-2 text-muted-foreground/80 not-italic">
-                  · top-{CLUSTER_DISPLAY_CAP} shown
+                  · highest-cost rows shown above
                 </span>
               </TableCell>
               <TableCell className="px-4 py-2 text-xs text-right">
@@ -732,7 +740,7 @@ const ClusterRow = ({
       </TableCell>
       <TableCell className="px-4 py-2 text-right text-sm">
         {isPoolOverhead ? (
-          // The pool EC2/EBS cost lands on this synthetic row (plan §4.4),
+          // ClusterId-free idle/warm pool cost lands on this synthetic row,
           // so render it here — this is what makes the row's Total add up
           // (DBU + cloud) instead of showing a Total with no components.
           <PoolCloudCostCell

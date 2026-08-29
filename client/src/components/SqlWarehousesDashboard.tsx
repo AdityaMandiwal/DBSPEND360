@@ -2,54 +2,62 @@
 //
 // Mirrors `PipelineDashboard.tsx` (single view, no inner `<Tabs>`) but is
 // simpler in two ways (plan §3d): there is no workload-type chip filter, and
-// there is no cloud-cost surface anywhere. All three warehouse types run on
-// Databricks-managed compute, so DBU IS the complete cost — the only honesty
-// caveat left is that DBU is list price, which the table footnote discloses.
+// there is no attributed cloud-cost column. The UI makes the resulting
+// Serverless-full vs Classic/Pro-DBU-only cost basis explicit.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { format, subDays } from 'date-fns';
-import { AlertTriangle, Database, DollarSign, Layers, Search } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Skeleton } from '@/components/ui/skeleton';
-import { ErrorState } from '@/components/ui/error-state';
-import { CoverageBanner } from './CoverageBanner';
-import { SqlWarehousesTable } from './SqlWarehousesTable';
+import { useEffect, useMemo, useRef, useState } from "react";
+import { format, subDays } from "date-fns";
+import {
+  AlertTriangle,
+  Database,
+  DollarSign,
+  Layers,
+  Search,
+} from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { CoverageBanner } from "./CoverageBanner";
+import { SqlWarehousesTable } from "./SqlWarehousesTable";
 import {
   useSqlWarehouseSummary,
   useTopSqlWarehouses,
-} from '@/hooks/useSqlWarehouses';
-import { useDatePresets } from '@/hooks/useJobSpends';
+} from "@/hooks/useSqlWarehouses";
+import { useDatePresets } from "@/hooks/useJobSpends";
 import {
   formatCurrency,
+  warehouseCostBasis,
+  warehouseCostBasisLabel,
   warehouseTypeBadgeClasses,
   warehouseTypeLabel,
-} from '@/lib/sql-warehouse-display';
-import { cn, formatCalendarDate, isInvalidDateRange } from '@/lib/utils';
-import type { DateRange } from '@/types/job-spend';
+} from "@/lib/sql-warehouse-display";
+import { cn, formatCalendarDate, isInvalidDateRange } from "@/lib/utils";
+import type { DateRange } from "@/types/job-spend";
+import { CLOUD_NOT_COVERED_LABEL } from "@/lib/cloud-coverage-display";
 
-const integerFormatter = new Intl.NumberFormat('en-US');
+const integerFormatter = new Intl.NumberFormat("en-US");
 const formatNumber = (n: number) => integerFormatter.format(n);
 const formatPercent = (part: number, whole: number) =>
-  whole > 0 ? `${Math.round((part / whole) * 100)}%` : '0%';
+  whole > 0 ? `${Math.round((part / whole) * 100)}%` : "0%";
 
 const SqlWarehousesDashboard = () => {
   // Match the other four tabs' default window (last 30 days) so users pivoting
   // between tabs see consistent scope until they pick a preset.
   const defaultDateRange: DateRange = {
-    start_date: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
-    end_date: format(new Date(), 'yyyy-MM-dd'),
+    start_date: format(subDays(new Date(), 29), "yyyy-MM-dd"),
+    end_date: format(new Date(), "yyyy-MM-dd"),
   };
 
   const [dateRange, setDateRange] = useState<DateRange>(defaultDateRange);
-  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [searchTerm, setSearchTerm] = useState<string>("");
 
   return (
     <div className="space-y-6">
-      <CoverageBanner tab="sql_warehouse" />
+      <CoverageBanner tab="sql_warehouse" dateRange={dateRange} />
       <SqlWarehouseSummaryCards dateRange={dateRange} />
 
       <Card>
@@ -74,11 +82,11 @@ const SqlWarehousesDashboard = () => {
             spend; click the warehouse name for config and AI analysis.
           </p>
           <p className="text-xs text-muted-foreground mt-2">
-            SQL Warehouses run on Databricks-managed compute (Classic, Pro, and
-            Serverless), so the DBU figure is the complete cost — there is no
-            separate VM line to add. DBU is list price and excludes
-            account-level discounts (list ≠ your invoice). Most warehouses have
-            no configuration snapshot in{' '}
+            Serverless DBU includes infrastructure. Classic and Pro values are
+            DBU-only and exclude customer-cloud VM, disk, and network charges.
+            All DBU figures are list price and exclude account-level discounts
+            (list ≠ your invoice). Most warehouses have no configuration
+            snapshot in{" "}
             <span className="font-mono">system.compute.warehouses</span>; those
             rows are labeled "Metadata unavailable" and their cost figures are
             still exact.
@@ -117,19 +125,24 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
     refetch: refetchTop,
   } = useTopSqlWarehouses(dateRange, 5);
 
-  // Whole-tab daily run-rate: total shown spend / days in the window. This is
-  // NOT a per-warehouse-day average, so the tile is labeled "per day avg" to
-  // match its actual denominator.
+  // Whole-tab run-rate uses landed rollup dates, not requested calendar dates,
+  // so absent end-date data does not depress the average.
   const dailyAverageSpend = metrics
-    ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
+    ? metrics.total_spend / Math.max(metrics.landed_days, 1)
     : 0;
 
   const typeEntries = metrics
-    ? ([
-        ['SERVERLESS', metrics.serverless_spend, metrics.serverless_warehouses],
-        ['PRO', metrics.pro_spend, metrics.pro_warehouses],
-        ['CLASSIC', metrics.classic_spend, metrics.classic_warehouses],
-      ] as const)
+    ? (
+        [
+          [
+            "SERVERLESS",
+            metrics.serverless_spend,
+            metrics.serverless_warehouses,
+          ],
+          ["PRO", metrics.pro_spend, metrics.pro_warehouses],
+          ["CLASSIC", metrics.classic_spend, metrics.classic_warehouses],
+        ] as const
+      )
         .filter(([, , count]) => count > 0)
         .sort((a, b) => b[1] - a[1])
     : [];
@@ -155,7 +168,9 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Spend</CardTitle>
+              <CardTitle className="text-sm font-medium">
+                Tracked DBU Spend
+              </CardTitle>
               <DollarSign className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
@@ -163,16 +178,23 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
                 {formatCurrency(metrics.total_spend)}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                {metrics.date_range_days} day
-                {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
+                {metrics.landed_days} landed day
+                {metrics.landed_days !== 1 ? "s" : ""} ·{" "}
                 {formatCurrency(dailyAverageSpend)}/day avg
+                {metrics.data_through_date && (
+                  <>
+                    {" "}
+                    · data through{" "}
+                    {formatCalendarDate(metrics.data_through_date)}
+                  </>
+                )}
                 {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
                   <>
-                    {' '}
-                    ·{' '}
+                    {" "}
+                    ·{" "}
                     {formatCurrency(
                       metrics.dbu_in_non_covered_workspaces ?? 0,
-                    )}{' '}
+                    )}{" "}
                     DBU in non-covered workspaces
                   </>
                 )}
@@ -190,8 +212,8 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
                 {formatNumber(metrics.total_warehouses)}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                {formatNumber(metrics.serverless_warehouses)} serverless ·{' '}
-                {formatNumber(metrics.pro_warehouses)} pro ·{' '}
+                {formatNumber(metrics.serverless_warehouses)} serverless ·{" "}
+                {formatNumber(metrics.pro_warehouses)} pro ·{" "}
                 {formatNumber(metrics.classic_warehouses)} classic
               </p>
             </CardContent>
@@ -199,20 +221,41 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">DBU Cost</CardTitle>
+              <CardTitle className="text-sm font-medium">Cost Basis</CardTitle>
               <Database className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-red-600">
-                {formatCurrency(metrics.total_databricks_cost)}
+                {formatNumber(metrics.serverless_warehouses)} complete
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                100% of total — managed compute has no separate VM cost
+                {formatNumber(
+                  metrics.pro_warehouses + metrics.classic_warehouses,
+                )}{" "}
+                Classic/Pro DBU-only · cloud infrastructure excluded
               </p>
             </CardContent>
           </Card>
         </div>
       )}
+
+      {metrics?.data_through_date &&
+        metrics.data_through_date < dateRange.end_date && (
+          <div
+            className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+            role="status"
+          >
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+            <div>
+              Billing data is currently landed through{" "}
+              <strong>{formatCalendarDate(metrics.data_through_date)}</strong>,
+              before the selected end date{" "}
+              <strong>{formatCalendarDate(dateRange.end_date)}</strong>. The
+              latest landed day may still receive late usage and is corrected by
+              subsequent overlap loads.
+            </div>
+          </div>
+        )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Spend by warehouse type — the exhaustive three-bucket $ split. */}
@@ -306,7 +349,7 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
                         </span>
                         <span
                           className={`text-sm font-medium truncate ${
-                            hasName ? '' : 'font-mono text-muted-foreground'
+                            hasName ? "" : "font-mono text-muted-foreground"
                           }`}
                           title={
                             hasName
@@ -324,6 +367,14 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
                         >
                           {warehouseTypeLabel(warehouse.warehouse_type)}
                         </Badge>
+                        {warehouse.workspace_covered === false && (
+                          <Badge
+                            variant="secondary"
+                            className="text-[10px] shrink-0 bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
+                          >
+                            {CLOUD_NOT_COVERED_LABEL}
+                          </Badge>
+                        )}
                       </div>
                       <div className="text-right shrink-0 ml-2">
                         <div className="text-sm font-semibold">
@@ -331,7 +382,13 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
                         </div>
                         <div className="text-xs text-muted-foreground">
                           {warehouse.active_days} day
-                          {warehouse.active_days === 1 ? '' : 's'}
+                          {warehouse.active_days === 1 ? "" : "s"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {warehouseCostBasisLabel(
+                            warehouse.cost_basis ??
+                              warehouseCostBasis(warehouse.warehouse_type),
+                          )}
                         </div>
                       </div>
                     </div>
@@ -407,10 +464,10 @@ const SqlWarehouseFilterControls = ({
                   })
                 }
                 className={cn(
-                  'text-xs',
+                  "text-xs",
                   dateRange.start_date === preset.start_date &&
                     dateRange.end_date === preset.end_date &&
-                    'bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/40 dark:text-blue-300',
+                    "bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/40 dark:text-blue-300",
                 )}
               >
                 {preset.label}
@@ -454,9 +511,9 @@ const SqlWarehouseFilterControls = ({
                 }
                 aria-invalid={dateRangeInvalid}
                 className={cn(
-                  'mt-1',
+                  "mt-1",
                   dateRangeInvalid &&
-                    'border-red-500 focus-visible:ring-red-500',
+                    "border-red-500 focus-visible:ring-red-500",
                 )}
               />
             </div>
@@ -494,8 +551,8 @@ const SqlWarehouseFilterControls = ({
 
         <div className="text-xs text-muted-foreground space-y-1">
           <div>
-            <strong>Date Range:</strong>{' '}
-            {formatCalendarDate(dateRange.start_date)} to{' '}
+            <strong>Date Range:</strong>{" "}
+            {formatCalendarDate(dateRange.start_date)} to{" "}
             {formatCalendarDate(dateRange.end_date)}
           </div>
           {searchTerm && (

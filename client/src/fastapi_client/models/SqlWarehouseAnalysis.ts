@@ -9,5 +9,8 @@ export type SqlWarehouseAnalysis = {
     warehouse_id: string;
     analysis: string;
     timestamp?: string;
+    start_date: string;
+    end_date: string;
+    cost_basis?: string;
 };
 

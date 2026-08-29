@@ -56,14 +56,24 @@ resources:
           notebook_task:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/pool_spends_app
             source: WORKSPACE
+        - task_key: create_pipeline_dbu_cost_table
+          notebook_task:
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/ddls/dbspend360_pipeline_dbu_cost
+            source: WORKSPACE
+        - task_key: create_total_pipeline_spends_table
+          notebook_task:
+            notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/ddls/dbspend360_total_pipeline_spends
+            source: WORKSPACE
         - task_key: Dbspend360_pipeline_dbu_costs
           depends_on:
+            - task_key: create_pipeline_dbu_cost_table
             - task_key: covered_workspaces
           notebook_task:
             notebook_path: /Workspace/Users/aditya.mandiwal@databricks.com/deployed from cursor/jobs/notebooks/dbspend360_pipeline_dbu_cost_app
             source: WORKSPACE
         - task_key: pipeline_spends
           depends_on:
+            - task_key: create_total_pipeline_spends_table
             - task_key: Dbspend360_pipeline_dbu_costs
             - task_key: cloud_cost_explorer
           notebook_task:

@@ -13,9 +13,8 @@
 //                             usage_date)` grain, so the sum of `days[]`
 //                             equals the row total by construction.
 //
-// There is no cloud-cost column: SQL Warehouses run on Databricks-managed
-// compute, so DBU IS the complete cost. Rows arrive sorted by total_cost
-// descending from the backend.
+// Serverless rows are complete-cost; Classic/Pro rows are DBU-only until cloud
+// infrastructure can be attributed. Sorting is server-driven.
 //
 // A row's `workspace_covered === false` signals that the warehouse runs in an
 // Azure subscription outside the ones DBSpend360 ingests. Its DBU is EXCLUDED
@@ -24,6 +23,7 @@
 
 import { Fragment, useEffect, useState } from "react";
 import {
+  ArrowUpDown,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -45,6 +45,7 @@ import { useSqlWarehouses } from "@/hooks/useSqlWarehouses";
 import {
   formatCurrency,
   warehouseTypeBadgeClasses,
+  warehouseCostBasisLabel,
   warehouseTypeLabel,
 } from "@/lib/sql-warehouse-display";
 import { CLOUD_NOT_COVERED_LABEL } from "@/lib/cloud-coverage-display";
@@ -81,6 +82,10 @@ export const SqlWarehousesTable = ({
   searchTerm,
 }: SqlWarehousesTableProps) => {
   const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState<
+    "total_databricks_cost" | "active_days" | "warehouse_name"
+  >("total_databricks_cost");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expandedWarehouses, setExpandedWarehouses] = useState<Set<string>>(
     new Set(),
   );
@@ -98,6 +103,8 @@ export const SqlWarehousesTable = ({
     start_date: dateRange.start_date,
     end_date: dateRange.end_date,
     search: searchTerm || undefined,
+    sort_by: sortBy,
+    sort_dir: sortDir,
     page,
     per_page: PAGE_SIZE,
   });
@@ -118,8 +125,20 @@ export const SqlWarehousesTable = ({
     });
   };
 
-  // 6 data columns + 1 expander.
-  const columnCount = 7;
+  const changeSort = (
+    nextSort: "total_databricks_cost" | "active_days" | "warehouse_name",
+  ) => {
+    setPage(1);
+    if (sortBy === nextSort) {
+      setSortDir((current) => (current === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(nextSort);
+      setSortDir(nextSort === "warehouse_name" ? "asc" : "desc");
+    }
+  };
+
+  // 5 data columns + 1 expander.
+  const columnCount = 6;
 
   return (
     <div className="space-y-4">
@@ -134,12 +153,34 @@ export const SqlWarehousesTable = ({
           <TableHeader>
             <TableRow>
               <TableHead className="w-10 px-2" />
-              <TableHead className="px-4">Warehouse</TableHead>
+              <TableHead className="px-4">
+                <SortHeader
+                  label="Warehouse"
+                  active={sortBy === "warehouse_name"}
+                  direction={sortDir}
+                  onClick={() => changeSort("warehouse_name")}
+                />
+              </TableHead>
               <TableHead className="px-4">Type</TableHead>
               <TableHead className="px-4">Size</TableHead>
-              <TableHead className="px-4 text-right">Active Days</TableHead>
-              <TableHead className="px-4 text-right">DBU Cost</TableHead>
-              <TableHead className="px-4 text-right">Total Cost</TableHead>
+              <TableHead className="px-4 text-right">
+                <SortHeader
+                  label="Active Days"
+                  active={sortBy === "active_days"}
+                  direction={sortDir}
+                  onClick={() => changeSort("active_days")}
+                  align="right"
+                />
+              </TableHead>
+              <TableHead className="px-4 text-right">
+                <SortHeader
+                  label="Tracked DBU Spend"
+                  active={sortBy === "total_databricks_cost"}
+                  direction={sortDir}
+                  onClick={() => changeSort("total_databricks_cost")}
+                  align="right"
+                />
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -247,13 +288,13 @@ export const SqlWarehousesTable = ({
                       <TableCell className="px-4 text-right text-sm">
                         {warehouse.active_days}
                       </TableCell>
-                      <TableCell className="px-4 text-right font-medium text-red-600">
-                        {formatCurrency(warehouse.total_databricks_cost)}
-                      </TableCell>
                       <TableCell className="px-4 text-right">
-                        <div className="font-bold text-lg">
-                          {formatCurrency(warehouse.total_cost)}
+                        <div className="font-bold text-lg text-red-600">
+                          {formatCurrency(warehouse.total_databricks_cost)}
                         </div>
+                        <Badge variant="outline" className="text-[10px] mt-1">
+                          {warehouseCostBasisLabel(warehouse.cost_basis)}
+                        </Badge>
                         {warehouse.total_cost > HIGH_COST_USD && (
                           <Badge variant="destructive" className="text-xs">
                             High Cost
@@ -336,7 +377,6 @@ export const SqlWarehousesTable = ({
         <SqlWarehouseDetailsModal
           warehouseId={activeModal.warehouse_id}
           costSummary={{
-            totalCost: activeModal.total_cost,
             databricksCost: activeModal.total_databricks_cost,
             activeDays: activeModal.active_days,
             startDate: dateRange.start_date,
@@ -476,12 +516,41 @@ const DayRow = ({ day }: { day: SqlWarehouseDailySpend }) => (
       </div>
       <div className="flex items-center space-x-4">
         <div className="text-sm text-red-600">
-          DBU: {formatCurrency(day.databricks_cost)}
+          Tracked DBU: {formatCurrency(day.databricks_cost)}
         </div>
-        <div className="text-sm font-semibold">
-          Total: {formatCurrency(day.total_cost)}
-        </div>
+        <Badge variant="outline" className="text-[10px]">
+          {warehouseCostBasisLabel(day.cost_basis)}
+        </Badge>
       </div>
     </div>
   </div>
+);
+
+const SortHeader = ({
+  label,
+  active,
+  direction,
+  onClick,
+  align = "left",
+}: {
+  label: string;
+  active: boolean;
+  direction: "asc" | "desc";
+  onClick: () => void;
+  align?: "left" | "right";
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`inline-flex w-full items-center gap-1 hover:text-foreground ${
+      align === "right" ? "justify-end" : "justify-start"
+    }`}
+    aria-label={`Sort by ${label} ${active && direction === "asc" ? "descending" : "ascending"}`}
+  >
+    {label}
+    <ArrowUpDown
+      className={`h-3.5 w-3.5 ${active ? "text-foreground" : "text-muted-foreground"}`}
+      aria-hidden="true"
+    />
+  </button>
 );

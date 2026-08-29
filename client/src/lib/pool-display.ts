@@ -17,12 +17,13 @@
 
 // §5 note for a pool/day cloud cell whose value is NULL (data not landed).
 export const POOL_CLOUD_MISSING_NOTE =
-  'Pool VM cost unavailable — confirm the DatabricksInstancePoolId tag is ' +
-  'enabled and the cloud cost report has caught up.';
+  'Idle/warm pool VM cost unavailable — confirm the DatabricksInstancePoolId ' +
+  'tag is enabled and the cloud cost report has caught up. Active pool-backed ' +
+  'VM cost is attributed through ClusterId on the Job or All-Purpose tab.';
 
 // §4.4 / §5 note for every per-cluster cloud cell inside a pool's day
 // drill-down (always "—").
 export const POOL_PER_CLUSTER_CLOUD_NOTE =
-  'Pool VM cost is tracked at the pool level, not per attached cluster ' +
-  '(cloud billing tags pool instances with DatabricksInstancePoolId, not ' +
-  'ClusterId).';
+  'This tab tracks only ClusterId-free idle/warm pool VM cost at pool level. ' +
+  'Active pool-backed VM cost is attributed through ClusterId on the Job or ' +
+  'All-Purpose tab.';

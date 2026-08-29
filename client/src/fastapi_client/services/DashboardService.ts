@@ -211,12 +211,16 @@ export class DashboardService {
      * for use in drill-down modals and pie charts.
      * @param jobId
      * @param runId Run ID for the specific job execution
+     * @param startDate Optional selected-window start date
+     * @param endDate Optional selected-window end date
      * @returns CostBreakdown Successful Response
      * @throws ApiError
      */
     public static getJobCostBreakdownApiJobJobIdBreakdownGet(
         jobId: string,
         runId: string,
+        startDate?: (string | null),
+        endDate?: (string | null),
     ): CancelablePromise<CostBreakdown> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -226,6 +230,8 @@ export class DashboardService {
             },
             query: {
                 'run_id': runId,
+                'start_date': startDate,
+                'end_date': endDate,
             },
             errors: {
                 422: `Validation Error`,
@@ -312,12 +318,16 @@ export class DashboardService {
      * then passes all context to the LLM for grounded analysis.
      * @param jobId
      * @param runId Run ID for the specific job execution
+     * @param startDate Optional selected-window start date
+     * @param endDate Optional selected-window end date
      * @returns CostAnalysis Successful Response
      * @throws ApiError
      */
     public static analyzeJobCostsApiJobJobIdAnalyzeGet(
         jobId: string,
         runId: string,
+        startDate?: (string | null),
+        endDate?: (string | null),
     ): CancelablePromise<CostAnalysis> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -327,6 +337,8 @@ export class DashboardService {
             },
             query: {
                 'run_id': runId,
+                'start_date': startDate,
+                'end_date': endDate,
             },
             errors: {
                 422: `Validation Error`,
@@ -401,6 +413,9 @@ export class DashboardService {
      * @param startDate Start date (YYYY-MM-DD)
      * @param endDate End date (YYYY-MM-DD)
      * @param clusterId Optional cluster ID filter
+     * @param jobId Optional job ID filter
+     * @param runId Optional run ID filter
+     * @param clusterKind Rollup table used to scope the selected cluster
      * @returns OtherCostBreakdownResponse Successful Response
      * @throws ApiError
      */
@@ -408,6 +423,9 @@ export class DashboardService {
         startDate: string,
         endDate: string,
         clusterId?: (string | null),
+        jobId?: (string | null),
+        runId?: (string | null),
+        clusterKind?: ('job' | 'all_purpose' | null),
     ): CancelablePromise<OtherCostBreakdownResponse> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -416,6 +434,9 @@ export class DashboardService {
                 'start_date': startDate,
                 'end_date': endDate,
                 'cluster_id': clusterId,
+                'job_id': jobId,
+                'run_id': runId,
+                'cluster_kind': clusterKind,
             },
             errors: {
                 422: `Validation Error`,

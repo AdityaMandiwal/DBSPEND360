@@ -25,9 +25,8 @@
 // `cluster_id === '__pool_overhead__'` is the §3.3 edge-case bucket for
 // billing rows that have `instance_pool_id` set but no `cluster_id`; the
 // UI renders that row as italicized "Pool overhead". `cloud_cost` is null
-// on real cluster rows (pool VM cost isn't per-cluster, rendered "—"), but
-// the overhead row carries the pool EC2/EBS cost so its `total_cost` breaks
-// down visibly as DBU + cloud (issue #3).
+// on real cluster rows because active pool-backed VM cost stays on the
+// cluster lens. The overhead row carries ClusterId-free idle/warm cost.
 export interface InstancePoolClusterSpend {
   cluster_id: string;
   databricks_cost: number;
@@ -90,9 +89,8 @@ export interface GroupedInstancePool {
 // `pool_snapshot_missing = true` — surfaced as a KPI so operators can
 // spot lost-metadata churn at a glance (cross-region or pre-Oct-2023
 // deleted-pool retention; §10 risks). `total_cloud_cost` is the summed
-// pool EC2/EBS cost over the window (CP8); it is null only when no pool-day
-// in the window carries a cloud row yet, so the KPI renders "—" + note
-// rather than a misleading $0 (plan §5 / decision #3).
+// ClusterId-free idle/warm pool VM cost; active pool-backed VM cost stays on
+// its cluster lens. Freshness fields expose partial source landing.
 export interface InstancePoolSummaryMetrics {
   total_pools: number;
   total_clusters: number;
@@ -108,6 +106,10 @@ export interface InstancePoolSummaryMetrics {
   total_cloud_cost?: number | null;
   date_range_days: number;
   dbu_in_non_covered_workspaces?: number;
+  latest_data_date?: string | null;
+  latest_dbu_date?: string | null;
+  latest_cloud_date?: string | null;
+  cloud_data_days: number;
 }
 
 // Calendar-day series for the Daily Pool Spend Trend sparkline.
@@ -148,9 +150,8 @@ export interface InstancePoolDetails {
   pool_deleted_at?: string | null;
 }
 
-// LLM-generated configuration analysis. As of CP8 the analysis includes the
-// real pool EC2/EBS cost; the only remaining caveat is that the idle-vs-active
-// VM cost split is not yet available (plan §4.5).
+// LLM-generated configuration analysis. The input includes ClusterId-free
+// idle/warm pool cloud cost and an explicit active-cloud scope disclosure.
 export interface InstancePoolAnalysis {
   instance_pool_id: string;
   analysis: string;

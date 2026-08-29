@@ -222,7 +222,11 @@ export const PipelineFilterControls = ({
               </Button>
             )}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div
+            className="flex flex-wrap gap-2"
+            role="group"
+            aria-label="Pipeline workload type filters"
+          >
             {availableWorkloads.map((workload) => {
               const isSelected = selectedWorkloads.includes(workload);
               return (

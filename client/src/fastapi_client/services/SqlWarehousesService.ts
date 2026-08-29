@@ -18,9 +18,8 @@ export class SqlWarehousesService {
      * Returns the exhaustive three-bucket warehouse-count split (classic + pro +
      * serverless == `total_warehouses`) and the matching `$` split
      * (`classic_spend` + `pro_spend` + `serverless_spend` == `total_spend`).
-     * `total_spend` equals `total_databricks_cost` by construction — DBU is the
-     * complete cost for managed compute, so there is no cloud component and no
-     * Cloud-vs-DBU KPI.
+     * `total_spend` equals tracked DBU. This is complete for Serverless and
+     * DBU-only for Classic/Pro until cloud infrastructure can be attributed.
      * @param startDate Start date for summary (YYYY-MM-DD)
      * @param endDate End date for summary (YYYY-MM-DD)
      * @returns SqlWarehouseSummaryMetrics Successful Response
@@ -54,6 +53,8 @@ export class SqlWarehousesService {
      * @param search Optional free-text filter matched against warehouse_name (case-insensitive substring) and warehouse_id (exact)
      * @param page Page number
      * @param perPage Items per page
+     * @param sortBy
+     * @param sortDir
      * @returns PaginatedSqlWarehouses Successful Response
      * @throws ApiError
      */
@@ -63,6 +64,8 @@ export class SqlWarehousesService {
         search?: (string | null),
         page: number = 1,
         perPage: number = 50,
+        sortBy: 'total_cost' | 'total_databricks_cost' | 'active_days' | 'warehouse_name' = 'total_cost',
+        sortDir: 'asc' | 'desc' = 'desc',
     ): CancelablePromise<PaginatedSqlWarehouses> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -73,6 +76,8 @@ export class SqlWarehousesService {
                 'search': search,
                 'page': page,
                 'per_page': perPage,
+                'sort_by': sortBy,
+                'sort_dir': sortDir,
             },
             errors: {
                 422: `Validation Error`,
@@ -150,24 +155,30 @@ export class SqlWarehousesService {
      * prompt (`server.services.llm_service.SQL_WAREHOUSE_ANALYSIS_PROMPT`)
      * tailors itself off the `warehouse_type` field with no per-type branching.
      *
-     * The analysis MUST NOT carry a cloud-cost caveat: DBU is the complete cost
-     * for managed-compute warehouses (plan Q4), unlike the Pipeline and Instance
-     * Pool tabs. Auto-stop tuning is the warehouse-specific cost signal
-     * (`auto_stop_mins > 30` is flagged as idle DBU waste). A cost-summary
-     * failure degrades to a config-only analysis rather than a 500; the
-     * structured fallback covers LLM failure.
+     * The requested window matches the table/modal. When dates are omitted for
+     * backward compatibility, the latest 30 inclusive calendar days are used.
+     * Classic/Pro analysis must disclose that tracked spend excludes customer
+     * cloud infrastructure.
      * @param warehouseId
+     * @param startDate
+     * @param endDate
      * @returns SqlWarehouseAnalysis Successful Response
      * @throws ApiError
      */
     public static analyzeSqlWarehouseApiWarehousesWarehouseIdAnalyzeGet(
         warehouseId: string,
+        startDate?: (string | null),
+        endDate?: (string | null),
     ): CancelablePromise<SqlWarehouseAnalysis> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/warehouses/{warehouse_id}/analyze',
             path: {
                 'warehouse_id': warehouseId,
+            },
+            query: {
+                'start_date': startDate,
+                'end_date': endDate,
             },
             errors: {
                 422: `Validation Error`,
