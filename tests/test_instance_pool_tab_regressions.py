@@ -27,6 +27,7 @@ def _pool_service(responses):
   service = object.__new__(DatabricksService)
   service.pool_table_name = 'catalog.schema.total_pool_spends'
   service.warehouse_id = 'warehouse'
+  service.query_timeout = 50
   service.client = SimpleNamespace(
     statement_execution=SimpleNamespace(execute_statement=execute_statement)
   )
@@ -51,6 +52,9 @@ async def test_pool_summary_includes_all_dbu_and_exposes_freshness():
           '25.0',
           '100.0',
           '10.0',
+          '20.0',
+          '90.0',
+          '5.0',
           '2026-08-18',
           '2026-08-18',
           '2026-08-07',
@@ -67,6 +71,16 @@ async def test_pool_summary_includes_all_dbu_and_exposes_freshness():
 
   assert metrics.total_spend == 125.0
   assert metrics.dbu_in_non_covered_workspaces == 10.0
+  assert metrics.covered_cloud_cost == 20.0
+  assert metrics.covered_databricks_cost == 90.0
+  assert metrics.uncovered_cloud_cost == 5.0
+  assert (
+    metrics.covered_cloud_cost
+    + metrics.covered_databricks_cost
+    + metrics.dbu_in_non_covered_workspaces
+    + metrics.uncovered_cloud_cost
+    == metrics.total_spend
+  )
   assert metrics.latest_data_date == date(2026, 8, 18)
   assert metrics.latest_cloud_date == date(2026, 8, 7)
   assert metrics.cloud_data_days == 12

@@ -73,6 +73,9 @@ export interface SqlWarehouseSummaryMetrics {
   pro_spend: number;
   serverless_spend: number;
   total_databricks_cost: number;
+  covered_cloud_cost: number;
+  covered_databricks_cost: number;
+  uncovered_cloud_cost: number;
   date_range_days: number;
   landed_days: number;
   data_through_date?: string | null;

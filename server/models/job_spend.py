@@ -64,6 +64,9 @@ class SummaryMetrics(BaseModel):
   min_cost: float
   total_cloud_cost: float
   total_databricks_cost: float
+  covered_cloud_cost: float = 0.0
+  covered_databricks_cost: float = 0.0
+  uncovered_cloud_cost: float = 0.0
   total_compute_cost: Optional[float] = None
   total_storage_cost: Optional[float] = None
   total_network_cost: Optional[float] = None
@@ -87,6 +90,10 @@ class CostBreakdown(BaseModel):
   cloud_cost: Optional[float] = None
   databricks_cost: float
   total_cost: float
+  covered_cloud_cost: float = 0.0
+  covered_databricks_cost: float = 0.0
+  uncovered_cloud_cost: float = 0.0
+  dbu_in_non_covered_workspaces: float = 0.0
   compute_cost: Optional[float] = None
   storage_cost: Optional[float] = None
   network_cost: Optional[float] = None
@@ -568,6 +575,9 @@ class AllPurposeSummaryMetrics(BaseModel):
   min_cost_per_cluster_day: float
   total_cloud_cost: float
   total_databricks_cost: float
+  covered_cloud_cost: float = 0.0
+  covered_databricks_cost: float = 0.0
+  uncovered_cloud_cost: float = 0.0
   total_compute_cost: Optional[float] = None
   total_storage_cost: Optional[float] = None
   total_network_cost: Optional[float] = None
@@ -725,6 +735,9 @@ class InstancePoolSummaryMetrics(BaseModel):
   min_cost_per_pool_day: float
   total_databricks_cost: float
   total_cloud_cost: Optional[float] = None
+  covered_cloud_cost: float = 0.0
+  covered_databricks_cost: float = 0.0
+  uncovered_cloud_cost: float = 0.0
   date_range_days: int
   dbu_in_non_covered_workspaces: float = 0.0
   latest_data_date: Optional[date] = None
@@ -943,6 +956,9 @@ class PipelineSummaryMetrics(BaseModel):
   mixed_spend: float
   total_databricks_cost: float
   total_cloud_cost: Optional[float] = None
+  covered_cloud_cost: float = 0.0
+  covered_databricks_cost: float = 0.0
+  uncovered_cloud_cost: float = 0.0
   workload_breakdown: dict[str, float] = Field(default_factory=dict)
   date_range_days: int
   dbu_in_non_covered_workspaces: float = 0.0
@@ -1075,6 +1091,9 @@ class SqlWarehouseSummaryMetrics(BaseModel):
   pro_spend: float
   serverless_spend: float
   total_databricks_cost: float
+  covered_cloud_cost: float = 0.0
+  covered_databricks_cost: float = 0.0
+  uncovered_cloud_cost: float = 0.0
   date_range_days: int
   landed_days: int = 0
   data_through_date: Optional[date] = None

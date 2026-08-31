@@ -2,13 +2,24 @@ import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
-import { DollarSign, Activity, BarChart3, AlertTriangle, Search } from 'lucide-react';
+import {
+  DollarSign,
+  Activity,
+  BarChart3,
+  AlertTriangle,
+  Search,
+} from 'lucide-react';
 import { useSummaryMetrics, useTopJobs } from '@/hooks/useJobSpends';
 import { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
-import { useIsAws, useIsSegmentedPlatform, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
+import {
+  useIsAws,
+  useIsSegmentedPlatform,
+  AWS_CLOUD_LABEL,
+} from '@/hooks/useCloudGate';
 import { OtherCostBreakdownModal } from './OtherCostBreakdownModal';
 import { ErrorState } from '@/components/ui/error-state';
+import { CostCoverageMix } from './CostCoverageMix';
 
 interface SummaryCardsProps {
   dateRange: DateRange;
@@ -48,23 +59,30 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
   // Metrics-derived values are computed null-safely so the metrics-dependent
   // sections (KPI strip + cost breakdown) can render skeletons/errors
   // independently from the top-5 list below (poly3 — no whole-strip block).
-  const dailyAverageSpend = metrics ? metrics.total_spend / Math.max(metrics.date_range_days, 1) : 0;
-  const cloudPercentage = metrics && metrics.total_spend > 0 ? (metrics.total_cloud_cost / metrics.total_spend) * 100 : 0;
-  const databricksPercentage = metrics && metrics.total_spend > 0 ? (metrics.total_databricks_cost / metrics.total_spend) * 100 : 0;
-
+  const dailyAverageSpend = metrics
+    ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
+    : 0;
   const hasSegmented = metrics?.total_compute_cost != null;
   // Positive allowlist (D14): segmented compute/storage/network is shown only for
   // Azure/GCP. AWS, Unknown, and the config-loading window fall to the always-correct
   // cloud-vs-DBU 2-slice — never the data-shape branch.
   const showSegmented = hasSegmented && isSegmentedPlatform;
-  const computePct = showSegmented && metrics && metrics.total_cloud_cost > 0
-    ? ((metrics.total_compute_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
-  const storagePct = showSegmented && metrics && metrics.total_cloud_cost > 0
-    ? ((metrics.total_storage_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
-  const networkPct = showSegmented && metrics && metrics.total_cloud_cost > 0
-    ? ((metrics.total_network_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
-  const otherPct = showSegmented && metrics && metrics.total_cloud_cost > 0
-    ? ((metrics.total_other_cost ?? 0) / metrics.total_cloud_cost) * 100 : 0;
+  const computePct =
+    showSegmented && metrics && metrics.covered_cloud_cost > 0
+      ? ((metrics.total_compute_cost ?? 0) / metrics.covered_cloud_cost) * 100
+      : 0;
+  const storagePct =
+    showSegmented && metrics && metrics.covered_cloud_cost > 0
+      ? ((metrics.total_storage_cost ?? 0) / metrics.covered_cloud_cost) * 100
+      : 0;
+  const networkPct =
+    showSegmented && metrics && metrics.covered_cloud_cost > 0
+      ? ((metrics.total_network_cost ?? 0) / metrics.covered_cloud_cost) * 100
+      : 0;
+  const otherPct =
+    showSegmented && metrics && metrics.covered_cloud_cost > 0
+      ? ((metrics.total_other_cost ?? 0) / metrics.covered_cloud_cost) * 100
+      : 0;
   const coveragePct = metrics?.classification_coverage_pct;
 
   return (
@@ -88,78 +106,86 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
           </Card>
         </div>
       ) : (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {/* Total Spend */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Spend</CardTitle>
-            <DollarSign className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-blue-600">
-              {formatCurrency(metrics.total_spend)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {metrics.date_range_days} day{metrics.date_range_days !== 1 ? 's' : ''} period
-              {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
-                <>
-                  {' '}
-                  · includes {formatCurrency(metrics.dbu_in_non_covered_workspaces ?? 0)}{' '}
-                  DBU from non-covered workspaces
-                </>
-              )}
-            </p>
-          </CardContent>
-        </Card>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {/* Total Spend */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Total Spend</CardTitle>
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-blue-600">
+                {formatCurrency(metrics.total_spend)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {metrics.date_range_days} day
+                {metrics.date_range_days !== 1 ? 's' : ''} period
+                {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
+                  <>
+                    {' '}
+                    · includes{' '}
+                    {formatCurrency(
+                      metrics.dbu_in_non_covered_workspaces ?? 0,
+                    )}{' '}
+                    DBU from non-covered workspaces
+                  </>
+                )}
+              </p>
+            </CardContent>
+          </Card>
 
-        {/* Total Jobs */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Jobs</CardTitle>
-            <Activity className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-600">
-              {formatNumber(metrics.total_jobs)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {formatCurrency(dailyAverageSpend)}/day avg
-            </p>
-          </CardContent>
-        </Card>
+          {/* Total Jobs */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Total Jobs</CardTitle>
+              <Activity className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-green-600">
+                {formatNumber(metrics.total_jobs)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {formatCurrency(dailyAverageSpend)}/day avg
+              </p>
+            </CardContent>
+          </Card>
 
-        {/* Average Cost */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Average Cost</CardTitle>
-            <BarChart3 className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-purple-600">
-              {formatCurrency(metrics.average_cost)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              per job execution
-            </p>
-          </CardContent>
-        </Card>
+          {/* Average Cost */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">
+                Average Cost
+              </CardTitle>
+              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-purple-600">
+                {formatCurrency(metrics.average_cost)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                per job execution
+              </p>
+            </CardContent>
+          </Card>
 
-        {/* Max Cost */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Highest Cost</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-red-600">
-              {formatCurrency(metrics.max_cost)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              single job execution
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+          {/* Max Cost */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">
+                Highest Cost
+              </CardTitle>
+              <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-red-600">
+                {formatCurrency(metrics.max_cost)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                single job execution
+              </p>
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {/* Cost Breakdown Cards */}
@@ -183,149 +209,147 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
                 No data available
               </div>
             ) : (
-            <div className="space-y-4">
-              {showSegmented ? (
-                <>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                      <span className="text-sm font-medium">Compute</span>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-semibold">{formatCurrency(metrics.total_compute_cost ?? 0)}</div>
-                      <div className="text-xs text-muted-foreground">{computePct.toFixed(1)}% of cloud</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-                      <span className="text-sm font-medium">Storage</span>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-semibold">{formatCurrency(metrics.total_storage_cost ?? 0)}</div>
-                      <div className="text-xs text-muted-foreground">{storagePct.toFixed(1)}% of cloud</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <div className="w-3 h-3 bg-amber-500 rounded-full"></div>
-                      <span className="text-sm font-medium">Network</span>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-semibold">{formatCurrency(metrics.total_network_cost ?? 0)}</div>
-                      <div className="text-xs text-muted-foreground">{networkPct.toFixed(1)}% of cloud</div>
-                    </div>
-                  </div>
-
-                  {(metrics.total_other_cost ?? 0) > 0 && (
-                    <button
-                      type="button"
-                      className="flex items-center justify-between w-full text-left cursor-pointer hover:bg-muted/60 rounded px-1 -mx-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      onClick={() => setShowOtherBreakdown(true)}
-                      title="Click to view breakdown of unclassified costs"
-                      aria-label="View breakdown of unclassified costs"
-                    >
+              <div className="space-y-4">
+                {showSegmented && (
+                  <div className="space-y-4 border-b pb-4">
+                    <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-2">
-                        <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
-                        <span className="text-sm font-medium">Other (Unclassified)</span>
-                        <Search className="h-3 w-3 text-muted-foreground" aria-hidden="true" />
+                        <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+                        <span className="text-sm font-medium">Compute</span>
                       </div>
                       <div className="text-right">
-                        <div className="font-semibold">{formatCurrency(metrics.total_other_cost ?? 0)}</div>
-                        <div className="text-xs text-muted-foreground">{otherPct.toFixed(1)}% of cloud</div>
+                        <div className="font-semibold">
+                          {formatCurrency(metrics.total_compute_cost ?? 0)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {computePct.toFixed(1)}% of covered cloud
+                        </div>
                       </div>
-                    </button>
-                  )}
-
-                  <div className="flex items-center justify-between border-t pt-2">
-                    <div className="flex items-center space-x-2">
-                      <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-                      <span className="text-sm font-medium">Databricks (DBU)</span>
                     </div>
-                    <div className="text-right">
-                      <div className="font-semibold">{formatCurrency(metrics.total_databricks_cost)}</div>
-                      <div className="text-xs text-muted-foreground">{databricksPercentage.toFixed(1)}% of total</div>
-                    </div>
-                  </div>
 
-                  {coveragePct != null && (
-                    <div className="space-y-2 border-t pt-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-muted-foreground">Classification Coverage</span>
-                        <div className="flex items-center gap-2">
-                          <Badge
-                            variant={metrics.coverage_status === 'ok' ? 'default' : metrics.coverage_status === 'warning' ? 'secondary' : 'destructive'}
-                            className={`text-xs ${
-                              metrics.coverage_status === 'ok'
-                                ? 'bg-green-100 text-green-700 hover:bg-green-100 dark:bg-green-500/15 dark:text-green-300 dark:hover:bg-green-500/15'
-                                : metrics.coverage_status === 'warning'
-                                ? 'bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/15'
-                                : 'bg-red-100 text-red-700 hover:bg-red-100 dark:bg-red-500/15 dark:text-red-300 dark:hover:bg-red-500/15'
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                        <span className="text-sm font-medium">Storage</span>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-semibold">
+                          {formatCurrency(metrics.total_storage_cost ?? 0)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {storagePct.toFixed(1)}% of covered cloud
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <div className="w-3 h-3 bg-amber-500 rounded-full"></div>
+                        <span className="text-sm font-medium">Network</span>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-semibold">
+                          {formatCurrency(metrics.total_network_cost ?? 0)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {networkPct.toFixed(1)}% of covered cloud
+                        </div>
+                      </div>
+                    </div>
+
+                    {(metrics.total_other_cost ?? 0) > 0 && (
+                      <button
+                        type="button"
+                        className="flex items-center justify-between w-full text-left cursor-pointer hover:bg-muted/60 rounded px-1 -mx-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={() => setShowOtherBreakdown(true)}
+                        title="Click to view breakdown of unclassified costs"
+                        aria-label="View breakdown of unclassified costs"
+                      >
+                        <div className="flex items-center space-x-2">
+                          <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
+                          <span className="text-sm font-medium">
+                            Other (Unclassified)
+                          </span>
+                          <Search
+                            className="h-3 w-3 text-muted-foreground"
+                            aria-hidden="true"
+                          />
+                        </div>
+                        <div className="text-right">
+                          <div className="font-semibold">
+                            {formatCurrency(metrics.total_other_cost ?? 0)}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {otherPct.toFixed(1)}% of covered cloud
+                          </div>
+                        </div>
+                      </button>
+                    )}
+
+                    {coveragePct != null && (
+                      <div className="space-y-2 border-t pt-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-muted-foreground">
+                            Classification Coverage
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <Badge
+                              variant={
+                                metrics.coverage_status === 'ok'
+                                  ? 'default'
+                                  : metrics.coverage_status === 'warning'
+                                    ? 'secondary'
+                                    : 'destructive'
+                              }
+                              className={`text-xs ${
+                                metrics.coverage_status === 'ok'
+                                  ? 'bg-green-100 text-green-700 hover:bg-green-100 dark:bg-green-500/15 dark:text-green-300 dark:hover:bg-green-500/15'
+                                  : metrics.coverage_status === 'warning'
+                                    ? 'bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/15'
+                                    : 'bg-red-100 text-red-700 hover:bg-red-100 dark:bg-red-500/15 dark:text-red-300 dark:hover:bg-red-500/15'
+                              }`}
+                            >
+                              {coveragePct.toFixed(1)}%
+                            </Badge>
+                          </div>
+                        </div>
+                        {metrics.coverage_warning && (
+                          <div
+                            className={`text-xs p-2 rounded flex items-start gap-1.5 ${
+                              metrics.coverage_status === 'critical'
+                                ? 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300'
+                                : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'
                             }`}
                           >
-                            {coveragePct.toFixed(1)}%
-                          </Badge>
-                        </div>
+                            <AlertTriangle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                            <span>{metrics.coverage_warning}</span>
+                          </div>
+                        )}
                       </div>
-                      {metrics.coverage_warning && (
-                        <div className={`text-xs p-2 rounded flex items-start gap-1.5 ${
-                          metrics.coverage_status === 'critical'
-                            ? 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300'
-                            : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'
-                        }`}>
-                          <AlertTriangle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                          <span>{metrics.coverage_warning}</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Segmented Bar */}
-                  <div className="w-full bg-muted rounded-full h-2.5 mt-3 flex overflow-hidden">
-                    <div className="bg-blue-500 h-2.5" style={{ width: `${computePct * cloudPercentage / 100}%` }}></div>
-                    <div className="bg-green-500 h-2.5" style={{ width: `${storagePct * cloudPercentage / 100}%` }}></div>
-                    <div className="bg-amber-500 h-2.5" style={{ width: `${networkPct * cloudPercentage / 100}%` }}></div>
-                    {otherPct > 0 && <div className="bg-gray-400 h-2.5" style={{ width: `${otherPct * cloudPercentage / 100}%` }}></div>}
-                    <div className="bg-red-500 h-2.5" style={{ width: `${databricksPercentage}%` }}></div>
+                    )}
                   </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                      <span className="text-sm font-medium">{isAws ? AWS_CLOUD_LABEL : (cloudConfig?.compute_display_name || 'Cloud Costs')}</span>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-semibold">{formatCurrency(metrics.total_cloud_cost)}</div>
-                      <div className="text-xs text-muted-foreground">{cloudPercentage.toFixed(1)}%</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-                      <span className="text-sm font-medium">Databricks Costs</span>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-semibold">{formatCurrency(metrics.total_databricks_cost)}</div>
-                      <div className="text-xs text-muted-foreground">{databricksPercentage.toFixed(1)}%</div>
-                    </div>
-                  </div>
-
-                  <div className="w-full bg-muted rounded-full h-2 mt-3 flex overflow-hidden">
-                    <div className="bg-blue-500 h-2" style={{ width: `${cloudPercentage}%` }}></div>
-                    <div className="bg-red-500 h-2" style={{ width: `${databricksPercentage}%` }}></div>
-                  </div>
-                </>
-              )}
-            </div>
+                )}
+                <CostCoverageMix
+                  totalSpend={metrics.total_spend}
+                  coveredCloudCost={metrics.covered_cloud_cost}
+                  coveredDatabricksCost={metrics.covered_databricks_cost}
+                  uncoveredCloudCost={metrics.uncovered_cloud_cost}
+                  uncoveredDatabricksCost={
+                    metrics.dbu_in_non_covered_workspaces ?? 0
+                  }
+                  cloudLabel={
+                    isAws
+                      ? AWS_CLOUD_LABEL
+                      : cloudConfig?.compute_display_name || 'Cloud Costs'
+                  }
+                  formatCurrency={formatCurrency}
+                />
+              </div>
             )}
             {isAws && metrics && (
               <p className="text-xs text-muted-foreground mt-4 pt-3 border-t">
-                AWS shared infrastructure (S3, NAT, networking) is not cluster-attributable and is excluded.
+                AWS shared infrastructure (S3, NAT, networking) is not
+                cluster-attributable and is excluded.
               </p>
             )}
           </CardContent>
@@ -355,21 +379,35 @@ export const SummaryCards = ({ dateRange }: SummaryCardsProps) => {
             ) : topJobs && topJobs.length > 0 ? (
               <div className="space-y-3">
                 {topJobs.map((job, index) => {
-                  const hasName = !!job.job_name && job.job_name.trim().length > 0;
-                  const displayLabel = hasName ? job.job_name! : `Job ${job.job_id}`;
+                  const hasName =
+                    !!job.job_name && job.job_name.trim().length > 0;
+                  const displayLabel = hasName
+                    ? job.job_name!
+                    : `Job ${job.job_id}`;
                   return (
-                    <div key={job.job_id} className="flex justify-between items-center">
+                    <div
+                      key={job.job_id}
+                      className="flex justify-between items-center"
+                    >
                       <div className="flex items-center space-x-2">
-                        <span className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded">#{index + 1}</span>
+                        <span className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded">
+                          #{index + 1}
+                        </span>
                         <span
                           className={`text-sm font-medium ${hasName ? '' : 'font-mono text-muted-foreground'}`}
-                          title={hasName ? displayLabel : `Unnamed job — id ${job.job_id}`}
+                          title={
+                            hasName
+                              ? displayLabel
+                              : `Unnamed job — id ${job.job_id}`
+                          }
                         >
                           {displayLabel}
                         </span>
                       </div>
                       <div className="text-right">
-                        <div className="text-sm font-semibold">{formatCurrency(job.total_cost)}</div>
+                        <div className="text-sm font-semibold">
+                          {formatCurrency(job.total_cost)}
+                        </div>
                         <div className="text-xs text-muted-foreground">
                           {job.run_count} run{job.run_count === 1 ? '' : 's'}
                         </div>

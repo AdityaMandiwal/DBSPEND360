@@ -23,6 +23,9 @@ export interface SummaryMetrics {
   min_cost: number;
   total_cloud_cost: number;
   total_databricks_cost: number;
+  covered_cloud_cost: number;
+  covered_databricks_cost: number;
+  uncovered_cloud_cost: number;
   total_compute_cost?: number | null;
   total_storage_cost?: number | null;
   total_network_cost?: number | null;
@@ -44,6 +47,10 @@ export interface CostBreakdown {
   cloud_cost: number | null;
   databricks_cost: number;
   total_cost: number;
+  covered_cloud_cost: number;
+  covered_databricks_cost: number;
+  uncovered_cloud_cost: number;
+  dbu_in_non_covered_workspaces: number;
   compute_cost?: number | null;
   storage_cost?: number | null;
   network_cost?: number | null;
@@ -156,7 +163,7 @@ export interface JobSpendFilter {
   // Server-side sort for the grouped-job-spends table. Optional so the
   // simpler /job-spends consumers can keep ignoring it.
   sort_by?: string;
-  sort_dir?: 'asc' | 'desc';
+  sort_dir?: "asc" | "desc";
 }
 
 export interface CostAnalysis {

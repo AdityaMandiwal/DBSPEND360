@@ -30,6 +30,7 @@ import {
   useIsSegmentedPlatform,
   AWS_CLOUD_LABEL,
 } from "@/hooks/useCloudGate";
+import { CostCoverageMix } from "./CostCoverageMix";
 
 interface AllPurposeSummaryCardsProps {
   dateRange: DateRange;
@@ -79,35 +80,26 @@ export const AllPurposeSummaryCards = ({
   const dailyAverageSpend = metrics
     ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
     : 0;
-  const cloudPercentage =
-    metrics && metrics.total_spend > 0
-      ? (metrics.total_cloud_cost / metrics.total_spend) * 100
-      : 0;
-  const databricksPercentage =
-    metrics && metrics.total_spend > 0
-      ? (metrics.total_databricks_cost / metrics.total_spend) * 100
-      : 0;
-
   const hasSegmented = metrics?.total_compute_cost != null;
   // Positive allowlist (D14): segmented compute/storage/network is shown only for
   // Azure/GCP. AWS, Unknown, and the config-loading window fall to the
   // always-correct cloud-vs-DBU 2-slice — never the data-shape branch.
   const showSegmented = hasSegmented && isSegmentedPlatform;
   const computePct =
-    showSegmented && metrics && metrics.total_cloud_cost > 0
-      ? (safe(metrics.total_compute_cost) / metrics.total_cloud_cost) * 100
+    showSegmented && metrics && metrics.covered_cloud_cost > 0
+      ? (safe(metrics.total_compute_cost) / metrics.covered_cloud_cost) * 100
       : 0;
   const storagePct =
-    showSegmented && metrics && metrics.total_cloud_cost > 0
-      ? (safe(metrics.total_storage_cost) / metrics.total_cloud_cost) * 100
+    showSegmented && metrics && metrics.covered_cloud_cost > 0
+      ? (safe(metrics.total_storage_cost) / metrics.covered_cloud_cost) * 100
       : 0;
   const networkPct =
-    showSegmented && metrics && metrics.total_cloud_cost > 0
-      ? (safe(metrics.total_network_cost) / metrics.total_cloud_cost) * 100
+    showSegmented && metrics && metrics.covered_cloud_cost > 0
+      ? (safe(metrics.total_network_cost) / metrics.covered_cloud_cost) * 100
       : 0;
   const otherPct =
-    showSegmented && metrics && metrics.total_cloud_cost > 0
-      ? (safe(metrics.total_other_cost) / metrics.total_cloud_cost) * 100
+    showSegmented && metrics && metrics.covered_cloud_cost > 0
+      ? (safe(metrics.total_other_cost) / metrics.covered_cloud_cost) * 100
       : 0;
 
   return (
@@ -233,28 +225,28 @@ export const AllPurposeSummaryCards = ({
               </div>
             ) : (
               <div className="space-y-4">
-                {showSegmented ? (
-                  <>
+                {showSegmented && (
+                  <div className="space-y-4 border-b pb-4">
                     <BreakdownRow
                       color="bg-blue-500"
                       label="Compute"
                       value={safe(metrics.total_compute_cost)}
                       pct={computePct}
-                      pctLabel="of cloud"
+                      pctLabel="of covered cloud"
                     />
                     <BreakdownRow
                       color="bg-green-500"
                       label="Storage"
                       value={safe(metrics.total_storage_cost)}
                       pct={storagePct}
-                      pctLabel="of cloud"
+                      pctLabel="of covered cloud"
                     />
                     <BreakdownRow
                       color="bg-amber-500"
                       label="Network"
                       value={safe(metrics.total_network_cost)}
                       pct={networkPct}
-                      pctLabel="of cloud"
+                      pctLabel="of covered cloud"
                     />
                     {safe(metrics.total_other_cost) > 0 && (
                       <BreakdownRow
@@ -262,82 +254,26 @@ export const AllPurposeSummaryCards = ({
                         label="Other (Unclassified)"
                         value={safe(metrics.total_other_cost)}
                         pct={otherPct}
-                        pctLabel="of cloud"
+                        pctLabel="of covered cloud"
                       />
                     )}
-                    <div className="border-t pt-2">
-                      <BreakdownRow
-                        color="bg-red-500"
-                        label="Databricks (DBU)"
-                        value={metrics.total_databricks_cost}
-                        pct={databricksPercentage}
-                        pctLabel="of total"
-                      />
-                    </div>
-                    {/* Segmented totals bar — cloud first, then DBU */}
-                    <div className="w-full bg-muted rounded-full h-2.5 mt-3 flex overflow-hidden">
-                      <div
-                        className="bg-blue-500 h-2.5"
-                        style={{
-                          width: `${(computePct * cloudPercentage) / 100}%`,
-                        }}
-                      />
-                      <div
-                        className="bg-green-500 h-2.5"
-                        style={{
-                          width: `${(storagePct * cloudPercentage) / 100}%`,
-                        }}
-                      />
-                      <div
-                        className="bg-amber-500 h-2.5"
-                        style={{
-                          width: `${(networkPct * cloudPercentage) / 100}%`,
-                        }}
-                      />
-                      {otherPct > 0 && (
-                        <div
-                          className="bg-gray-400 h-2.5"
-                          style={{
-                            width: `${(otherPct * cloudPercentage) / 100}%`,
-                          }}
-                        />
-                      )}
-                      <div
-                        className="bg-red-500 h-2.5"
-                        style={{ width: `${databricksPercentage}%` }}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <BreakdownRow
-                      color="bg-blue-500"
-                      label={
-                        isAws
-                          ? AWS_CLOUD_LABEL
-                          : cloudConfig?.compute_display_name || "Cloud Costs"
-                      }
-                      value={metrics.total_cloud_cost}
-                      pct={cloudPercentage}
-                    />
-                    <BreakdownRow
-                      color="bg-red-500"
-                      label="Databricks Costs"
-                      value={metrics.total_databricks_cost}
-                      pct={databricksPercentage}
-                    />
-                    <div className="w-full bg-muted rounded-full h-2 mt-3 flex overflow-hidden">
-                      <div
-                        className="bg-blue-500 h-2"
-                        style={{ width: `${cloudPercentage}%` }}
-                      />
-                      <div
-                        className="bg-red-500 h-2"
-                        style={{ width: `${databricksPercentage}%` }}
-                      />
-                    </div>
-                  </>
+                  </div>
                 )}
+                <CostCoverageMix
+                  totalSpend={metrics.total_spend}
+                  coveredCloudCost={metrics.covered_cloud_cost}
+                  coveredDatabricksCost={metrics.covered_databricks_cost}
+                  uncoveredCloudCost={metrics.uncovered_cloud_cost}
+                  uncoveredDatabricksCost={
+                    metrics.dbu_in_non_covered_workspaces ?? 0
+                  }
+                  cloudLabel={
+                    isAws
+                      ? AWS_CLOUD_LABEL
+                      : cloudConfig?.compute_display_name || "Cloud Costs"
+                  }
+                  formatCurrency={formatCurrency}
+                />
               </div>
             )}
             {isAws && metrics && (

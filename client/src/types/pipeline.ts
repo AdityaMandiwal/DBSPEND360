@@ -105,6 +105,9 @@ export interface PipelineSummaryMetrics {
   mixed_spend: number; // serverless DBU plus classic DBU and available cloud
   total_databricks_cost: number;
   total_cloud_cost?: number | null;
+  covered_cloud_cost: number;
+  covered_databricks_cost: number;
+  uncovered_cloud_cost: number;
   dbu_in_non_covered_workspaces?: number;
   workload_breakdown: Record<string, number>;
   date_range_days: number;
@@ -176,14 +179,14 @@ export interface PipelineFilter {
 }
 
 export type PipelineSortField =
-  | 'pipeline'
-  | 'name'
-  | 'workload'
-  | 'compute'
-  | 'creator'
-  | 'active_days'
-  | 'cloud'
-  | 'dbu'
-  | 'total';
+  | "pipeline"
+  | "name"
+  | "workload"
+  | "compute"
+  | "creator"
+  | "active_days"
+  | "cloud"
+  | "dbu"
+  | "total";
 
-export type PipelineSortDirection = 'asc' | 'desc';
+export type PipelineSortDirection = "asc" | "desc";

@@ -53,6 +53,9 @@ async def test_summary_includes_known_dbu_from_uncovered_workspaces():
           None,
           None,
           '15.0',
+          '4.0',
+          '5.0',
+          '1.0',
         ]
       ]
     ]
@@ -65,8 +68,18 @@ async def test_summary_includes_known_dbu_from_uncovered_workspaces():
 
   assert metrics.total_spend == 25.0
   assert metrics.dbu_in_non_covered_workspaces == 15.0
+  assert metrics.covered_cloud_cost == 4.0
+  assert metrics.covered_databricks_cost == 5.0
+  assert metrics.uncovered_cloud_cost == 1.0
+  assert (
+    metrics.covered_cloud_cost
+    + metrics.covered_databricks_cost
+    + metrics.dbu_in_non_covered_workspaces
+    + metrics.uncovered_cloud_cost
+    == metrics.total_spend
+  )
   assert 'SUM(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0))' in statements[0]
-  assert 'CASE WHEN COALESCE(workspace_covered, true) THEN' not in statements[0]
+  assert 'CASE WHEN COALESCE(workspace_covered, true) THEN total_cost' not in statements[0]
 
 
 @pytest.mark.asyncio
@@ -139,8 +152,7 @@ async def test_unknown_sort_field_falls_back_to_total_cost_expression():
 
   assert 'DROP TABLE' not in statements[0]
   assert (
-    'ORDER BY (COALESCE(total_cloud_cost, 0) + '
-    'COALESCE(total_databricks_cost, 0)) DESC'
+    'ORDER BY (COALESCE(total_cloud_cost, 0) + COALESCE(total_databricks_cost, 0)) DESC'
   ) in statements[0]
 
 
@@ -184,15 +196,9 @@ async def test_top_cluster_preserves_workspace_coverage():
   ],
 )
 def test_owner_change_deletes_stale_key_in_recomputed_window(notebook_name):
-  notebook_path = (
-    Path(__file__).parents[1] / 'jobs' / 'notebooks' / notebook_name
-  )
+  notebook_path = Path(__file__).parents[1] / 'jobs' / 'notebooks' / notebook_name
   notebook = json.loads(notebook_path.read_text())
-  source = '\n'.join(
-    line
-    for cell in notebook['cells']
-    for line in cell.get('source', [])
-  )
+  source = '\n'.join(line for cell in notebook['cells'] for line in cell.get('source', []))
 
   assert 't.cluster_id = s.cluster_id AND t.user_id = s.user_id' in source
   assert 'AND t.usage_date = s.usage_date' in source

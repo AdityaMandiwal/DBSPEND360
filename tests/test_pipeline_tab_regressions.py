@@ -17,11 +17,7 @@ SERVICE_PATH = ROOT / 'server' / 'services' / 'databricks_service.py'
 
 def _notebook_source(name: str) -> str:
   notebook = json.loads((ROOT / 'jobs' / 'notebooks' / name).read_text())
-  return '\n'.join(
-    line
-    for cell in notebook['cells']
-    for line in cell.get('source', [])
-  )
+  return '\n'.join(line for cell in notebook['cells'] for line in cell.get('source', []))
 
 
 def _method_source(name: str) -> str:
@@ -48,9 +44,7 @@ def test_pipeline_price_join_cardinality_mismatch_raises():
 
   assert 'direction = "DROP" if join_cnt < left_cnt else "FAN_OUT"' in mismatch
   assert 'self.logger.warning(' in mismatch
-  assert mismatch.index('self.logger.warning(') < mismatch.index(
-    'raise DataQualityError('
-  )
+  assert mismatch.index('self.logger.warning(') < mismatch.index('raise DataQualityError(')
   assert 'expected exactly one list-price row per usage row' in mismatch
 
 
@@ -60,37 +54,22 @@ def test_pipeline_compute_mode_uses_all_serverless_signals():
 
   assert 'F.col("cluster_id").isNull()' in source
   assert 'F.upper(F.col("sku_name")).like("%SERVERLESS%")' in source
-  assert (
-    '["MODEL_SERVING", "VECTOR_SEARCH", "AI_FUNCTIONS"]'
-    in source
-  )
-  assert (
-    'F.max(F.col("is_serverless_row").cast("int"))'
-    in source
-  )
+  assert '["MODEL_SERVING", "VECTOR_SEARCH", "AI_FUNCTIONS"]' in source
+  assert 'F.max(F.col("is_serverless_row").cast("int"))' in source
 
 
-def test_pipeline_dab_has_explicit_ddl_dependencies_and_paths():
-  """Pipeline ETL tasks must not race their target-table creation."""
+def test_pipeline_dab_omits_ddl_and_keeps_coverage_and_cloud_deps():
+  """Tables are created by setup (`create_all_tables`); the job only loads data."""
   yaml_text = (ROOT / 'jobs' / 'resource_templates' / 'DBSPEND360.yaml').read_text()
-  root = (
-    '/Workspace/Users/aditya.mandiwal@databricks.com/'
-    'deployed from cursor/jobs/ddls/'
-  )
-
-  create_dbu = _task_block(yaml_text, 'create_pipeline_dbu_cost_table')
-  create_rollup = _task_block(yaml_text, 'create_total_pipeline_spends_table')
   dbu = _task_block(yaml_text, 'Dbspend360_pipeline_dbu_costs')
   rollup = _task_block(yaml_text, 'pipeline_spends')
 
-  assert f'{root}dbspend360_pipeline_dbu_cost\n' in create_dbu
-  assert f'{root}dbspend360_total_pipeline_spends\n' in create_rollup
-  assert '.ipynb' not in create_dbu + create_rollup
-  assert '- task_key: create_pipeline_dbu_cost_table' in dbu
+  assert 'create_pipeline_dbu_cost_table' not in yaml_text
+  assert 'create_total_pipeline_spends_table' not in yaml_text
+  assert '- task_key: cloud_cost_explorer' in dbu
   assert '- task_key: covered_workspaces' in dbu
-  assert '- task_key: create_total_pipeline_spends_table' in rollup
   assert '- task_key: Dbspend360_pipeline_dbu_costs' in rollup
-  assert '- task_key: cloud_cost_explorer' in rollup
+  assert '- task_key: cloud_cost_explorer' not in rollup
 
 
 def test_pipeline_summary_uses_all_workspace_totals_and_denominator():
@@ -98,21 +77,83 @@ def test_pipeline_summary_uses_all_workspace_totals_and_denominator():
   source = _method_source('get_pipeline_summary_metrics')
   summary_sql = source[source.index('query = f"""') : source.index('response =')]
   breakdown_sql = source[
-    source.index('breakdown_query = f"""') : source.index(
-      'breakdown_response ='
-    )
+    source.index('breakdown_query = f"""') : source.index('breakdown_response =')
   ]
 
   assert 'SUM(p.pipe_cost)' in summary_sql
   assert 'SUM(p.pipe_databricks_cost)' in summary_sql
   assert 'SUM(p.pipe_cloud_cost)' in summary_sql
+  assert 'AS covered_cloud_cost' in summary_sql
+  assert 'AS covered_databricks_cost' in summary_sql
+  assert 'AS uncovered_cloud_cost' in summary_sql
+  assert 'FROM filtered' in summary_sql
   assert 'CASE WHEN p.workspace_covered THEN p.pipe_cost' not in summary_sql
-  assert (
-    'CASE WHEN p.workspace_covered THEN p.pipe_databricks_cost'
-    not in summary_sql
-  )
+  assert 'CASE WHEN p.workspace_covered THEN p.pipe_databricks_cost' not in summary_sql
   assert 'SUM(total_cost) AS wl_cost' in breakdown_sql
   assert 'workspace_covered' not in breakdown_sql
+
+
+@pytest.mark.asyncio
+async def test_pipeline_summary_coverage_buckets_reconcile_to_total():
+  responses = [
+    [
+      [
+        2,
+        1,
+        1,
+        0,
+        0,
+        '31.0',
+        '10.0',
+        '21.0',
+        '0.0',
+        '25.0',
+        '6.0',
+        '15.0',
+        '4.0',
+        '10.0',
+        '2.0',
+        '2026-08-02',
+        '2026-08-02',
+        '2026-08-02',
+        2,
+        2,
+      ]
+    ],
+    [],
+  ]
+  statements = []
+  service = object.__new__(DatabricksService)
+  service.pipeline_table_name = 'catalog.schema.total_pipeline_spends'
+  service._pipeline_workload_filter = lambda _workloads: ''
+  service._workspace_covered_sql = lambda _table: ('COALESCE(workspace_covered, true)')
+  service._workspace_covered_agg_sql = lambda _table: (
+    'BOOL_AND(COALESCE(workspace_covered, true)) AS workspace_covered'
+  )
+
+  def execute(statement, **_kwargs):
+    statements.append(statement)
+    return SimpleNamespace(result=SimpleNamespace(data_array=responses.pop(0)))
+
+  service._execute_statement = execute
+
+  metrics = await service.get_pipeline_summary_metrics(
+    date(2026, 8, 1),
+    date(2026, 8, 2),
+  )
+
+  assert metrics.covered_cloud_cost == 4.0
+  assert metrics.covered_databricks_cost == 10.0
+  assert metrics.uncovered_cloud_cost == 2.0
+  assert metrics.dbu_in_non_covered_workspaces == 15.0
+  assert (
+    metrics.covered_cloud_cost
+    + metrics.covered_databricks_cost
+    + metrics.uncovered_cloud_cost
+    + metrics.dbu_in_non_covered_workspaces
+    == metrics.total_spend
+  )
+  assert 'SUM(p.pipe_cost)' in statements[0]
 
 
 def test_pipeline_mixed_bucket_owns_entire_mixed_pipeline_spend():
@@ -120,18 +161,9 @@ def test_pipeline_mixed_bucket_owns_entire_mixed_pipeline_spend():
   source = _method_source('get_pipeline_summary_metrics')
 
   assert "COUNT(DISTINCT compute_mode) > 1 THEN 'mixed'" in source
-  assert (
-    "SUM(CASE WHEN p.compute_mode='serverless' THEN p.pipe_cost ELSE 0 END)"
-    in source
-  )
-  assert (
-    "SUM(CASE WHEN p.compute_mode='classic' THEN p.pipe_cost ELSE 0 END)"
-    in source
-  )
-  assert (
-    "SUM(CASE WHEN p.compute_mode='mixed' THEN p.pipe_cost ELSE 0 END)"
-    in source
-  )
+  assert "SUM(CASE WHEN p.compute_mode='serverless' THEN p.pipe_cost ELSE 0 END)" in source
+  assert "SUM(CASE WHEN p.compute_mode='classic' THEN p.pipe_cost ELSE 0 END)" in source
+  assert "SUM(CASE WHEN p.compute_mode='mixed' THEN p.pipe_cost ELSE 0 END)" in source
 
 
 def test_pipeline_top_n_projects_workspace_coverage():
@@ -213,9 +245,8 @@ async def test_pipeline_workload_filter_is_forwarded_to_day_breakdown():
 
 def test_pipeline_llm_cost_copy_is_cloud_aware():
   """Pipeline analysis must describe the DBU-plus-cloud total it receives."""
-  source = (
-    inspect.getsource(LLMService._build_pipeline_user_message)
-    + inspect.getsource(LLMService._build_pipeline_fallback)
+  source = inspect.getsource(LLMService._build_pipeline_user_message) + inspect.getsource(
+    LLMService._build_pipeline_fallback
   )
 
   assert "cost_summary.get('total_cloud_cost')" in source
@@ -237,12 +268,8 @@ def test_pipeline_methods_use_statement_wrapper():
 
 def test_pipeline_ui_default_is_30_days_inclusive():
   """The default range includes today plus the preceding 29 calendar days."""
-  dashboard = (
-    ROOT / 'client' / 'src' / 'components' / 'PipelineDashboard.tsx'
-  ).read_text()
-  summary = (
-    ROOT / 'client' / 'src' / 'components' / 'PipelineSummaryCards.tsx'
-  ).read_text()
+  dashboard = (ROOT / 'client' / 'src' / 'components' / 'PipelineDashboard.tsx').read_text()
+  summary = (ROOT / 'client' / 'src' / 'components' / 'PipelineSummaryCards.tsx').read_text()
 
   assert 'subDays(new Date(), 29)' in dashboard
   assert 'subDays(new Date(), 30)' not in dashboard
@@ -251,14 +278,9 @@ def test_pipeline_ui_default_is_30_days_inclusive():
 
 def test_pipeline_cost_caveat_uses_observed_cloud_completeness():
   """Classic/mixed totals are complete when a covered cloud value is present."""
-  display = (
-    ROOT / 'client' / 'src' / 'lib' / 'pipeline-display.ts'
-  ).read_text()
-  table = (
-    ROOT / 'client' / 'src' / 'components' / 'PipelinesTable.tsx'
-  ).read_text()
+  display = (ROOT / 'client' / 'src' / 'lib' / 'pipeline-display.ts').read_text()
+  table = (ROOT / 'client' / 'src' / 'components' / 'PipelinesTable.tsx').read_text()
 
   assert 'if (workspaceCovered && cloudCost != null) return null;' in display
   assert 'pipeline.total_cloud_cost,' in table
   assert 'pipeline.workspace_covered,' in table
-

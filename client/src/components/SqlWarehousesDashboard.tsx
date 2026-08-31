@@ -165,7 +165,7 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">
@@ -186,16 +186,6 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
                     {" "}
                     · data through{" "}
                     {formatCalendarDate(metrics.data_through_date)}
-                  </>
-                )}
-                {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
-                  <>
-                    {" "}
-                    ·{" "}
-                    {formatCurrency(
-                      metrics.dbu_in_non_covered_workspaces ?? 0,
-                    )}{" "}
-                    DBU in non-covered workspaces
                   </>
                 )}
               </p>
@@ -233,6 +223,24 @@ const SqlWarehouseSummaryCards = ({ dateRange }: { dateRange: DateRange }) => {
                   metrics.pro_warehouses + metrics.classic_warehouses,
                 )}{" "}
                 Classic/Pro DBU-only · cloud infrastructure excluded
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">
+                DBU Outside Cloud Scope
+              </CardTitle>
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-amber-600">
+                {formatCurrency(metrics.dbu_in_non_covered_workspaces ?? 0)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Excluded from Tracked DBU Spend · DBU is complete; cloud billing
+                is outside the ingested subscription scope
               </p>
             </CardContent>
           </Card>

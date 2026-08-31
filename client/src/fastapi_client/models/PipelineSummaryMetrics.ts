@@ -37,6 +37,9 @@ export type PipelineSummaryMetrics = {
     mixed_spend: number;
     total_databricks_cost: number;
     total_cloud_cost?: (number | null);
+    covered_cloud_cost?: number;
+    covered_databricks_cost?: number;
+    uncovered_cloud_cost?: number;
     workload_breakdown?: Record<string, number>;
     date_range_days: number;
     dbu_in_non_covered_workspaces?: number;

@@ -29,13 +29,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
-import {
-  Area,
-  AreaChart,
-  ResponsiveContainer,
-  Tooltip,
-  YAxis,
-} from 'recharts';
+import { Area, AreaChart, ResponsiveContainer, Tooltip, YAxis } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorState } from '@/components/ui/error-state';
@@ -47,6 +41,7 @@ import {
 import type { DateRange } from '@/types/job-spend';
 import type { InstancePoolDailyTrendPoint } from '@/types/instance-pool';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
+import { CostCoverageMix } from './CostCoverageMix';
 import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 
 interface InstancePoolsSummaryCardsProps {
@@ -65,9 +60,6 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
 const integerFormatter = new Intl.NumberFormat('en-US');
 const formatCurrency = (amount: number) => currencyFormatter.format(amount);
 const formatNumber = (n: number) => integerFormatter.format(n);
-const formatPercent = (part: number, whole: number) =>
-  whole > 0 ? `${Math.round((part / whole) * 100)}%` : '0%';
-
 const formatTrendDate = (isoDate: string) => {
   try {
     return format(parseISO(isoDate), 'MMM d');
@@ -127,15 +119,6 @@ export const InstancePoolsSummaryCards = ({
     ? metrics.total_spend / Math.max(metrics.date_range_days, 1)
     : 0;
 
-  // The headline combines DBU with ClusterId-free idle/warm cloud cost.
-  // `total_cloud_cost` is NULL only when no pool-day in the window carries a
-  // cloud row yet — surfaced as "—" + note, never a misleading $0 (plan §5).
-  const cloudCost = metrics?.total_cloud_cost;
-  const cloudPctOfTotal =
-    metrics && cloudCost != null && metrics.total_spend > 0
-      ? formatPercent(cloudCost, metrics.total_spend)
-      : null;
-
   const trendSummary = trendPoints ? summarizeTrend(trendPoints) : null;
   const hasTrendSpend =
     !!trendPoints && trendPoints.some((p) => p.total_cost > 0);
@@ -145,7 +128,8 @@ export const InstancePoolsSummaryCards = ({
     (!metrics.latest_cloud_date ||
       metrics.latest_cloud_date < dateRange.end_date);
   const overallDataIsPartial =
-    !!metrics?.latest_data_date && metrics.latest_data_date < dateRange.end_date;
+    !!metrics?.latest_data_date &&
+    metrics.latest_data_date < dateRange.end_date;
 
   return (
     <div className="space-y-6">
@@ -168,106 +152,97 @@ export const InstancePoolsSummaryCards = ({
           </Card>
         </div>
       ) : (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Spend</CardTitle>
-            <DollarSign className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-blue-600">
-              {formatCurrency(metrics.total_spend)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {metrics.date_range_days} day
-              {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
-              {formatCurrency(dailyAverageSpend)}/day avg
-              {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
-                <>
-                  {' '}
-                  · {formatCurrency(metrics.dbu_in_non_covered_workspaces ?? 0)}{' '}
-                  DBU in non-covered workspaces
-                </>
-              )}
-            </p>
-          </CardContent>
-        </Card>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Total Spend</CardTitle>
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-blue-600">
+                {formatCurrency(metrics.total_spend)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {metrics.date_range_days} day
+                {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
+                {formatCurrency(dailyAverageSpend)}/day avg
+                {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
+                  <>
+                    {' '}
+                    ·{' '}
+                    {formatCurrency(
+                      metrics.dbu_in_non_covered_workspaces ?? 0,
+                    )}{' '}
+                    DBU in non-covered workspaces
+                  </>
+                )}
+              </p>
+            </CardContent>
+          </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">{cloudLabel}</CardTitle>
-            <Cloud className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            {cloudCost != null ? (
-              <>
-                <div className="text-2xl font-bold text-sky-600">
-                  {formatCurrency(cloudCost)}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {cloudPctOfTotal} of total · ClusterId-free idle/warm VM cost
-                  (DBU is{' '}
-                  {formatCurrency(metrics.total_databricks_cost)})
-                </p>
-              </>
-            ) : (
-              <>
-                <div
-                  className="text-2xl font-bold text-muted-foreground cursor-help"
-                  title={
-                    isGcp
-                      ? 'Pool-tag cloud ingestion is not implemented for GCP.'
-                      : 'No pool-tag cloud row landed in this window — confirm the DatabricksInstancePoolId tag is enabled and the cloud cost report has caught up.'
-                  }
-                >
-                  —
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {isGcp
-                    ? 'pool cloud ingestion is not supported on GCP'
-                    : 'no idle/warm pool VM cost available yet'}
-                </p>
-              </>
-            )}
-          </CardContent>
-        </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Cost Mix</CardTitle>
+              <Cloud className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <CostCoverageMix
+                compact
+                totalSpend={metrics.total_spend}
+                coveredCloudCost={metrics.covered_cloud_cost}
+                coveredDatabricksCost={metrics.covered_databricks_cost}
+                uncoveredCloudCost={metrics.uncovered_cloud_cost}
+                uncoveredDatabricksCost={
+                  metrics.dbu_in_non_covered_workspaces ?? 0
+                }
+                cloudLabel={cloudLabel}
+                formatCurrency={formatCurrency}
+              />
+            </CardContent>
+          </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Active Pools</CardTitle>
-            <Layers className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-purple-600">
-              {formatNumber(metrics.total_pools)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {formatCurrency(metrics.avg_cost_per_pool_day)}/pool-day avg · max{' '}
-              {formatCurrency(metrics.max_cost_per_pool_day)}
-              {metrics.orphaned_pools > 0 && (
-                <> · {formatNumber(metrics.orphaned_pools)} metadata unavailable</>
-              )}
-            </p>
-          </CardContent>
-        </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">
+                Active Pools
+              </CardTitle>
+              <Layers className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-purple-600">
+                {formatNumber(metrics.total_pools)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {formatCurrency(metrics.avg_cost_per_pool_day)}/pool-day avg ·
+                max {formatCurrency(metrics.max_cost_per_pool_day)}
+                {metrics.orphaned_pools > 0 && (
+                  <>
+                    {' '}
+                    · {formatNumber(metrics.orphaned_pools)} metadata
+                    unavailable
+                  </>
+                )}
+              </p>
+            </CardContent>
+          </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Active Clusters
-            </CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-600">
-              {formatNumber(metrics.total_clusters)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              distinct clusters attached
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">
+                Active Clusters
+              </CardTitle>
+              <Server className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-green-600">
+                {formatNumber(metrics.total_clusters)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                distinct clusters attached
+              </p>
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {!isMetricsLoading &&
@@ -277,7 +252,9 @@ export const InstancePoolsSummaryCards = ({
           <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
             <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
             <div>
-              <div className="font-semibold">Selected-window data is incomplete.</div>
+              <div className="font-semibold">
+                Selected-window data is incomplete.
+              </div>
               <div className="text-xs mt-1 opacity-90">
                 {metrics.latest_cloud_date
                   ? `Idle/warm cloud cost is available through ${formatTrendDate(metrics.latest_cloud_date)} (${metrics.cloud_data_days} of ${metrics.date_range_days} calendar days contain cloud data).`
@@ -285,8 +262,8 @@ export const InstancePoolsSummaryCards = ({
                 {metrics.latest_data_date &&
                   metrics.latest_data_date < dateRange.end_date &&
                   `The newest pool spend row is ${formatTrendDate(metrics.latest_data_date)}.`}{' '}
-                Totals cover landed rows only and should not be treated as complete
-                for the full date range.
+                Totals cover landed rows only and should not be treated as
+                complete for the full date range.
               </div>
             </div>
           </div>
@@ -403,13 +380,17 @@ export const InstancePoolsSummaryCards = ({
                 </div>
                 <div className="flex items-start justify-between gap-3 border-t pt-3">
                   <div>
-                    <div className="text-xs text-muted-foreground">Avg / day</div>
+                    <div className="text-xs text-muted-foreground">
+                      Avg / day
+                    </div>
                     <div className="text-sm font-semibold">
                       {formatCurrency(trendSummary?.avgPerDay ?? 0)}
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs text-muted-foreground">Peak day</div>
+                    <div className="text-xs text-muted-foreground">
+                      Peak day
+                    </div>
                     {trendSummary?.peak ? (
                       <>
                         <div className="text-sm font-semibold">

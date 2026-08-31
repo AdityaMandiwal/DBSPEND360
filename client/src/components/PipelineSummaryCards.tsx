@@ -40,6 +40,7 @@ import type { DateRange } from '@/types/job-spend';
 import { useCloudPlatform } from '@/contexts/CloudPlatformContext';
 import { useIsAws, AWS_CLOUD_LABEL } from '@/hooks/useCloudGate';
 import { formatCalendarDate } from '@/lib/utils';
+import { CostCoverageMix } from './CostCoverageMix';
 
 interface PipelineSummaryCardsProps {
   dateRange: DateRange;
@@ -107,12 +108,6 @@ export const PipelineSummaryCards = ({
   // headline is total spend (DBU + cloud), not DBU alone. `total_cloud_cost`
   // is NULL when every matched pipeline is fully serverless (no separate VM
   // line) — surfaced as "—" + note, not a misleading $0 (plan §5).
-  const cloudCost = metrics?.total_cloud_cost;
-  const cloudPctOfTotal =
-    metrics && cloudCost != null && metrics.total_spend > 0
-      ? formatPercent(cloudCost, metrics.total_spend)
-      : null;
-
   return (
     <div className="space-y-6">
       {/* KPI cards: Total Spend / EC2-EBS cloud / Pipelines /
@@ -135,116 +130,102 @@ export const PipelineSummaryCards = ({
           </Card>
         </div>
       ) : (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Spend</CardTitle>
-            <DollarSign className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-blue-600">
-              {formatCurrency(metrics.total_spend)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {metrics.date_range_days} day
-              {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
-              {formatCurrency(dailyAverageSpend)}/landed-day avg
-              {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
-                <>
-                  {' '}
-                  · {formatCurrency(metrics.dbu_in_non_covered_workspaces ?? 0)}{' '}
-                  DBU in non-covered workspaces
-                </>
-              )}
-            </p>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              Includes all known DBU; cloud cost is included where available.
-            </p>
-          </CardContent>
-        </Card>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Total Spend</CardTitle>
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-blue-600">
+                {formatCurrency(metrics.total_spend)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {metrics.date_range_days} day
+                {metrics.date_range_days !== 1 ? 's' : ''} period ·{' '}
+                {formatCurrency(dailyAverageSpend)}/landed-day avg
+                {(metrics.dbu_in_non_covered_workspaces ?? 0) > 0 && (
+                  <>
+                    {' '}
+                    ·{' '}
+                    {formatCurrency(
+                      metrics.dbu_in_non_covered_workspaces ?? 0,
+                    )}{' '}
+                    DBU in non-covered workspaces
+                  </>
+                )}
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Includes all known DBU; cloud cost is included where available.
+              </p>
+            </CardContent>
+          </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">{cloudLabel}</CardTitle>
-            <Cloud className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            {cloudCost != null ? (
-              <>
-                <div className="text-2xl font-bold text-sky-600">
-                  {formatCurrency(cloudCost)}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {cloudPctOfTotal} of total · classic VM cost (DBU is{' '}
-                  {formatCurrency(metrics.total_databricks_cost)})
-                </p>
-              </>
-            ) : (
-              <>
-                <div
-                  className="text-2xl font-bold text-muted-foreground cursor-help"
-                  title={
-                    cloudRelevant
-                      ? 'No cloud cost was returned for this selection. DBU remains included in Total Spend.'
-                      : 'No matched pipeline carries a separate VM line in this window — serverless DBU already bundles infrastructure cost.'
-                  }
-                >
-                  —
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {cloudRelevant
-                    ? 'cloud cost unavailable for this selection'
-                    : 'serverless-only — no separate VM line'}
-                </p>
-              </>
-            )}
-          </CardContent>
-        </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Cost Mix</CardTitle>
+              <Cloud className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <CostCoverageMix
+                compact
+                totalSpend={metrics.total_spend}
+                coveredCloudCost={metrics.covered_cloud_cost}
+                coveredDatabricksCost={metrics.covered_databricks_cost}
+                uncoveredCloudCost={metrics.uncovered_cloud_cost}
+                uncoveredDatabricksCost={
+                  metrics.dbu_in_non_covered_workspaces ?? 0
+                }
+                cloudLabel={cloudLabel}
+                formatCurrency={formatCurrency}
+              />
+            </CardContent>
+          </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Pipelines</CardTitle>
-            <Layers className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-purple-600">
-              {formatNumber(metrics.total_pipelines)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {formatNumber(metrics.serverless_pipelines)} serverless ·{' '}
-              {formatNumber(metrics.classic_pipelines)} classic
-              {metrics.mixed_pipelines > 0 &&
-                ` · ${formatNumber(metrics.mixed_pipelines)} mixed`}
-            </p>
-          </CardContent>
-        </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Pipelines</CardTitle>
+              <Layers className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-purple-600">
+                {formatNumber(metrics.total_pipelines)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {formatNumber(metrics.serverless_pipelines)} serverless ·{' '}
+                {formatNumber(metrics.classic_pipelines)} classic
+                {metrics.mixed_pipelines > 0 &&
+                  ` · ${formatNumber(metrics.mixed_pipelines)} mixed`}
+              </p>
+            </CardContent>
+          </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Metadata Unavailable
-            </CardTitle>
-            <FileQuestion
-              className={`h-4 w-4 ${
-                hasMetadataGap ? 'text-amber-500' : 'text-muted-foreground'
-              }`}
-            />
-          </CardHeader>
-          <CardContent>
-            <div
-              className={`text-2xl font-bold ${
-                hasMetadataGap ? 'text-amber-600' : 'text-muted-foreground'
-              }`}
-              title="DLT / DBSQL MV / Online Table pipelines that should carry a system.lakeflow.pipelines snapshot but don't. Vector Search etc. are excluded — they never carry metadata, so their absence is expected."
-            >
-              {formatNumber(metrics.metadata_unavailable)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              metadata-bearing pipelines missing a snapshot
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">
+                Metadata Unavailable
+              </CardTitle>
+              <FileQuestion
+                className={`h-4 w-4 ${
+                  hasMetadataGap ? 'text-amber-500' : 'text-muted-foreground'
+                }`}
+              />
+            </CardHeader>
+            <CardContent>
+              <div
+                className={`text-2xl font-bold ${
+                  hasMetadataGap ? 'text-amber-600' : 'text-muted-foreground'
+                }`}
+                title="DLT / DBSQL MV / Online Table pipelines that should carry a system.lakeflow.pipelines snapshot but don't. Vector Search etc. are excluded — they never carry metadata, so their absence is expected."
+              >
+                {formatNumber(metrics.metadata_unavailable)}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                metadata-bearing pipelines missing a snapshot
+              </p>
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {metrics && (
@@ -290,33 +271,33 @@ export const PipelineSummaryCards = ({
           CP3: classic/mixed now include EC2/EBS cloud cost; serverless is the
           full cost because its DBU rate already bundles infrastructure. */}
       {metrics && (
-      <Card>
-        <CardContent className="p-4">
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            <span className="font-medium text-foreground">
-              {formatPercent(metrics.serverless_spend, metrics.total_spend)}
-            </span>{' '}
-            of shown spend ({formatCurrency(metrics.serverless_spend)}) is
-            serverless (full cost — VM bundled in the DBU rate);{' '}
-            <span className="font-medium text-foreground">
-              {formatPercent(metrics.classic_spend, metrics.total_spend)}
-            </span>{' '}
-            ({formatCurrency(metrics.classic_spend)}) is classic (DBU +
-            available cloud)
-            {metrics.mixed_spend > 0 && (
-              <>
-                ;{' '}
-                <span className="font-medium text-foreground">
-                  {formatPercent(metrics.mixed_spend, metrics.total_spend)}
-                </span>{' '}
-                ({formatCurrency(metrics.mixed_spend)}) is mixed (serverless +
-                classic DBU + available cloud)
-              </>
-            )}
-            .
-          </p>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              <span className="font-medium text-foreground">
+                {formatPercent(metrics.serverless_spend, metrics.total_spend)}
+              </span>{' '}
+              of shown spend ({formatCurrency(metrics.serverless_spend)}) is
+              serverless (full cost — VM bundled in the DBU rate);{' '}
+              <span className="font-medium text-foreground">
+                {formatPercent(metrics.classic_spend, metrics.total_spend)}
+              </span>{' '}
+              ({formatCurrency(metrics.classic_spend)}) is classic (DBU +
+              available cloud)
+              {metrics.mixed_spend > 0 && (
+                <>
+                  ;{' '}
+                  <span className="font-medium text-foreground">
+                    {formatPercent(metrics.mixed_spend, metrics.total_spend)}
+                  </span>{' '}
+                  ({formatCurrency(metrics.mixed_spend)}) is mixed (serverless +
+                  classic DBU + available cloud)
+                </>
+              )}
+              .
+            </p>
+          </CardContent>
+        </Card>
       )}
 
       {/* Bottom strip: workload breakdown (left) + top-5 pipelines (right) */}
@@ -380,9 +361,7 @@ export const PipelineSummaryCards = ({
         {/* Top 5 Costliest Pipelines */}
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle className="text-lg">
-              Top 5 Costliest Pipelines
-            </CardTitle>
+            <CardTitle className="text-lg">Top 5 Costliest Pipelines</CardTitle>
           </CardHeader>
           <CardContent>
             {isTopLoading ? (

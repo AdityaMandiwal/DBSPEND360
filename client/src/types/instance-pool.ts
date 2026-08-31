@@ -104,6 +104,9 @@ export interface InstancePoolSummaryMetrics {
   min_cost_per_pool_day: number;
   total_databricks_cost: number;
   total_cloud_cost?: number | null;
+  covered_cloud_cost: number;
+  covered_databricks_cost: number;
+  uncovered_cloud_cost: number;
   date_range_days: number;
   dbu_in_non_covered_workspaces?: number;
   latest_data_date?: string | null;

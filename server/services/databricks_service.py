@@ -516,11 +516,14 @@ class DatabricksService:
             COALESCE(MIN(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS min_cost,
             COALESCE(SUM(cloud_cost), 0) AS total_cloud_cost,
             COALESCE(SUM(databricks_cost), 0) AS total_databricks_cost,
-            SUM(compute_cost) AS total_compute_cost,
-            SUM(storage_cost) AS total_storage_cost,
-            SUM(network_cost) AS total_network_cost,
-            SUM(other_cost) AS total_other_cost,
-            COALESCE(SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END), 0) AS dbu_in_non_covered_workspaces
+            (SELECT SUM(CASE WHEN {wsc_expr} THEN compute_cost END) FROM filtered) AS total_compute_cost,
+            (SELECT SUM(CASE WHEN {wsc_expr} THEN storage_cost END) FROM filtered) AS total_storage_cost,
+            (SELECT SUM(CASE WHEN {wsc_expr} THEN network_cost END) FROM filtered) AS total_network_cost,
+            (SELECT SUM(CASE WHEN {wsc_expr} THEN other_cost END) FROM filtered) AS total_other_cost,
+            COALESCE((SELECT SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END) FROM filtered), 0) AS dbu_in_non_covered_workspaces,
+            COALESCE((SELECT SUM(CASE WHEN {wsc_expr} THEN cloud_cost ELSE 0 END) FROM filtered), 0) AS covered_cloud_cost,
+            COALESCE((SELECT SUM(CASE WHEN {wsc_expr} THEN databricks_cost ELSE 0 END) FROM filtered), 0) AS covered_databricks_cost,
+            COALESCE((SELECT SUM(CASE WHEN NOT {wsc_expr} THEN cloud_cost ELSE 0 END) FROM filtered), 0) AS uncovered_cloud_cost
         FROM run_level
         """
 
@@ -536,10 +539,11 @@ class DatabricksService:
       total_other = float(row[10]) if row[10] is not None else None
 
       total_cloud = float(row[5]) if row[5] else 0.0
+      covered_cloud = float(row[12]) if len(row) > 12 and row[12] else 0.0
       coverage_pct = None
-      if total_compute is not None and total_cloud > 0:
+      if total_compute is not None and covered_cloud > 0:
         classified = (total_compute or 0) + (total_storage or 0) + (total_network or 0)
-        coverage_pct = (classified / total_cloud) * 100
+        coverage_pct = (classified / covered_cloud) * 100
 
       coverage_status = None
       coverage_warning = None
@@ -577,6 +581,9 @@ class DatabricksService:
         dbu_in_non_covered_workspaces=float(row[11])
         if len(row) > 11 and row[11] is not None
         else 0.0,
+        covered_cloud_cost=float(row[12]) if len(row) > 12 and row[12] is not None else 0.0,
+        covered_databricks_cost=float(row[13]) if len(row) > 13 and row[13] is not None else 0.0,
+        uncovered_cloud_cost=float(row[14]) if len(row) > 14 and row[14] is not None else 0.0,
       )
 
     return SummaryMetrics(
@@ -598,6 +605,7 @@ class DatabricksService:
     end_date: Optional[date] = None,
   ) -> Optional[CostBreakdown]:
     """Get a run cost breakdown, optionally restricted to the selected window."""
+    wsc_expr = self._workspace_covered_sql(self.table_name)
     escaped_job_id = job_id.replace("'", "''")
     escaped_run_id = run_id.replace("'", "''")
     date_filter = ''
@@ -615,10 +623,14 @@ class DatabricksService:
             MAX(usage_date) as end_date,
             SUM(cloud_cost) as total_cloud_cost,
             SUM(databricks_cost) as total_databricks_cost,
-            SUM(compute_cost) as total_compute_cost,
-            SUM(storage_cost) as total_storage_cost,
-            SUM(network_cost) as total_network_cost,
-            SUM(other_cost) as total_other_cost
+            SUM(CASE WHEN {wsc_expr} THEN compute_cost END) as total_compute_cost,
+            SUM(CASE WHEN {wsc_expr} THEN storage_cost END) as total_storage_cost,
+            SUM(CASE WHEN {wsc_expr} THEN network_cost END) as total_network_cost,
+            SUM(CASE WHEN {wsc_expr} THEN other_cost END) as total_other_cost,
+            COALESCE(SUM(CASE WHEN {wsc_expr} THEN cloud_cost ELSE 0 END), 0) as covered_cloud_cost,
+            COALESCE(SUM(CASE WHEN {wsc_expr} THEN databricks_cost ELSE 0 END), 0) as covered_databricks_cost,
+            COALESCE(SUM(CASE WHEN NOT {wsc_expr} THEN cloud_cost ELSE 0 END), 0) as uncovered_cloud_cost,
+            COALESCE(SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END), 0) as uncovered_databricks_cost
         FROM {self.table_name}
         WHERE job_id = '{escaped_job_id}' AND run_id = '{escaped_run_id}'
         {date_filter}
@@ -649,6 +661,10 @@ class DatabricksService:
         storage_cost=float(row[8]) if row[8] is not None else None,
         network_cost=float(row[9]) if row[9] is not None else None,
         other_cost=float(row[10]) if row[10] is not None else None,
+        covered_cloud_cost=float(row[11]) if row[11] is not None else 0.0,
+        covered_databricks_cost=float(row[12]) if row[12] is not None else 0.0,
+        uncovered_cloud_cost=float(row[13]) if row[13] is not None else 0.0,
+        dbu_in_non_covered_workspaces=float(row[14]) if row[14] is not None else 0.0,
       )
 
     return None
@@ -2202,11 +2218,14 @@ class DatabricksService:
             COALESCE(MIN(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0)), 0) AS min_cost_per_cluster_day,
             COALESCE(SUM(cloud_cost), 0) AS total_cloud_cost,
             COALESCE(SUM(databricks_cost), 0) AS total_databricks_cost,
-            SUM(compute_cost) AS total_compute_cost,
-            SUM(storage_cost) AS total_storage_cost,
-            SUM(network_cost) AS total_network_cost,
-            SUM(other_cost) AS total_other_cost,
-            COALESCE(SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END), 0) AS dbu_in_non_covered_workspaces
+            (SELECT SUM(CASE WHEN {wsc_expr} THEN compute_cost END) FROM filtered) AS total_compute_cost,
+            (SELECT SUM(CASE WHEN {wsc_expr} THEN storage_cost END) FROM filtered) AS total_storage_cost,
+            (SELECT SUM(CASE WHEN {wsc_expr} THEN network_cost END) FROM filtered) AS total_network_cost,
+            (SELECT SUM(CASE WHEN {wsc_expr} THEN other_cost END) FROM filtered) AS total_other_cost,
+            COALESCE((SELECT SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END) FROM filtered), 0) AS dbu_in_non_covered_workspaces,
+            COALESCE((SELECT SUM(CASE WHEN {wsc_expr} THEN cloud_cost ELSE 0 END) FROM filtered), 0) AS covered_cloud_cost,
+            COALESCE((SELECT SUM(CASE WHEN {wsc_expr} THEN databricks_cost ELSE 0 END) FROM filtered), 0) AS covered_databricks_cost,
+            COALESCE((SELECT SUM(CASE WHEN NOT {wsc_expr} THEN cloud_cost ELSE 0 END) FROM filtered), 0) AS uncovered_cloud_cost
         FROM cluster_day_level
         """
 
@@ -2233,6 +2252,9 @@ class DatabricksService:
         dbu_in_non_covered_workspaces=float(row[12])
         if len(row) > 12 and row[12] is not None
         else 0.0,
+        covered_cloud_cost=float(row[13]) if len(row) > 13 and row[13] is not None else 0.0,
+        covered_databricks_cost=float(row[14]) if len(row) > 14 and row[14] is not None else 0.0,
+        uncovered_cloud_cost=float(row[15]) if len(row) > 15 and row[15] is not None else 0.0,
       )
 
     return AllPurposeSummaryMetrics(
@@ -3056,6 +3078,12 @@ class DatabricksService:
                 SELECT SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END)
                 FROM filtered
             ), 0)                                                              AS dbu_in_non_covered_workspaces,
+            COALESCE((SELECT SUM(CASE WHEN {wsc_expr} THEN cloud_cost ELSE 0 END)
+                      FROM filtered), 0)                                        AS covered_cloud_cost,
+            COALESCE((SELECT SUM(CASE WHEN {wsc_expr} THEN databricks_cost ELSE 0 END)
+                      FROM filtered), 0)                                        AS covered_databricks_cost,
+            COALESCE((SELECT SUM(CASE WHEN NOT {wsc_expr} THEN cloud_cost ELSE 0 END)
+                      FROM filtered), 0)                                        AS uncovered_cloud_cost,
             (SELECT MAX(usage_date) FROM filtered)                              AS latest_data_date,
             (SELECT MAX(CASE WHEN databricks_cost <> 0 THEN usage_date END)
              FROM filtered)                                                     AS latest_dbu_date,
@@ -3085,16 +3113,19 @@ class DatabricksService:
         total_cloud_cost=float(row[8]) if row[8] is not None else None,
         date_range_days=date_range_days,
         dbu_in_non_covered_workspaces=float(row[9]) if len(row) > 9 and row[9] is not None else 0.0,
-        latest_data_date=date.fromisoformat(str(row[10])[:10])
-        if len(row) > 10 and row[10]
+        covered_cloud_cost=float(row[10]) if len(row) > 10 and row[10] is not None else 0.0,
+        covered_databricks_cost=float(row[11]) if len(row) > 11 and row[11] is not None else 0.0,
+        uncovered_cloud_cost=float(row[12]) if len(row) > 12 and row[12] is not None else 0.0,
+        latest_data_date=date.fromisoformat(str(row[13])[:10])
+        if len(row) > 13 and row[13]
         else None,
-        latest_dbu_date=date.fromisoformat(str(row[11])[:10])
-        if len(row) > 11 and row[11]
+        latest_dbu_date=date.fromisoformat(str(row[14])[:10])
+        if len(row) > 14 and row[14]
         else None,
-        latest_cloud_date=date.fromisoformat(str(row[12])[:10])
-        if len(row) > 12 and row[12]
+        latest_cloud_date=date.fromisoformat(str(row[15])[:10])
+        if len(row) > 15 and row[15]
         else None,
-        cloud_data_days=int(row[13]) if len(row) > 13 and row[13] is not None else 0,
+        cloud_data_days=int(row[16]) if len(row) > 16 and row[16] is not None else 0,
       )
 
     return InstancePoolSummaryMetrics(
@@ -4273,6 +4304,8 @@ class DatabricksService:
     """
     workload_filter = self._pipeline_workload_filter(workload_type)
     metadata_bearing_list = ', '.join(f"'{w}'" for w in METADATA_BEARING_WORKLOADS)
+    wsc_expr = self._workspace_covered_sql(self.pipeline_table_name)
+    wsc_agg = self._workspace_covered_agg_sql(self.pipeline_table_name)
 
     query = f"""
         WITH filtered AS (
@@ -4299,7 +4332,7 @@ class DatabricksService:
                    CASE WHEN COUNT(DISTINCT compute_mode) > 1 THEN 'mixed'
                         ELSE MAX(compute_mode) END AS compute_mode,
                    BOOL_OR(metadata_missing)       AS metadata_missing,
-                   BOOL_AND(COALESCE(workspace_covered, true)) AS workspace_covered,
+                   {wsc_agg},
                    SUM(total_cost)                 AS pipe_cost,
                    SUM(databricks_cost)            AS pipe_databricks_cost,
                    SUM(cloud_cost)                 AS pipe_cloud_cost
@@ -4330,7 +4363,14 @@ class DatabricksService:
             COALESCE(SUM(CASE WHEN p.compute_mode='mixed' THEN p.pipe_cost ELSE 0 END), 0) AS mixed_spend,
             COALESCE(SUM(p.pipe_databricks_cost), 0) AS total_databricks_cost,
             SUM(p.pipe_cloud_cost) AS total_cloud_cost,
-            COALESCE(SUM(CASE WHEN NOT p.workspace_covered THEN p.pipe_databricks_cost ELSE 0 END), 0) AS dbu_in_non_covered_workspaces,
+            COALESCE((SELECT SUM(CASE WHEN NOT {wsc_expr} THEN databricks_cost ELSE 0 END)
+                      FROM filtered), 0) AS dbu_in_non_covered_workspaces,
+            COALESCE((SELECT SUM(CASE WHEN {wsc_expr} THEN cloud_cost ELSE 0 END)
+                      FROM filtered), 0) AS covered_cloud_cost,
+            COALESCE((SELECT SUM(CASE WHEN {wsc_expr} THEN databricks_cost ELSE 0 END)
+                      FROM filtered), 0) AS covered_databricks_cost,
+            COALESCE((SELECT SUM(CASE WHEN NOT {wsc_expr} THEN cloud_cost ELSE 0 END)
+                      FROM filtered), 0) AS uncovered_cloud_cost,
             f.latest_data_date,
             f.latest_dbu_date,
             f.latest_cloud_date,
@@ -4384,11 +4424,14 @@ class DatabricksService:
         dbu_in_non_covered_workspaces=float(row[11])
         if len(row) > 11 and row[11] is not None
         else 0.0,
-        latest_data_date=date.fromisoformat(str(row[12])[:10]) if row[12] else None,
-        latest_dbu_date=date.fromisoformat(str(row[13])[:10]) if row[13] else None,
-        latest_cloud_date=date.fromisoformat(str(row[14])[:10]) if row[14] else None,
-        data_days=int(row[15]) if row[15] is not None else 0,
-        cloud_data_days=int(row[16]) if row[16] is not None else 0,
+        covered_cloud_cost=float(row[12]) if len(row) > 12 and row[12] is not None else 0.0,
+        covered_databricks_cost=float(row[13]) if len(row) > 13 and row[13] is not None else 0.0,
+        uncovered_cloud_cost=float(row[14]) if len(row) > 14 and row[14] is not None else 0.0,
+        latest_data_date=date.fromisoformat(str(row[15])[:10]) if row[15] else None,
+        latest_dbu_date=date.fromisoformat(str(row[16])[:10]) if row[16] else None,
+        latest_cloud_date=date.fromisoformat(str(row[17])[:10]) if row[17] else None,
+        data_days=int(row[18]) if row[18] is not None else 0,
+        cloud_data_days=int(row[19]) if row[19] is not None else 0,
       )
 
     return PipelineSummaryMetrics(
@@ -4701,6 +4744,10 @@ class DatabricksService:
                     AS total_databricks_cost,
                 COALESCE(SUM(CASE WHEN NOT covered THEN databricks_cost ELSE 0 END), 0)
                     AS dbu_in_non_covered_workspaces,
+                0.0 AS covered_cloud_cost,
+                COALESCE(SUM(CASE WHEN covered THEN databricks_cost ELSE 0 END), 0)
+                    AS covered_databricks_cost,
+                0.0 AS uncovered_cloud_cost,
                 COUNT(DISTINCT usage_date) AS landed_days,
                 MAX(usage_date) AS data_through_date
             FROM filtered
@@ -4716,6 +4763,9 @@ class DatabricksService:
             spend.serverless_spend,
             spend.total_databricks_cost,
             spend.dbu_in_non_covered_workspaces,
+            spend.covered_cloud_cost,
+            spend.covered_databricks_cost,
+            spend.uncovered_cloud_cost,
             spend.landed_days,
             spend.data_through_date
         FROM counts CROSS JOIN spend
@@ -4739,8 +4789,11 @@ class DatabricksService:
         total_databricks_cost=float(row[8]) if row[8] is not None else 0.0,
         date_range_days=date_range_days,
         dbu_in_non_covered_workspaces=float(row[9]) if row[9] is not None else 0.0,
-        landed_days=int(row[10]) if row[10] is not None else 0,
-        data_through_date=date.fromisoformat(row[11]) if row[11] else None,
+        covered_cloud_cost=float(row[10]) if row[10] is not None else 0.0,
+        covered_databricks_cost=float(row[11]) if row[11] is not None else 0.0,
+        uncovered_cloud_cost=float(row[12]) if row[12] is not None else 0.0,
+        landed_days=int(row[13]) if row[13] is not None else 0,
+        data_through_date=date.fromisoformat(row[14]) if row[14] else None,
       )
 
     return SqlWarehouseSummaryMetrics(

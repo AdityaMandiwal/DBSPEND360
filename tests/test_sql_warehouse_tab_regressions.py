@@ -64,6 +64,9 @@ async def test_sql_warehouse_summary_uses_day_coverage_and_freshness():
           '50.0',
           '120.0',
           '7.0',
+          '0.0',
+          '120.0',
+          '0.0',
           4,
           '2026-08-24',
         ]
@@ -78,6 +81,13 @@ async def test_sql_warehouse_summary_uses_day_coverage_and_freshness():
 
   assert metrics.total_spend == 120.0
   assert metrics.dbu_in_non_covered_workspaces == 7.0
+  assert metrics.covered_databricks_cost == metrics.total_spend
+  assert metrics.covered_cloud_cost == 0.0
+  assert metrics.uncovered_cloud_cost == 0.0
+  assert (
+    metrics.total_spend + metrics.dbu_in_non_covered_workspaces
+    == metrics.covered_databricks_cost + metrics.dbu_in_non_covered_workspaces
+  )
   assert metrics.landed_days == 4
   assert metrics.data_through_date == date(2026, 8, 24)
   assert 'CASE WHEN covered THEN total_cost' in statements[0]
@@ -158,6 +168,16 @@ def test_create_all_tables_bootstraps_sql_warehouse_and_coverage_tables():
   assert '"dbspend360_covered_workspaces"' in source
   assert '"dbspend360_sql_warehouse_dbu_cost"' in source
   assert '"dbspend360_total_sql_warehouse_spends"' in source
+
+
+def test_sql_warehouse_job_has_no_in_dag_ddl_tasks():
+  """SQL Warehouse tables are created at setup, not on every job run."""
+  yaml_text = (ROOT / 'jobs' / 'resource_templates' / 'DBSPEND360.yaml').read_text()
+  assert 'create_sql_warehouse_dbu_cost_table' not in yaml_text
+  assert 'create_total_sql_warehouse_spends_table' not in yaml_text
+  assert 'create_covered_workspaces_table' not in yaml_text
+  assert '- task_key: Dbspend360_sql_warehouse_dbu_costs' in yaml_text
+  assert '- task_key: sql_warehouse_spends' in yaml_text
 
 
 def test_grouped_sql_warehouse_supports_server_side_sorting():

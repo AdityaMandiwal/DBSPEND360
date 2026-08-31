@@ -22,9 +22,7 @@ def _service_with_capture(rows):
   service._workspace_covered_agg_sql = lambda _table: (
     'BOOL_AND(COALESCE(workspace_covered, true)) AS workspace_covered'
   )
-  service._workspace_covered_sql = lambda _table: (
-    'COALESCE(workspace_covered, true)'
-  )
+  service._workspace_covered_sql = lambda _table: ('COALESCE(workspace_covered, true)')
   statements = []
 
   def execute(statement, **_kwargs):
@@ -111,6 +109,10 @@ async def test_breakdown_uses_selected_window_and_all_clusters():
         None,
         None,
         None,
+        '0.0',
+        '4.25',
+        '0.0',
+        '0.0',
       ]
     ]
   )
@@ -147,7 +149,25 @@ async def test_date_presets_are_inclusive_day_counts():
 async def test_summary_includes_dbu_from_noncovered_workspaces():
   """KPI SQL must include known DBU while reporting excluded cloud scope."""
   service, statements = _service_with_capture(
-    [[1, '15.0', '15.0', '15.0', '15.0', None, '15.0', None, None, None, None, '5.0']]
+    [
+      [
+        1,
+        '16.0',
+        '16.0',
+        '16.0',
+        '16.0',
+        '1.0',
+        '15.0',
+        None,
+        None,
+        None,
+        None,
+        '5.0',
+        '0.8',
+        '10.0',
+        '0.2',
+      ]
+    ]
   )
 
   metrics = await service.get_summary_metrics(
@@ -155,26 +175,72 @@ async def test_summary_includes_dbu_from_noncovered_workspaces():
     date(2026, 8, 1),
   )
 
-  assert metrics.total_spend == 15.0
+  assert metrics.total_spend == 16.0
   assert metrics.total_databricks_cost == 15.0
   assert metrics.dbu_in_non_covered_workspaces == 5.0
+  assert metrics.covered_cloud_cost == 0.8
+  assert metrics.covered_databricks_cost == 10.0
+  assert metrics.uncovered_cloud_cost == 0.2
+  assert (
+    metrics.covered_cloud_cost
+    + metrics.covered_databricks_cost
+    + metrics.dbu_in_non_covered_workspaces
+    + metrics.uncovered_cloud_cost
+    == metrics.total_spend
+  )
   assert 'SUM(COALESCE(cloud_cost, 0) + COALESCE(databricks_cost, 0))' in statements[0]
+
+
+@pytest.mark.asyncio
+async def test_job_breakdown_splits_mixed_workspace_coverage():
+  service, statements = _service_with_capture(
+    [
+      [
+        'job-1',
+        'run-1',
+        'cluster-a,cluster-b',
+        '2026-08-01',
+        '2026-08-02',
+        '11.0',
+        '50.0',
+        '8.0',
+        '2.0',
+        '1.0',
+        '0.0',
+        '9.0',
+        '20.0',
+        '2.0',
+        '30.0',
+      ]
+    ]
+  )
+
+  breakdown = await service.get_job_cost_breakdown(
+    'job-1', 'run-1', date(2026, 8, 1), date(2026, 8, 2)
+  )
+
+  assert breakdown is not None
+  assert breakdown.covered_cloud_cost == 9.0
+  assert breakdown.covered_databricks_cost == 20.0
+  assert breakdown.uncovered_cloud_cost == 2.0
+  assert breakdown.dbu_in_non_covered_workspaces == 30.0
+  assert (
+    breakdown.covered_cloud_cost
+    + breakdown.covered_databricks_cost
+    + breakdown.uncovered_cloud_cost
+    + breakdown.dbu_in_non_covered_workspaces
+    == breakdown.total_cost
+  )
+  assert 'CASE WHEN COALESCE(workspace_covered, true)' in statements[0]
 
 
 def test_job_rollup_join_is_currency_safe():
   """Job rollup must join cloud and DBU rows on their currency grain."""
   notebook_path = (
-    Path(__file__).parents[1]
-    / 'jobs'
-    / 'notebooks'
-    / 'databricks_job_spends_app.ipynb'
+    Path(__file__).parents[1] / 'jobs' / 'notebooks' / 'databricks_job_spends_app.ipynb'
   )
   notebook = json.loads(notebook_path.read_text())
-  source = '\n'.join(
-    line
-    for cell in notebook['cells']
-    for line in cell.get('source', [])
-  )
+  source = '\n'.join(line for cell in notebook['cells'] for line in cell.get('source', []))
 
   assert 'dbu_df["currency"] == cloud_df["currency"]' in source
   assert 'Job spend rollup contains duplicate natural keys' in source
