@@ -77,7 +77,7 @@ class AzureChunkCheckpointTests(unittest.TestCase):
         )
         self.assertNotEqual(key, 'dbspend360_cloud_cost_explorer')
 
-    def test_chunk_builder_preserves_inclusive_ten_day_semantics(self):
+    def test_chunk_builder_preserves_inclusive_one_day_semantics(self):
         node = class_method(self.tree, 'AzureCostClient', '_build_chunks')
         probe = ast.Module(
             body=[
@@ -94,14 +94,14 @@ class AzureChunkCheckpointTests(unittest.TestCase):
         namespace = {'datetime': datetime, 'timedelta': timedelta}
         exec(compile(ast.fix_missing_locations(probe), '<chunk-probe>', 'exec'), namespace)
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        end = datetime(2026, 1, 25, tzinfo=timezone.utc)
-        chunks = namespace['Probe']()._build_chunks(start, end, 10)
+        end = datetime(2026, 1, 3, tzinfo=timezone.utc)
+        chunks = namespace['Probe']()._build_chunks(start, end, 1)
         self.assertEqual(
             [(left.date(), right.date()) for left, right in chunks],
             [
-                (date(2026, 1, 1), date(2026, 1, 10)),
-                (date(2026, 1, 11), date(2026, 1, 20)),
-                (date(2026, 1, 21), date(2026, 1, 25)),
+                (date(2026, 1, 1), date(2026, 1, 1)),
+                (date(2026, 1, 2), date(2026, 1, 2)),
+                (date(2026, 1, 3), date(2026, 1, 3)),
             ],
         )
 
@@ -137,6 +137,29 @@ class AzureChunkCheckpointTests(unittest.TestCase):
         self.assertLess(full_guard, standard_success)
         self.assertNotIn('raise\n', run_pool[except_block:])
         self.assertIn('self._pool_window_cost(start_dt, end_dt)', run_pool)
+
+    def test_empty_first_page_still_follows_next_link(self):
+        cluster = ast.get_source_segment(
+            self.source, class_method(self.tree, 'AzureCostClient', '_execute_query')
+        )
+        pool = ast.get_source_segment(
+            self.source, class_method(self.tree, 'AzureCostClient', '_execute_pool_query')
+        )
+        for source in (cluster, pool):
+            self.assertIn('if not all_rows and not next_link:', source)
+            self.assertNotIn('if not result.rows:', source)
+            self.assertIn('self._query_page_state(result)', source)
+        fetch = ast.get_source_segment(
+            self.source, class_method(self.tree, 'AzureCostClient', '_fetch_next_page')
+        )
+        self.assertNotIn('data=query_json', fetch)
+
+    def test_empty_cluster_day_is_a_valid_zero_row_checkpoint(self):
+        merge = self.method_source('_merge_cluster_chunk')
+        empty_branch = merge[: merge.index('else:')]
+        self.assertIn('merged_row_count = 0', empty_branch)
+        self.assertIn('empty_chunk=true', empty_branch)
+        self.assertNotIn('raise DataQualityError', empty_branch)
 
     def test_no_cross_chunk_result_accumulation(self):
         self.assertNotIn('all_chunk_dfs', self.source)
