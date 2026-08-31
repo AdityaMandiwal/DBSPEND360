@@ -315,7 +315,7 @@ Claude understands natural language commands for common development tasks:
 - `docs/databricks_apis/workspace_apis.md` - Workspace file operations
 
 ### Documentation Files
-- `docs/product.md` - Product requirements document (refreshed to reflect the current four-tab + LLM app)
+- `docs/product.md` - Product requirements document (refreshed to reflect the current five-tab + LLM app)
 - These files are generated through iterative collaboration with the user during the /dba command
 - Note: the original `docs/design.md` (a pre-implementation /dba design artifact) was removed because the app diverged substantially from it; the current architecture lives in `README.md` and `docs/product.md`
 

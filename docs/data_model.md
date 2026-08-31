@@ -37,7 +37,7 @@ to `warehouse_id`.
 
 ## 2. How the pieces fit together
 
-The app reads **only the five green rollup tables**. Everything upstream is ETL plumbing (detailed in the [reference](./data_model_reference.md#2-etl-pipeline-dag)).
+The app reads **only the five green rollup tables**. Everything upstream is ETL plumbing (detailed in the [reference](./data_model_reference.md#2-etl-pipeline-dag)). Create those tables once with `jobs/ddls/create_all_tables.ipynb`; the recurring job only loads data.
 
 ```mermaid
 flowchart LR
@@ -275,7 +275,7 @@ For anything below the level of "entities and relationships," see **[`data_model
 | You need… | Section |
 |---|---|
 | Every column, type, and description | [§1 Complete table catalog](./data_model_reference.md#1-complete-table-catalog) |
-| The 9-task ETL job and its filters | [§2 ETL pipeline DAG](./data_model_reference.md#2-etl-pipeline-dag) |
+| The 12-task ETL job and its filters | [§2 ETL pipeline DAG](./data_model_reference.md#2-etl-pipeline-dag) |
 | How a tab fetches and renders data | [§3 App request flow](./data_model_reference.md#3-app-request-flow) |
 | Which source column feeds each target column | [§4 Column-level lineage](./data_model_reference.md#4-column-level-lineage) |
 | API endpoints & system-table enrichment | [§5 Per-tab API endpoints & enrichment](./data_model_reference.md#5-per-tab-api-endpoints--enrichment) |

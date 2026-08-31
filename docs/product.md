@@ -5,22 +5,23 @@
 **Problem Statement:**
 Teams running Databricks workloads need clear, interactive visibility into both
 the cloud (VM) cost and the Databricks (DBU) cost of their compute, across every
-way that compute is consumed — jobs, interactive clusters, instance pools, and
-pipelines — so they can monitor spend, find cost drivers, and act on
-optimization recommendations.
+way that compute is consumed — jobs, interactive clusters, instance pools,
+pipelines, and SQL warehouses — so they can monitor spend, find cost drivers,
+and act on optimization recommendations.
 
 **Solution:**
 DBSPEND360 is a Databricks-native cost analytics app that consolidates per-cloud
 cost (AWS Cost Explorer today; Azure functional; GCP wired but stubbed) with
 DBU cost from Databricks system billing tables. It presents the data through
-four focused cost domains and adds AI-driven cost and configuration
+five focused cost domains and adds AI-driven cost and configuration
 recommendations powered by a Databricks foundation model.
 
 ## Target Users
 
 ### Primary Users
 - **Platform / FinOps owners**: monitor cloud + DBU spend across all compute
-  types and identify the most expensive jobs, clusters, pools, and pipelines.
+  types and identify the most expensive jobs, clusters, pools, pipelines, and
+  SQL warehouses.
 - **Engineering managers**: review their team's workloads and drill into
   individual runs to understand cost breakdowns.
 
@@ -34,7 +35,8 @@ recommendations powered by a Databricks foundation model.
 - **Drill-down analysis**: click an entity to see its Cloud vs DBU cost
   breakdown and per-run / per-entity details.
 - **Optimization**: run the AI "Analyze" action on a job, cluster, pool, or
-  pipeline to get grounded cost and configuration recommendations.
+  pipeline, or SQL warehouse to get grounded cost and configuration
+  recommendations.
 
 ## Core Features
 
@@ -69,9 +71,10 @@ cluster, while its modal focuses on pool configuration and AI analysis.
   (`config/app.dev.config` → `[databricks]`).
 - **Schema**: `dbspend360.04june`.
 - The five rollup tables above are produced by the DBSPEND360 Databricks Job
-  (per-cloud cost explorer fan-out → per-domain DBU + spend tasks). The app also
-  reads `system.lakeflow.jobs` and `system.compute.clusters` to enrich names and
-  cluster details when granted.
+  (coverage + cloud ingest → per-domain DBU + spend tasks; SQL Warehouses is
+  DBU-only). Tables are created once by `create_all_tables`, not in the job DAG.
+  The app also reads `system.lakeflow.jobs` and `system.compute.clusters` to
+  enrich names and cluster details when granted.
 
 ### 3. Interactive data table
 - All relevant columns from each domain's rollup table.
@@ -111,8 +114,8 @@ cluster, while its modal focuses on pool configuration and AI analysis.
 
 ### Cost monitoring
 1. **As a platform owner**, I want to switch between Job Clusters, All-Purpose
-   Clusters, Instance Pools, and Pipeline Compute, so I can see spend through the
-   lens that matches my question.
+   Clusters, Instance Pools, Pipeline Compute, and SQL Warehouses, so I can see
+   spend through the lens that matches my question.
 2. **As a manager**, I want to filter by name and date range, so I can analyze
    specific workloads or time periods.
 

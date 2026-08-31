@@ -26,7 +26,7 @@ The ETL uses the **Azure Cost Management** API:
 
 | API | Operation | Purpose |
 | --- | --- | --- |
-| Microsoft Cost Management (`Microsoft.CostManagement`) | `Query.usage` (`POST .../query`) | Daily `ActualCost` grouped by the `clusterid` tag and the `MeterCategory` dimension, used to build per-cluster, per-service daily cost. |
+| Microsoft Cost Management (`Microsoft.CostManagement`) | `Query.usage` (`POST .../query`) | Daily `AmortizedCost` grouped by the `clusterid` tag and the `MeterCategory` dimension, used to build per-cluster, per-service daily cost. |
 
 Implementation notes:
 
@@ -37,8 +37,9 @@ Implementation notes:
 - Token audience for `nextLink` pagination is
   `https://management.azure.com/.default`.
 - Billing scope is **subscription-level**: `/subscriptions/{subscription_id}`.
-- Metric is **`ActualCost`** (sum of `Cost`), `Daily` granularity. Unlike AWS,
-  Azure cost is segmented into compute / storage / network / other via
+- Metric is **`AmortizedCost`** (sum of `Cost`), `Daily` granularity. This
+  assigns reservation and savings-plan commitments to the VM usage they cover.
+  Azure cost is segmented into compute / storage / network / other through
   `MeterCategory` classification.
 
 ---
@@ -230,7 +231,7 @@ az login --service-principal -u <client_id> -p <client_secret> --tenant <tenant_
 az rest --method post \
   --url "https://management.azure.com/subscriptions/<subscription_id>/providers/Microsoft.CostManagement/query?api-version=2023-11-01" \
   --body '{
-    "type": "ActualCost",
+    "type": "AmortizedCost",
     "timeframe": "MonthToDate",
     "dataset": { "granularity": "Daily",
       "aggregation": { "totalCost": { "name": "Cost", "function": "Sum" } } }

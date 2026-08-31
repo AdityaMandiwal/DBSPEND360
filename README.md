@@ -25,27 +25,27 @@ DBSPEND360 splits into a multi-branch **Databricks Job pipeline** and a **Databr
 
 | Diagram | Best for |
 |---|---|
-| **Pipeline Architecture** | The nine-task job DAG, branch isolation, and task dependencies |
+| **Pipeline Architecture** | The 12-task job DAG, branch isolation, and task dependencies |
 | **Data & Consumption** | Which Delta tables each tab reads, drill-down, enrichment, and AI |
 | **Implementation Flow** | Full stack — config → ingest → branches → rollups → app |
 
 ### Pipeline Architecture
 
-Nine-task Databricks Job DAG: a shared `cloud_cost_explorer` ingest fans out into four branches (Job Clusters, All-Purpose, Instance Pools, Pipeline Compute). Each branch runs a DBU notebook and a rollup notebook. The Pipeline Compute DBU task reads system billing tables directly; its rollup notebook joins `cloud_cost_explorer` output. Downstream branch failures remain isolated, while shared cloud ingestion is a required correctness gate.
+12-task Databricks Job DAG. `create_all_tables` creates tables once at setup; the job only loads data. `cloud_cost_explorer` fans out into four DBU → rollup branches (Job Clusters, All-Purpose, Instance Pools, Pipeline Compute). Each of those DBU tasks also waits on `covered_workspaces`. SQL Warehouses is a fifth DBU → rollup branch that waits on coverage only (no cloud ingest). Cloud VM cost is joined in the rollup notebooks, not in DBU ingest. Downstream branch failures remain isolated; shared cloud ingestion is a correctness gate for the four cloud-backed branches.
 
-![DBSPEND360 Databricks Job DAG: cloud_cost_explorer fans out to four serverless branches — all_purpose_dbu_costs → all_purpose_spends, pool_dbu_costs → pool_spends, dbu_costs → databricks_job_spends, and pipeline_dbu_costs → pipeline_spends.](release/readme_images/architecture_pipeline.png)
+![DBSPEND360 Databricks Job DAG: covered_workspaces and cloud_cost_explorer feed DBU then rollup tasks for Job Clusters, All-Purpose, Instance Pools, and Pipeline Compute; SQL Warehouses is DBU-only from covered_workspaces.](release/readme_images/architecture_pipeline.png)
 
 ### Data & Consumption
 
-Curated Delta tables produced by the pipeline and how the four-tab app consumes them. Shared explorer tables (`dbspend360_cloud_cost_explorer`, `dbspend360_pool_cloud_cost_explorer`, `dbspend360_other_cost_breakdown`) feed branch-specific rollups; each app tab reads its rollup table. `dbspend360_other_cost_breakdown` powers per-service drill-down. At query time the app optionally enriches rows from `system.lakeflow.jobs`, `system.compute.clusters`, `system.compute.instance_pools`, and `system.lakeflow.pipelines`. AI recommendations are served via `databricks-claude-sonnet-4` Model Serving.
+Curated Delta tables produced by the pipeline and how the five-tab app consumes them. Shared explorer tables (`dbspend360_cloud_cost_explorer`, `dbspend360_pool_cloud_cost_explorer`, `dbspend360_other_cost_breakdown`) feed branch-specific rollups; each app tab reads its rollup table. `dbspend360_other_cost_breakdown` powers per-service drill-down. At query time the app optionally enriches rows from `system.lakeflow.jobs`, `system.compute.clusters`, `system.compute.instance_pools`, `system.lakeflow.pipelines`, and `system.compute.warehouses`. AI recommendations are served via `databricks-claude-sonnet-4` Model Serving.
 
-![DBSPEND360 data and consumption architecture: shared cloud cost explorer tables feed four branch rollup tables, each powering an app tab; query-time system table enrichment and other_cost_breakdown drill-down feed the Databricks App, which calls databricks-claude-sonnet-4 for AI recommendations.](release/readme_images/architecture_data_app.png)
+![DBSPEND360 data and consumption architecture: shared cloud cost explorer tables feed branch rollup tables, each powering an app tab; query-time system table enrichment and other_cost_breakdown drill-down feed the Databricks App, which calls databricks-claude-sonnet-4 for AI recommendations.](release/readme_images/architecture_data_app.png)
 
 ### Implementation Flow
 
-End-to-end view from cloud provider config through shared ingest, four parallel branches, rollup tables, and the app.
+End-to-end view from cloud provider config through shared ingest, five parallel branches, rollup tables, and the app.
 
-![DBSPEND360 implementation flow: cloud_cost_explorer writes dbspend360_cloud_cost_explorer, dbspend360_pool_cloud_cost_explorer, and dbspend360_other_cost_breakdown, then fans out into four independent branches (each with a DBU notebook and rollup notebook) that produce dbspend360_total_job_spends, dbspend360_total_all_purpose_spends, dbspend360_total_pool_spends, and dbspend360_total_pipeline_spends for the app's four tabs.](release/readme_images/implementation_flow.png)
+![DBSPEND360 implementation flow: cloud_cost_explorer writes explorer tables, then fans out with covered_workspaces into DBU and rollup notebooks that produce the five `dbspend360_total_*` tables for the app tabs.](release/readme_images/implementation_flow.png)
 
 
 ## 3. Usage
@@ -99,16 +99,17 @@ The Databricks App reads **five rollup tables** (one per cost tab), all produced
 
 1. Import everything under `jobs/notebooks/` and `jobs/ddls/` into your Databricks workspace.
 2. Run `jobs/ddls/create_all_tables.ipynb` once against the catalog/schema you intend to use. The orchestrator includes the coverage table plus staging and rollup DDLs for all five tabs, including `dbspend360_sql_warehouse_dbu_cost` and `dbspend360_total_sql_warehouse_spends`.
-3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. It defines nine tasks across four branches — three of which fan out from a shared cloud-cost-ingest task, while the Pipeline Compute branch's DBU task runs independently and joins the shared cloud-cost output at its final step:
+3. Use `jobs/resource_templates/DBSPEND360.yaml` as the basis for the Databricks Job. Tables are created once by `create_all_tables`; the job only loads data. It has 12 tasks: coverage, cloud ingest, and five DBU/rollup branches. Four branches fan out from the shared cloud-cost ingest; SQL Warehouses is DBU-only:
 
    ```
-   cloud_cost_explorer
-   ├─ Dbspend360dbu_costs ──────────────── databricks_job_spends       (Job Clusters branch)
-   ├─ Dbspend360_all_purpose_dbu_costs ─── all_purpose_spends          (All-Purpose Clusters branch)
-   └─ Dbspend360_pool_dbu_costs ────────── pool_spends                 (Instance Pools branch)
+   covered_workspaces ─┐
+   cloud_cost_explorer ┤
+                       ├─ Dbspend360dbu_costs ──────────────── databricks_job_spends
+                       ├─ Dbspend360_all_purpose_dbu_costs ─── all_purpose_spends
+                       ├─ Dbspend360_pool_dbu_costs ────────── pool_spends
+                       └─ Dbspend360_pipeline_dbu_costs ────── pipeline_spends
 
-   Dbspend360_pipeline_dbu_costs ───┐
-   cloud_cost_explorer ─────────────┴──── pipeline_spends              (Pipeline Compute branch)
+   covered_workspaces ── Dbspend360_sql_warehouse_dbu_costs ── sql_warehouse_spends
    ```
 
    * `cloud_cost_explorer` → `${cloud_provider}_cloud_cost_explorer_app` — cloud-source-agnostic; feeds every branch. On **both AWS and Azure** it writes **two** explorer tables: `dbspend360_cloud_cost_explorer` (grouped by `ClusterId`/`clusterid`, feeds Job/All-Purpose/Pipeline) and `dbspend360_pool_cloud_cost_explorer` (grouped by `DatabricksInstancePoolId`, feeds Instance Pools). Both outputs are required: a pool-path failure fails the task so downstream rollups cannot refresh from stale pool cloud data while the job reports success.
@@ -123,7 +124,7 @@ The Databricks App reads **five rollup tables** (one per cost tab), all produced
      * `pool_spends` → `pool_spends_app`
    * Pipeline Compute branch (writes `dbspend360_total_pipeline_spends`):
      * `Dbspend360_pipeline_dbu_costs` → `dbspend360_pipeline_dbu_cost_app`
-     * `pipeline_spends` → `pipeline_spends_app` (depends on both its DBU task **and** `cloud_cost_explorer`)
+     * `pipeline_spends` → `pipeline_spends_app` (same shape as Job / All-Purpose: waits on its DBU task, which already waited on cloud ingest)
    * SQL Warehouses branch (writes `dbspend360_total_sql_warehouse_spends`):
      * `Dbspend360_sql_warehouse_dbu_costs` → `dbspend360_sql_warehouse_dbu_cost_app`
      * `sql_warehouse_spends` → `sql_warehouse_spends_app` (DBU-only ETL; no cloud explorer dependency)

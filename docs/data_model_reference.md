@@ -3,7 +3,7 @@
 Deep reference for the DBSpend360 data model. **Start with [`data_model.md`](./data_model.md)** for the entities, grain, and relationships — this file holds the exhaustive detail you open only when you need it:
 
 - [§1 Complete table catalog](#1-complete-table-catalog) — every column, type, and description
-- [§2 ETL pipeline DAG](#2-etl-pipeline-dag) — the 9-task job and its filters
+- [§2 ETL pipeline DAG](#2-etl-pipeline-dag) — the 12-task job and its filters
 - [§3 App request flow](#3-app-request-flow) — how a tab fetches data
 - [§4 Column-level lineage](#4-column-level-lineage) — which source column feeds each target column
 - [§5 Per-tab API endpoints & enrichment](#5-per-tab-api-endpoints--enrichment)
@@ -171,36 +171,36 @@ DBU-only. Serverless DBU includes infrastructure.
 
 ## 2. ETL pipeline DAG
 
-The Databricks Job (`jobs/resource_templates/DBSPEND360.yaml`) declares table
-creation as explicit prerequisites instead of assuming the pipeline tables
-already exist:
+The Databricks Job (`jobs/resource_templates/DBSPEND360.yaml`) loads data only.
+Create tables once with `jobs/ddls/create_all_tables.ipynb` before the first run.
 
 ```mermaid
 flowchart TD
-    DDL_PL["create_pipeline_dbu_cost_table"]
-    DDL_ROLL_PL["create_total_pipeline_spends_table"]
     CW["covered_workspaces"]
     CCE["cloud_cost_explorer<br/>(aws/azure/gcp notebook)"]
 
     CCE --> DBU_J["Dbspend360dbu_costs"]
     CCE --> DBU_AP["Dbspend360_all_purpose_dbu_costs"]
     CCE --> DBU_P["Dbspend360_pool_dbu_costs"]
-    DDL_PL --> DBU_PL["Dbspend360_pipeline_dbu_costs"]
+    CCE --> DBU_PL["Dbspend360_pipeline_dbu_costs"]
+    CW --> DBU_J
+    CW --> DBU_AP
+    CW --> DBU_P
     CW --> DBU_PL
-    DDL_ROLL_PL --> ROLL_PL["pipeline_spends"]
-    CCE --> ROLL_PL
+    CW --> DBU_SQL["Dbspend360_sql_warehouse_dbu_costs"]
 
     DBU_J --> ROLL_J["databricks_job_spends"]
     DBU_AP --> ROLL_AP["all_purpose_spends"]
     DBU_P --> ROLL_P["pool_spends"]
-
-    DBU_PL --> ROLL_PL
+    DBU_PL --> ROLL_PL["pipeline_spends"]
+    DBU_SQL --> ROLL_SQL["sql_warehouse_spends"]
 
     style CCE fill:#e0f2fe
     style ROLL_J fill:#dcfce7
     style ROLL_AP fill:#dcfce7
     style ROLL_P fill:#dcfce7
     style ROLL_PL fill:#dcfce7
+    style ROLL_SQL fill:#dcfce7
 ```
 
 **Cloud cost explorer outputs:**
@@ -219,6 +219,11 @@ flowchart TD
 | All-Purpose | `cluster_source IN ('UI','API')` AND `job_run_id IS NULL` |
 | Instance Pools | `instance_pool_id IS NOT NULL` |
 | Pipeline Compute | `dlt_pipeline_id IS NOT NULL` |
+| SQL Warehouses | `billing_origin_product = 'SQL'` AND warehouse ID present |
+
+Job, All-Purpose, Pool, and Pipeline DBU tasks wait on `cloud_cost_explorer` as a
+scheduling gate. Those notebooks still read only system billing tables; rollup
+notebooks join explorer output. SQL Warehouse DBU does not wait on cloud ingest.
 
 ---
 
