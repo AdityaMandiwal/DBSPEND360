@@ -86,26 +86,54 @@ export function CostCoverageMix({
       {rows.map((row) => (
         <div
           key={row.label}
-          className="flex items-center justify-between gap-3"
+          className={
+            compact
+              ? 'space-y-0.5'
+              : 'flex items-center justify-between gap-3'
+          }
         >
-          <div className="flex min-w-0 items-center gap-2">
-            <div className={`h-3 w-3 shrink-0 rounded-full ${row.color}`} />
-            <span
-              className={compact ? 'truncate text-xs' : 'text-sm font-medium'}
-            >
-              {row.label}
-            </span>
-          </div>
-          <div className="shrink-0 text-right">
-            <div
-              className={compact ? 'text-xs font-semibold' : 'font-semibold'}
-            >
-              {formatCurrency(row.value)}
+          <div
+            className={
+              compact
+                ? 'flex items-start justify-between gap-2'
+                : 'flex min-w-0 items-center gap-2'
+            }
+          >
+            <div className="flex min-w-0 items-start gap-2">
+              <div
+                className={`shrink-0 rounded-full ${row.color} ${
+                  compact ? 'mt-1 h-2.5 w-2.5' : 'h-3 w-3'
+                }`}
+              />
+              <span
+                className={
+                  compact
+                    ? 'text-xs font-medium leading-tight'
+                    : 'text-sm font-medium'
+                }
+              >
+                {row.label}
+              </span>
             </div>
-            <div className="text-[11px] text-muted-foreground">
+            {compact && (
+              <div className="shrink-0 text-xs font-semibold">
+                {formatCurrency(row.value)}
+              </div>
+            )}
+          </div>
+          {!compact && (
+            <div className="shrink-0 text-right">
+              <div className="font-semibold">{formatCurrency(row.value)}</div>
+              <div className="text-[11px] text-muted-foreground">
+                {row.pct.toFixed(1)}% {row.pctLabel}
+              </div>
+            </div>
+          )}
+          {compact && (
+            <div className="pl-[18px] text-[11px] leading-tight text-muted-foreground">
               {row.pct.toFixed(1)}% {row.pctLabel}
             </div>
-          </div>
+          )}
         </div>
       ))}
       <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -119,7 +147,9 @@ export function CostCoverageMix({
       </div>
       {uncoveredCloudCost > 0 && (
         <p className="text-[11px] leading-snug text-muted-foreground">
-          {CLOUD_PARTIAL_COVERAGE_NOTE} DBU on these rows is complete.
+          {compact
+            ? 'Cloud cost is partial because some activity is outside the configured billing scope. DBU cost is complete.'
+            : `${CLOUD_PARTIAL_COVERAGE_NOTE} DBU on these rows is complete.`}
         </p>
       )}
     </div>
